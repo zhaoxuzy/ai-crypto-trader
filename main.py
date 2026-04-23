@@ -11,26 +11,36 @@ def main():
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
 
     client = CoinGlassClient()
-    data = client.get_all_data(symbol)  # 获取所有链上/合约数据
+    data = client.get_all_data(symbol)
 
-    # 补充 OKX 实时价格（如果 CoinGlass 未提供或做交叉验证）
+    # 补充 OKX 实时价格
     inst_id = f"{symbol}-USDT-SWAP"
     real_price = get_current_price(inst_id)
     if real_price > 0:
-        data["mark_price"] = real_price  # 用 OKX 实时价覆盖
+        data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
-    # 构建 ETH 辅助数据（用于跨币种验证，仅当分析 BTC 时使用）
-    eth_data = None
+    # 获取跨币种验证数据
+    cross_data = None
     if symbol == "BTC":
-        eth_client = CoinGlassClient()
-        eth_data = eth_client.get_all_data("ETH")
-        # 如果 eth_data 中的 mark_price 也可用 OKX 修正
-        eth_real = get_current_price("ETH-USDT-SWAP")
-        if eth_real > 0:
-            eth_data["mark_price"] = eth_real
+        cross_symbol = "ETH"
+    elif symbol == "ETH":
+        cross_symbol = "BTC"
+    else:
+        cross_symbol = None
 
-    prompt = build_prompt(data, symbol, eth_data=eth_data)
+    if cross_symbol:
+        logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
+        try:
+            cross_data = client.get_cross_asset_data(cross_symbol)
+            # 补充跨币种的汇率数据（对于BTC分析ETH时，使用已有eth_btc_ratio即可）
+            # 对于ETH分析BTC，也可以计算BTC/ETH比率，但我们的prompt中只需要ETH/BTC，所以直接用data中的eth_btc_ratio
+        except Exception as e:
+            logger.warning(f"获取跨币种数据失败：{e}，将跳过第六步验证")
+            cross_data = None
+
+    # 构建prompt
+    prompt = build_prompt(data, symbol, cross_data=cross_data)
 
     try:
         strategy = call_deepseek(prompt)

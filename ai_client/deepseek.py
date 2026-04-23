@@ -8,10 +8,10 @@ from utils.logger import logger
 
 
 # ==================== 配置参数 ====================
-TICK_SIZE = 0.1          # 价格最小变动单位，用于规整化比较
-MAX_RETRIES = 2           # 重试次数
-RETRY_BASE_WAIT = 2       # 基础等待秒数
-TIMEOUT_SECONDS = 180     # API 超时时间
+TICK_SIZE = 0.1
+MAX_RETRIES = 2
+RETRY_BASE_WAIT = 2
+TIMEOUT_SECONDS = 180
 # =================================================
 
 
@@ -45,13 +45,11 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     eth_btc_ma_7d = data.get('eth_btc_ma_7d', 0.0)
     eth_btc_percentile = data.get('eth_btc_percentile', 50.0)
 
-    # 关键数据缺失的强制约束（植入 Prompt）
     core_missing = [k for k in ["atr_15m", "above_liq", "below_liq", "cvd_slope"] if k in missing]
     constraint_note = ""
     if core_missing:
         constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(core_missing)}。你必须将置信度设为 'low'；若清算数据缺失，则必须输出 'neutral'。\n"
 
-    # 构建跨币种辅助数据块（原 eth_data 参数）
     cross_context = ""
     if eth_data is not None:
         cross_current = eth_data.get('mark_price', 0)
@@ -72,7 +70,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
 【跨币种辅助验证数据】
 现价：{cross_current:.2f} | ETH/BTC汇率7日分位：{eth_btc_percentile:.0f}%
 清算池：上方{cross_above_liq:.2f}B / 下方{cross_below_liq:.2f}B（比值{cross_liq_ratio:.3f}）
-情绪：OI分位{cross_oi_pct:.0f}%（24h{cross_oi_change:+.1f}%）、资金费率分位{cross_funding_pct:.0f}%、顶级多空比分位{cross_tls_pct:.0f}%
+情绪：OI分位{cross_oi_pct:.0f}%（24h{cross_oi_change:+.1f}%）、资金费率分位{cross_funding_pct:.0f}%、顶级多空比分位{cross_tls_pct:.0f}%（100%=机构极度看空）
 资金流：CVD斜率{cross_cvd:.4f}（{cross_cvd_dir}）
 期权：P/C比{cross_pc:.4f}、最大痛点{cross_max_pain:.2f}
 """
@@ -116,7 +114,6 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 第三步：对手盘解剖
 分析数据：OI分位数及变化、全市场OI变化、资金费率分位数、顶级多空比分位数、恐慌贪婪及趋势。
 特别规则：若资金费率分位 > 80% 且 CVD斜率 > 0.1 且价格未跌破15min EMA12，则拥挤度信号仅作为止盈参考，不作为反转开仓依据。
-分析数据：
 第一反应：
 自我质疑：
 最终结论：
@@ -134,7 +131,8 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 最终结论：
 
 第六步：跨币种验证
-分析数据：（逐项对比BTC与ETH的清算池规模/比值、OI分位及24h变化、资金费率分位、顶级多空比分位、CVD斜率、P/C比、ETH/BTC汇率分位）
+分析数据：（逐项对比BTC与ETH的清算池规模/比值、OI分位及24h变化、资金费率分位、顶级多空比分位、CVD斜率、P/C比、ETH/BTC汇率分位，分析各币种的方向，是一致还是相反，深度分析矛盾点或共振点）
+【重要：顶级多空比分位的正确解读】顶级多空比分位100%意味着当前顶级交易员的净多头持仓比例处于历史最低水平，即他们正以历史极端比例持有净空头。这是强烈的看跌信号，而非轧空信号。扎空逻辑成立的前提是“散户极度做空 + 资金流强劲”，而顶级多空比反映的是机构行为，两者不可混淆。
 第一反应：
 自我质疑：
 最终结论：
@@ -266,5 +264,29 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
 
     if float(s["entry_price_low"]) > float(s["entry_price_high"]):
         return False, "入场区间下限大于上限"
+
+    # 计算实际盈亏比并写入字典，供显示使用
+    try:
+        entry_low = float(s["entry_price_low"])
+        entry_high = float(s["entry_price_high"])
+        stop = float(s["stop_loss"])
+        tp = float(s["take_profit"])
+
+        if direction == "long":
+            worst_entry = entry_high
+            risk = worst_entry - stop
+            reward = tp - worst_entry
+        else:
+            worst_entry = entry_low
+            risk = stop - worst_entry
+            reward = worst_entry - tp
+
+        if risk > 0:
+            s["_calculated_rr"] = round(reward / risk, 2)
+        else:
+            s["_calculated_rr"] = 0.0
+    except Exception as e:
+        logger.warning(f"计算盈亏比时出错: {e}")
+        s["_calculated_rr"] = None
 
     return True, ""

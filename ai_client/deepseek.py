@@ -46,8 +46,8 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     # 构建 ETH 辅助数据块
     eth_context = ""
     if eth_data is not None:
-        eth_c = eth_data.get('mark_price', 0)
-        eth_context = f"""
+        eth_above_liq = cross_data.get('above_liq', 0) / 1e9
+        eth_below_liq = cross_data.get('below_liq', 0) / 1e9
 【ETH 辅助验证数据】
 ETH现价：{eth_c:.2f} | ETH/BTC汇率7日分位：{eth_btc_percentile:.0f}%
 ETH清算池：上方{eth_data['above_liq']/1e9:.2f}B / 下方{eth_data['below_liq']/1e9:.2f}B（比值{eth_data['liq_ratio']:.3f}）

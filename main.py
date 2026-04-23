@@ -29,7 +29,7 @@ def main():
         logger.warning(f"获取跨币种数据失败：{e}，将跳过第六步验证")
 
     # 构建prompt（跨币种数据传入 eth_data 参数，因为字段兼容）
-    prompt = build_prompt(data, symbol, eth_data=cross_data)
+   prompt = build_prompt(data, symbol, eth_data=cross_data)
 
     try:
         strategy = call_deepseek(prompt)

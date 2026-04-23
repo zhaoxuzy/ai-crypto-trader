@@ -2,7 +2,7 @@ name: Generate Trading Signal
 
 on:
   schedule:
-    - cron: '55 * * * *'          # 每小时第55分钟自动运行
+    - cron: '55 * * * *'          # 每小时第55分钟自动执行
   workflow_dispatch:
     inputs:
       symbol:
@@ -16,12 +16,12 @@ on:
         default: 'ETH'
 
 jobs:
-  strategy:
+  run-strategy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       matrix:
-        # 如果是手动触发且选择了BOTH，则矩阵包含BTC和ETH；否则只包含指定币种
+        # 定时任务时默认分析BTC和ETH（两个独立job）
         symbol: ${{ github.event_name == 'schedule' && fromJSON('["BTC", "ETH"]') || (github.event.inputs.symbol == 'BOTH' && fromJSON('["BTC", "ETH"]') || fromJSON(format('["{0}"]', github.event.inputs.symbol))) }}
 
     steps:

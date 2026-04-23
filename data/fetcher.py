@@ -280,164 +280,116 @@ class CoinGlassClient:
             logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
-    def get_all_data(self, symbol: str = "BTC") -> dict:
-        base_symbol = symbol.upper()
-
-        tasks = {
-            "kline": lambda: self.get_kline_history(base_symbol, "4h", 168),
-            "oi": lambda: self.get_oi_ohlc_history(base_symbol, "4h", 168),
-            "funding": lambda: self.get_weighted_funding_rate_history(base_symbol, "4h", 168),
-            "heatmap": lambda: self.get_liquidation_heatmap(base_symbol),
-            "top_ls": lambda: self.get_top_long_short_ratio_history(base_symbol, "4h", 168),
-            "cvd": lambda: self.get_cvd_history(base_symbol, "1m", 240),
-            "max_pain": lambda: self.get_option_max_pain(base_symbol),
-            "fg": lambda: self.get_fear_and_greed_index(),
-            "netflow": lambda: self.get_netflow(base_symbol),
-            "orderbook": lambda: self.get_orderbook_imbalance(base_symbol),
-            "exchange_btc": lambda: self.get_exchange_btc_balance(),
-            "agg_oi": lambda: self.get_aggregated_oi_history(base_symbol, "4h", 168),
-        }
-
-        results = {}
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            future_to_key = {executor.submit(task): key for key, task in tasks.items()}
-            for future in as_completed(future_to_key):
-                key = future_to_key[future]
-                try:
-                    results[key] = future.result()
-                except Exception as e:
-                    logger.error(f"获取 {key} 失败: {e}")
-                    results[key] = None
-
-        eth_btc_data = self.get_eth_btc_ratio()
-        eth_btc_ratio = eth_btc_data.get("current", 0.0)
-        eth_btc_ma_7d = eth_btc_data.get("ma_7d", 0.0)
-        eth_btc_percentile = eth_btc_data.get("percentile_7d", 50.0)
-
-        data_quality = {}
-        for key in tasks.keys():
-            if key == "fg":
-                data_quality["恐慌贪婪指数"] = "✅" if results.get(key) else "⚠️ 回退"
-            elif key == "exchange_btc":
-                data_quality["交易所BTC余额"] = "✅" if results.get(key) else "⚠️ 回退"
+    def get_cross_asset_data(self, cross_symbol: str) -> dict:
+        """获取跨币种验证所需的精简数据（约5-6次API请求）"""
+        logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
+        data = {}
+        try:
+            # 1. 清算池热力图（获取上下方清算量）
+            heatmap = self.get_liquidation_heatmap(cross_symbol)
+            if heatmap:
+                mark_price = 0
+                kline_data = self.get_kline_history(cross_symbol, "4h", 1)
+                if kline_data:
+                    mark_price = self._get_close_from_candle(kline_data[-1])
+                above_liq, below_liq = 0, 0
+                if heatmap:
+                    y_axis = heatmap.get("y_axis", [])
+                    liq_data = heatmap.get("liquidation_leverage_data", [])
+                    for item in liq_data:
+                        if isinstance(item, list) and len(item) >= 3:
+                            price = float(y_axis[int(item[1])]) if int(item[1]) < len(y_axis) else 0
+                            intensity = float(item[2])
+                            if price > mark_price: above_liq += intensity
+                            elif price < mark_price: below_liq += intensity
+                liq_ratio = above_liq / below_liq if below_liq > 0 else 0.0
+                data["above_liq"] = above_liq
+                data["below_liq"] = below_liq
+                data["liq_ratio"] = liq_ratio
             else:
-                data_quality[key] = "✅" if results.get(key) else "❌ 缺失"
+                data["above_liq"] = 0
+                data["below_liq"] = 0
+                data["liq_ratio"] = 0.0
 
-        kline_data = results.get("kline", [])
-        oi_data = results.get("oi", [])
-        funding_data = results.get("funding", [])
-        top_ls_data = results.get("top_ls", [])
-        cvd_data = results.get("cvd", [])
-        heatmap_raw = results.get("heatmap", {})
-        max_pain_data = results.get("max_pain", {})
-        max_pain = max_pain_data.get("max_pain", 0.0)
-        put_call_ratio = max_pain_data.get("put_call_ratio", 0.0)
-        fg_data = results.get("fg", {"current": 50, "prev_7d": 50})
-        netflow = results.get("netflow", 0.0)
-        orderbook = results.get("orderbook", {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0})
-        exchange_btc = results.get("exchange_btc", {"total_btc": 0.0, "change_24h": 0.0})
-        agg_oi_data = results.get("agg_oi", [])
-
-        mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
-        closes = [self._get_close_from_candle(k) for k in kline_data]
-        atr_4h = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
-        avg_atr_7d = sum(self._calc_atr_list(closes, 14)) / len(closes) if closes else 1.0
-        vol_factor = atr_4h / avg_atr_7d if avg_atr_7d > 0 else 1.0
-        price_percentile = self._calc_percentile(kline_data, mark_price)
-        atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
-
-        above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
-        if heatmap_raw:
-            y_axis = heatmap_raw.get("y_axis", [])
-            liq_data = heatmap_raw.get("liquidation_leverage_data", [])
-            pain_map = {}
-            for item in liq_data:
-                if isinstance(item, list) and len(item) >= 3:
-                    price = float(y_axis[int(item[1])]) if int(item[1]) < len(y_axis) else 0
-                    intensity = float(item[2])
-                    if price > mark_price: above_liq += intensity
-                    elif price < mark_price: below_liq += intensity
-                    pain_map[price] = intensity
-            liq_ratio = above_liq / below_liq if below_liq > 0 else 0.0
-            if pain_map:
-                above_prices = [p for p in pain_map if p > mark_price]
-                below_prices = [p for p in pain_map if p < mark_price]
-                if above_prices:
-                    max_above = max(above_prices, key=lambda p: pain_map[p])
-                    above_cluster = f"{max_above*0.99:.0f}-{max_above*1.01:.0f}"
-                if below_prices:
-                    max_below = max(below_prices, key=lambda p: pain_map[p])
-                    below_cluster = f"{max_below*0.99:.0f}-{max_below*1.01:.0f}"
-
-        oi_current = self._get_close_from_candle(oi_data[-1]) if oi_data else 0.0
-        oi_percentile = self._calc_percentile(oi_data, oi_current)
-        oi_change_24h = 0.0
-        if len(oi_data) >= 6:
-            oi_24h_ago = self._get_close_from_candle(oi_data[-6])
-            oi_change_24h = (oi_current - oi_24h_ago) / oi_24h_ago * 100 if oi_24h_ago > 0 else 0.0
-
-        funding_current = self._get_close_from_candle(funding_data[-1]) if funding_data else 0.0
-        funding_percentile = self._calc_percentile(funding_data, funding_current)
-
-        top_ls_current = 0.0
-        if top_ls_data and isinstance(top_ls_data, list) and len(top_ls_data) > 0:
-            latest = top_ls_data[-1]
-            if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
-                top_ls_current = float(latest.get("top_position_long_short_ratio", 0))
+            # 2. OI历史
+            oi_data = self.get_oi_ohlc_history(cross_symbol, "4h", 168)
+            if oi_data:
+                oi_current = self._get_close_from_candle(oi_data[-1])
+                data["oi_percentile"] = self._calc_percentile(oi_data, oi_current)
+                oi_change_24h = 0.0
+                if len(oi_data) >= 6:
+                    oi_24h_ago = self._get_close_from_candle(oi_data[-6])
+                    if oi_24h_ago > 0:
+                        oi_change_24h = (oi_current - oi_24h_ago) / oi_24h_ago * 100
+                data["oi_change_24h"] = oi_change_24h
             else:
-                top_ls_current = self._get_close_from_candle(latest)
-        top_ls_percentile = self._calc_percentile(top_ls_data, top_ls_current) if top_ls_data else 50.0
+                data["oi_percentile"] = 50.0
+                data["oi_change_24h"] = 0.0
 
-        cvd_series = [self._get_close_from_candle(c) for c in cvd_data] if cvd_data else []
-        cvd_mean = sum(cvd_series) / len(cvd_series) / 1e6 if cvd_series else 0.0
-        cvd_slope = self._calc_slope(cvd_series)
+            # 3. 资金费率历史
+            funding_data = self.get_weighted_funding_rate_history(cross_symbol, "4h", 168)
+            if funding_data:
+                funding_current = self._get_close_from_candle(funding_data[-1])
+                data["funding_rate"] = funding_current
+                data["funding_percentile"] = self._calc_percentile(funding_data, funding_current)
+            else:
+                data["funding_rate"] = 0.0
+                data["funding_percentile"] = 50.0
 
-        agg_oi_current = self._get_close_from_candle(agg_oi_data[-1]) if agg_oi_data else 0.0
-        agg_oi_change_24h = 0.0
-        if len(agg_oi_data) >= 6:
-            agg_oi_24h_ago = self._get_close_from_candle(agg_oi_data[-6])
-            agg_oi_change_24h = (agg_oi_current - agg_oi_24h_ago) / agg_oi_24h_ago * 100 if agg_oi_24h_ago > 0 else 0.0
+            # 4. 顶级多空比历史
+            top_ls_data = self.get_top_long_short_ratio_history(cross_symbol, "4h", 168)
+            if top_ls_data:
+                top_ls_current = 0.0
+                latest = top_ls_data[-1]
+                if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
+                    top_ls_current = float(latest.get("top_position_long_short_ratio", 0))
+                else:
+                    top_ls_current = self._get_close_from_candle(latest)
+                data["top_ls_ratio"] = top_ls_current
+                data["top_ls_percentile"] = self._calc_percentile(top_ls_data, top_ls_current)
+            else:
+                data["top_ls_ratio"] = 0.0
+                data["top_ls_percentile"] = 50.0
 
-        fear_greed = fg_data.get("current", 50)
-        fear_greed_prev_7d = fg_data.get("prev_7d", 50)
+            # 5. CVD历史
+            cvd_data = self.get_cvd_history(cross_symbol, "1m", 240)
+            if cvd_data:
+                cvd_series = [self._get_close_from_candle(c) for c in cvd_data]
+                data["cvd_slope"] = self._calc_slope(cvd_series)
+            else:
+                data["cvd_slope"] = 0.0
 
-        return {
-            "mark_price": mark_price,
-            "atr": atr_4h,
-            "atr_15m": atr_15m,
-            "vol_factor": vol_factor,
-            "price_percentile": price_percentile,
-            "above_liq": above_liq,
-            "below_liq": below_liq,
-            "liq_ratio": liq_ratio,
-            "above_cluster": above_cluster,
-            "below_cluster": below_cluster,
-            "max_pain": max_pain,
-            "put_call_ratio": put_call_ratio,
-            "top_ls_ratio": top_ls_current,
-            "top_ls_percentile": top_ls_percentile,
-            "funding_rate": funding_current,
-            "funding_percentile": funding_percentile,
-            "oi": oi_current,
-            "oi_percentile": oi_percentile,
-            "oi_change_24h": oi_change_24h,
-            "agg_oi": agg_oi_current,
-            "agg_oi_change_24h": agg_oi_change_24h,
-            "cvd_mean": cvd_mean,
-            "cvd_slope": cvd_slope,
-            "fear_greed": fear_greed,
-            "fear_greed_prev_7d": fear_greed_prev_7d,
-            "eth_btc_ratio": eth_btc_ratio,
-            "eth_btc_ma_7d": eth_btc_ma_7d,
-            "eth_btc_percentile": eth_btc_percentile,
-            "netflow": netflow,
-            "orderbook_bids": orderbook.get("bids_usd", 0.0),
-            "orderbook_asks": orderbook.get("asks_usd", 0.0),
-            "orderbook_imbalance": orderbook.get("imbalance", 0.0),
-            "exchange_btc_total": exchange_btc.get("total_btc", 0.0),
-            "exchange_btc_change_24h": exchange_btc.get("change_24h", 0.0),
-            "data_quality": data_quality
-        }
+            # 6. 期权数据
+            option_data = self.get_option_max_pain(cross_symbol)
+            data["put_call_ratio"] = option_data.get("put_call_ratio", 0.0)
+            data["max_pain"] = option_data.get("max_pain", 0.0)
+
+            # 7. 现价采用OKX实时价格避免延迟
+            try:
+                from data.fetcher import get_current_price  # 使用同模块函数
+                real_price = get_current_price(f"{cross_symbol}-USDT-SWAP")
+                if real_price > 0:
+                    data["mark_price"] = real_price
+                else:
+                    # 如果获取失败，从kline取
+                    kline = self.get_kline_history(cross_symbol, "4h", 1)
+                    if kline:
+                        data["mark_price"] = self._get_close_from_candle(kline[-1])
+                    else:
+                        data["mark_price"] = 0.0
+            except:
+                kline = self.get_kline_history(cross_symbol, "4h", 1)
+                if kline:
+                    data["mark_price"] = self._get_close_from_candle(kline[-1])
+                else:
+                    data["mark_price"] = 0.0
+
+            logger.info(f"跨币种数据获取完成 {cross_symbol}: {data}")
+            return data
+
+        except Exception as e:
+            logger.error(f"获取跨币种数据失败 {cross_symbol}: {e}", exc_info=True)
+            return {}
 
 
 # ==================== OKX 辅助函数 ====================
@@ -458,104 +410,17 @@ def get_current_price(inst_id: str) -> float:
 
 
 def get_klines(inst_id: str, bar: str = "1H", limit: int = 70) -> list:
-    """
-    获取 K 线数据
-    bar: 1m/3m/5m/15m/30m/1H/2H/4H/6H/12H/1D/1W/1M/3M
-    """
+    """获取 K 线数据"""
     try:
         url = f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}"
         resp = requests.get(url, timeout=10)
         data = resp.json()
         if data.get("code") == "0":
             klines = data["data"]
-            klines.reverse()  # OKX 返回是倒序，反转成时间升序
+            klines.reverse()
             return klines
         logger.warning(f"OKX 获取K线失败: {data}")
         return []
     except Exception as e:
         logger.error(f"OKX K线请求异常: {e}")
         return []
-
-
-def calculate_ema(klines: list, period: int) -> float:
-    """计算 EMA，返回最新值"""
-    if not klines or len(klines) < period:
-        return 0.0
-    closes = [float(k[4]) for k in klines[-period*2:] if len(k) >= 5]
-    if len(closes) < period:
-        return 0.0
-    multiplier = 2 / (period + 1)
-    ema = sum(closes[:period]) / period
-    for price in closes[period:]:
-        ema = (price - ema) * multiplier + ema
-    return ema
-
-
-def calculate_ema_slope(klines: list, period: int, lookback: int = 5) -> float:
-    """计算 EMA 斜率（最近 lookback 根K线的线性回归斜率）"""
-    if not klines or len(klines) < period + lookback:
-        return 0.0
-    ema_values = []
-    for i in range(len(klines) - lookback, len(klines)):
-        ema = calculate_ema(klines[:i+1], period)
-        if ema > 0:
-            ema_values.append(ema)
-    if len(ema_values) < 2:
-        return 0.0
-    n = len(ema_values)
-    x_mean = (n - 1) / 2
-    y_mean = sum(ema_values) / n
-    numerator = sum((i - x_mean) * (ema_values[i] - y_mean) for i in range(n))
-    denominator = sum((i - x_mean) ** 2 for i in range(n))
-    if denominator == 0:
-        return 0.0
-    slope = numerator / denominator
-    return round(slope, 4)
-
-
-def calculate_atr(inst_id: str, timeframe: str = "1H", period: int = 14, limit: int = 30) -> float:
-    """
-    计算 ATR
-    timeframe: 1H/4H/1D 等，传递给 get_klines
-    """
-    klines = get_klines(inst_id, bar=timeframe, limit=limit)
-    if not klines or len(klines) < period + 1:
-        logger.warning(f"K线数据不足，无法计算 ATR (需要至少 {period+1} 根，实际 {len(klines)})")
-        return 0.0
-    true_ranges = []
-    for i in range(1, len(klines)):
-        if len(klines[i]) < 5 or len(klines[i-1]) < 5:
-            continue
-        high = float(klines[i][2])
-        low = float(klines[i][3])
-        prev_close = float(klines[i-1][4])
-        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-        true_ranges.append(tr)
-    if len(true_ranges) < period:
-        return 0.0
-    atr = sum(true_ranges[-period:]) / period
-    return round(atr, 2)
-
-
-def calculate_atr_percentile(klines: list, current_atr: float, lookback: int = 20) -> float:
-    """计算当前 ATR 在历史上的百分位"""
-    if not klines or len(klines) < lookback:
-        return 50.0
-    atr_values = []
-    for i in range(lookback, len(klines)):
-        tr_list = []
-        for j in range(i - lookback + 1, i + 1):
-            if j == 0 or len(klines[j]) < 5 or len(klines[j-1]) < 5:
-                continue
-            high = float(klines[j][2])
-            low = float(klines[j][3])
-            prev_close = float(klines[j-1][4])
-            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-            tr_list.append(tr)
-        if len(tr_list) >= 14:
-            atr_values.append(sum(tr_list[-14:]) / 14)
-    if not atr_values:
-        return 50.0
-    count_below = sum(1 for a in atr_values if a < current_atr)
-    percentile = (count_below / len(atr_values)) * 100
-    return round(percentile, 1)

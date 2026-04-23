@@ -4,17 +4,14 @@ from utils.logger import logger
 
 def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     webhook = os.getenv("DINGTALK_WEBHOOK_URL", "")
-    secret = os.getenv("DINGTALK_SECRET", "")
     if not webhook:
         logger.error("未配置钉钉 Webhook")
         return False
-    ts = str(round(time.time() * 1000))
-    if secret and secret.lower() != "none":
-        sign_str = f"{ts}\n{secret}"
-        sign = urllib.parse.quote_plus(base64.b64encode(hmac.new(secret.encode(), sign_str.encode(), hashlib.sha256).digest()))
-        webhook = f"{webhook}&timestamp={ts}&sign={sign}"
+
+    # 因为你没有使用加签，所以不再进行任何签名计算
     try:
-        resp = requests.post(webhook, json={"msgtype": "markdown", "markdown": {"title": title, "text": content}}, timeout=10)
+        payload = {"msgtype": "markdown", "markdown": {"title": title, "text": content}}
+        resp = requests.post(webhook, json=payload, timeout=10)
         if resp.json().get("errcode") == 0:
             logger.info("钉钉推送成功")
             return True

@@ -2,13 +2,27 @@ name: Generate Trading Signal
 
 on:
   schedule:
-    - cron: '55 * * * *'   # 每小时第55分执行
-  workflow_dispatch:       # 允许手动触发
+    - cron: '55 * * * *'          # 每小时第55分钟自动运行
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: '选择分析的币种'
+        required: true
+        type: choice
+        options:
+          - BTC
+          - ETH
+          - BOTH
+        default: 'ETH'
 
 jobs:
-  run-strategy:
+  strategy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      matrix:
+        # 如果是手动触发且选择了BOTH，则矩阵包含BTC和ETH；否则只包含指定币种
+        symbol: ${{ github.event_name == 'schedule' && fromJSON('["BTC", "ETH"]') || (github.event.inputs.symbol == 'BOTH' && fromJSON('["BTC", "ETH"]') || fromJSON(format('["{0}"]', github.event.inputs.symbol))) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -29,5 +43,5 @@ jobs:
           COINGLASS_API_KEY: ${{ secrets.COINGLASS_API_KEY }}
           DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
           DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
-          STRATEGY_SYMBOL: ETH
+          STRATEGY_SYMBOL: ${{ matrix.symbol }}
         run: python main.py

@@ -75,7 +75,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
 期权：P/C比{cross_pc:.4f}、最大痛点{cross_max_pain:.2f}
 """
 
-    prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易，必须根据以下指令进行深度分析，标准格式输出，不得简化或跳过，否则视为无效输出。
+    prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易，必须根据以下指令进行深度分析，犯基本的数据指标解读错误是完全不能接受的，标准格式输出，不得简化或跳过，否则视为无效输出。
 {constraint_note}
 【{symbol} | {timestamp}】
 价格：{current:.2f} | 15min ATR：{data['atr_15m']:.2f} | 1h ATR：{data.get('atr_1h', data['atr_15m']*2):.2f} | 波动因子：{data['vol_factor']:.2f} | 7日分位数：{data['price_percentile']:.0f}%

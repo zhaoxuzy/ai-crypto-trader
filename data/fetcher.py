@@ -142,6 +142,7 @@ class CoinGlassClient:
     def _get_symbol(self, base: str) -> str:
         return f"{base}-USDT-SWAP"
 
+    # ---------- 各数据获取接口 ----------
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
@@ -246,7 +247,6 @@ class CoinGlassClient:
         return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True)
 
     def get_eth_btc_ratio(self) -> dict:
-        """返回 ETH/BTC 汇率的当前值、7日均值、7日分位数"""
         try:
             eth_kline = self.get_kline_history("ETH", "4h", 42)
             btc_kline = self.get_kline_history("BTC", "4h", 42)
@@ -280,12 +280,171 @@ class CoinGlassClient:
             logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
+    # ---------- 核心数据组装 ----------
+    def get_all_data(self, symbol: str = "BTC") -> dict:
+        base_symbol = symbol.upper()
+
+        tasks = {
+            "kline": lambda: self.get_kline_history(base_symbol, "4h", 168),
+            "oi": lambda: self.get_oi_ohlc_history(base_symbol, "4h", 168),
+            "funding": lambda: self.get_weighted_funding_rate_history(base_symbol, "4h", 168),
+            "heatmap": lambda: self.get_liquidation_heatmap(base_symbol),
+            "top_ls": lambda: self.get_top_long_short_ratio_history(base_symbol, "4h", 168),
+            "cvd": lambda: self.get_cvd_history(base_symbol, "1m", 240),
+            "max_pain": lambda: self.get_option_max_pain(base_symbol),
+            "fg": lambda: self.get_fear_and_greed_index(),
+            "netflow": lambda: self.get_netflow(base_symbol),
+            "orderbook": lambda: self.get_orderbook_imbalance(base_symbol),
+            "exchange_btc": lambda: self.get_exchange_btc_balance(),
+            "agg_oi": lambda: self.get_aggregated_oi_history(base_symbol, "4h", 168),
+        }
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_key = {executor.submit(task): key for key, task in tasks.items()}
+            for future in as_completed(future_to_key):
+                key = future_to_key[future]
+                try:
+                    results[key] = future.result()
+                except Exception as e:
+                    logger.error(f"获取 {key} 失败: {e}")
+                    results[key] = None
+
+        eth_btc_data = self.get_eth_btc_ratio()
+        eth_btc_ratio = eth_btc_data.get("current", 0.0)
+        eth_btc_ma_7d = eth_btc_data.get("ma_7d", 0.0)
+        eth_btc_percentile = eth_btc_data.get("percentile_7d", 50.0)
+
+        data_quality = {}
+        for key in tasks.keys():
+            if key == "fg":
+                data_quality["恐慌贪婪指数"] = "✅" if results.get(key) else "⚠️ 回退"
+            elif key == "exchange_btc":
+                data_quality["交易所BTC余额"] = "✅" if results.get(key) else "⚠️ 回退"
+            else:
+                data_quality[key] = "✅" if results.get(key) else "❌ 缺失"
+
+        kline_data = results.get("kline", [])
+        oi_data = results.get("oi", [])
+        funding_data = results.get("funding", [])
+        top_ls_data = results.get("top_ls", [])
+        cvd_data = results.get("cvd", [])
+        heatmap_raw = results.get("heatmap", {})
+        max_pain_data = results.get("max_pain", {})
+        max_pain = max_pain_data.get("max_pain", 0.0)
+        put_call_ratio = max_pain_data.get("put_call_ratio", 0.0)
+        fg_data = results.get("fg", {"current": 50, "prev_7d": 50})
+        netflow = results.get("netflow", 0.0)
+        orderbook = results.get("orderbook", {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0})
+        exchange_btc = results.get("exchange_btc", {"total_btc": 0.0, "change_24h": 0.0})
+        agg_oi_data = results.get("agg_oi", [])
+
+        mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
+        closes = [self._get_close_from_candle(k) for k in kline_data]
+        atr_4h = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
+        avg_atr_7d = sum(self._calc_atr_list(closes, 14)) / len(closes) if closes else 1.0
+        vol_factor = atr_4h / avg_atr_7d if avg_atr_7d > 0 else 1.0
+        price_percentile = self._calc_percentile(kline_data, mark_price)
+        atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
+
+        above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
+        if heatmap_raw:
+            y_axis = heatmap_raw.get("y_axis", [])
+            liq_data = heatmap_raw.get("liquidation_leverage_data", [])
+            pain_map = {}
+            for item in liq_data:
+                if isinstance(item, list) and len(item) >= 3:
+                    price = float(y_axis[int(item[1])]) if int(item[1]) < len(y_axis) else 0
+                    intensity = float(item[2])
+                    if price > mark_price: above_liq += intensity
+                    elif price < mark_price: below_liq += intensity
+                    pain_map[price] = intensity
+            liq_ratio = above_liq / below_liq if below_liq > 0 else 0.0
+            if pain_map:
+                above_prices = [p for p in pain_map if p > mark_price]
+                below_prices = [p for p in pain_map if p < mark_price]
+                if above_prices:
+                    max_above = max(above_prices, key=lambda p: pain_map[p])
+                    above_cluster = f"{max_above*0.99:.0f}-{max_above*1.01:.0f}"
+                if below_prices:
+                    max_below = max(below_prices, key=lambda p: pain_map[p])
+                    below_cluster = f"{max_below*0.99:.0f}-{max_below*1.01:.0f}"
+
+        oi_current = self._get_close_from_candle(oi_data[-1]) if oi_data else 0.0
+        oi_percentile = self._calc_percentile(oi_data, oi_current)
+        oi_change_24h = 0.0
+        if len(oi_data) >= 6:
+            oi_24h_ago = self._get_close_from_candle(oi_data[-6])
+            oi_change_24h = (oi_current - oi_24h_ago) / oi_24h_ago * 100 if oi_24h_ago > 0 else 0.0
+
+        funding_current = self._get_close_from_candle(funding_data[-1]) if funding_data else 0.0
+        funding_percentile = self._calc_percentile(funding_data, funding_current)
+
+        top_ls_current = 0.0
+        if top_ls_data and isinstance(top_ls_data, list) and len(top_ls_data) > 0:
+            latest = top_ls_data[-1]
+            if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
+                top_ls_current = float(latest.get("top_position_long_short_ratio", 0))
+            else:
+                top_ls_current = self._get_close_from_candle(latest)
+        top_ls_percentile = self._calc_percentile(top_ls_data, top_ls_current) if top_ls_data else 50.0
+
+        cvd_series = [self._get_close_from_candle(c) for c in cvd_data] if cvd_data else []
+        cvd_slope = self._calc_slope(cvd_series)
+
+        agg_oi_current = self._get_close_from_candle(agg_oi_data[-1]) if agg_oi_data else 0.0
+        agg_oi_change_24h = 0.0
+        if len(agg_oi_data) >= 6:
+            agg_oi_24h_ago = self._get_close_from_candle(agg_oi_data[-6])
+            agg_oi_change_24h = (agg_oi_current - agg_oi_24h_ago) / agg_oi_24h_ago * 100 if agg_oi_24h_ago > 0 else 0.0
+
+        fear_greed = fg_data.get("current", 50)
+        fear_greed_prev_7d = fg_data.get("prev_7d", 50)
+
+        return {
+            "mark_price": mark_price,
+            "atr": atr_4h,
+            "atr_15m": atr_15m,
+            "vol_factor": vol_factor,
+            "price_percentile": price_percentile,
+            "above_liq": above_liq,
+            "below_liq": below_liq,
+            "liq_ratio": liq_ratio,
+            "above_cluster": above_cluster,
+            "below_cluster": below_cluster,
+            "max_pain": max_pain,
+            "put_call_ratio": put_call_ratio,
+            "top_ls_ratio": top_ls_current,
+            "top_ls_percentile": top_ls_percentile,
+            "funding_rate": funding_current,
+            "funding_percentile": funding_percentile,
+            "oi": oi_current,
+            "oi_percentile": oi_percentile,
+            "oi_change_24h": oi_change_24h,
+            "agg_oi": agg_oi_current,
+            "agg_oi_change_24h": agg_oi_change_24h,
+            "cvd_mean": sum(cvd_series) / len(cvd_series) / 1e6 if cvd_series else 0.0,
+            "cvd_slope": cvd_slope,
+            "fear_greed": fear_greed,
+            "fear_greed_prev_7d": fear_greed_prev_7d,
+            "eth_btc_ratio": eth_btc_ratio,
+            "eth_btc_ma_7d": eth_btc_ma_7d,
+            "eth_btc_percentile": eth_btc_percentile,
+            "netflow": netflow,
+            "orderbook_bids": orderbook.get("bids_usd", 0.0),
+            "orderbook_asks": orderbook.get("asks_usd", 0.0),
+            "orderbook_imbalance": orderbook.get("imbalance", 0.0),
+            "exchange_btc_total": exchange_btc.get("total_btc", 0.0),
+            "exchange_btc_change_24h": exchange_btc.get("change_24h", 0.0),
+            "data_quality": data_quality
+        }
+
     def get_cross_asset_data(self, cross_symbol: str) -> dict:
-        """获取跨币种验证所需的精简数据（约5-6次API请求）"""
+        """获取跨币种验证所需的精简数据"""
         logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
         data = {}
         try:
-            # 1. 清算池热力图（获取上下方清算量）
+            # 1. 清算池热力图
             heatmap = self.get_liquidation_heatmap(cross_symbol)
             if heatmap:
                 mark_price = 0
@@ -293,19 +452,17 @@ class CoinGlassClient:
                 if kline_data:
                     mark_price = self._get_close_from_candle(kline_data[-1])
                 above_liq, below_liq = 0, 0
-                if heatmap:
-                    y_axis = heatmap.get("y_axis", [])
-                    liq_data = heatmap.get("liquidation_leverage_data", [])
-                    for item in liq_data:
-                        if isinstance(item, list) and len(item) >= 3:
-                            price = float(y_axis[int(item[1])]) if int(item[1]) < len(y_axis) else 0
-                            intensity = float(item[2])
-                            if price > mark_price: above_liq += intensity
-                            elif price < mark_price: below_liq += intensity
-                liq_ratio = above_liq / below_liq if below_liq > 0 else 0.0
+                y_axis = heatmap.get("y_axis", [])
+                liq_data = heatmap.get("liquidation_leverage_data", [])
+                for item in liq_data:
+                    if isinstance(item, list) and len(item) >= 3:
+                        price = float(y_axis[int(item[1])]) if int(item[1]) < len(y_axis) else 0
+                        intensity = float(item[2])
+                        if price > mark_price: above_liq += intensity
+                        elif price < mark_price: below_liq += intensity
                 data["above_liq"] = above_liq
                 data["below_liq"] = below_liq
-                data["liq_ratio"] = liq_ratio
+                data["liq_ratio"] = above_liq / below_liq if below_liq > 0 else 0.0
             else:
                 data["above_liq"] = 0
                 data["below_liq"] = 0
@@ -364,14 +521,12 @@ class CoinGlassClient:
             data["put_call_ratio"] = option_data.get("put_call_ratio", 0.0)
             data["max_pain"] = option_data.get("max_pain", 0.0)
 
-            # 7. 现价采用OKX实时价格避免延迟
+            # 7. 现价
             try:
-                from data.fetcher import get_current_price  # 使用同模块函数
                 real_price = get_current_price(f"{cross_symbol}-USDT-SWAP")
                 if real_price > 0:
                     data["mark_price"] = real_price
                 else:
-                    # 如果获取失败，从kline取
                     kline = self.get_kline_history(cross_symbol, "4h", 1)
                     if kline:
                         data["mark_price"] = self._get_close_from_candle(kline[-1])
@@ -384,18 +539,16 @@ class CoinGlassClient:
                 else:
                     data["mark_price"] = 0.0
 
-            logger.info(f"跨币种数据获取完成 {cross_symbol}: {data}")
+            logger.info(f"跨币种数据获取完成 {cross_symbol}")
             return data
 
         except Exception as e:
-            logger.error(f"获取跨币种数据失败 {cross_symbol}: {e}", exc_info=True)
+            logger.error(f"获取跨币种数据失败 {cross_symbol}: {e}")
             return {}
 
 
-# ==================== OKX 辅助函数 ====================
-
+# ---------- OKX 辅助函数 ----------
 def get_current_price(inst_id: str) -> float:
-    """获取合约最新价"""
     try:
         url = f"https://www.okx.com/api/v5/market/ticker?instId={inst_id}"
         resp = requests.get(url, timeout=10)
@@ -410,7 +563,6 @@ def get_current_price(inst_id: str) -> float:
 
 
 def get_klines(inst_id: str, bar: str = "1H", limit: int = 70) -> list:
-    """获取 K 线数据"""
     try:
         url = f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}"
         resp = requests.get(url, timeout=10)

@@ -20,27 +20,16 @@ def main():
         data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
-    # 获取跨币种验证数据
+    # 获取跨币种验证数据（精简版）
+    cross_symbol = "ETH" if symbol == "BTC" else "BTC"
     cross_data = None
-    if symbol == "BTC":
-        cross_symbol = "ETH"
-    elif symbol == "ETH":
-        cross_symbol = "BTC"
-    else:
-        cross_symbol = None
+    try:
+        cross_data = client.get_cross_asset_data(cross_symbol)
+    except Exception as e:
+        logger.warning(f"获取跨币种数据失败：{e}，将跳过第六步验证")
 
-    if cross_symbol:
-        logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
-        try:
-            cross_data = client.get_cross_asset_data(cross_symbol)
-            # 补充跨币种的汇率数据（对于BTC分析ETH时，使用已有eth_btc_ratio即可）
-            # 对于ETH分析BTC，也可以计算BTC/ETH比率，但我们的prompt中只需要ETH/BTC，所以直接用data中的eth_btc_ratio
-        except Exception as e:
-            logger.warning(f"获取跨币种数据失败：{e}，将跳过第六步验证")
-            cross_data = None
-
-    # 构建prompt
-    prompt = build_prompt(data, symbol, cross_data=cross_data)
+    # 构建prompt（跨币种数据传入 eth_data 参数，因为字段兼容）
+    prompt = build_prompt(data, symbol, eth_data=cross_data)
 
     try:
         strategy = call_deepseek(prompt)

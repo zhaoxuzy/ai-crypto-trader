@@ -46,10 +46,10 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     if core_missing:
         constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(core_missing)}。你必须将置信度设为 'low'；若清算数据缺失，则必须输出 'neutral'。\n"
 
-    cross_context = ""
+        cross_context = ""
     if eth_data is not None:
-        crucial_fields = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile', 'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain']
-        if all(eth_data.get(field) is None for field in crucial_fields):
+        # 使用上游传入的完整性标志
+        if not eth_data.get("_complete", False):
             cross_context = "\n【重要：跨币种数据不完整，第六步跨币种验证无法进行，对主逻辑无增强也无削弱。第七步宏裁决必须跳过跨币种对比。】\n"
         else:
             cross_current = eth_data.get('mark_price', 0)

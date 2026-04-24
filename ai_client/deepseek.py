@@ -53,9 +53,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     # === 跨币种数据完整性检查 ===
     cross_context = ""
     if eth_data is not None:
-        # 定义对跨币种验证至关重要的字段
         crucial_fields = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile', 'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain']
-        # 如果所有关键值都为 0 或不存在，则认为数据不完整
         if all(eth_data.get(field, 0) == 0 for field in crucial_fields):
             cross_context = "\n【重要：跨币种数据不完整，第六步跨币种验证无法进行，对主逻辑无增强也无削弱。第七步宏裁决必须跳过跨币种对比。】\n"
         else:
@@ -76,7 +74,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
             cross_context = f"""
 【跨币种辅助验证数据】
 现价：{cross_current:.2f} | ETH/BTC汇率7日分位：{eth_btc_percentile:.0f}%
-清算池：上方{cross_above_liq:.2f}B / 下方{cross_below_liq:.2f}B（比值{cross_liq_ratio:.3f}）
+清算池：上方{cross_above_liq:.2f}B(约{cross_above_liq*10:.0f}亿美元) / 下方{cross_below_liq:.2f}B(约{cross_below_liq*10:.0f}亿美元)（比值{cross_liq_ratio:.3f}）
 情绪：OI分位{cross_oi_pct:.0f}%（24h{cross_oi_change:+.1f}%）、资金费率分位{cross_funding_pct:.0f}%、顶级多空比分位{cross_tls_pct:.0f}%（100%=机构极度看空）
 资金流：CVD斜率{cross_cvd:.4f}（{cross_cvd_dir}）
 期权：P/C比{cross_pc:.4f}、最大痛点{cross_max_pain:.2f}
@@ -85,16 +83,16 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易。
 {constraint_note}
 【{symbol} | {timestamp}】
-价格：{current:.2f} | 15min ATR：{data['atr_15m']:.2f} | 1h ATR：{data.get('atr_1h', data['atr_15m']*2):.2f} | 波动因子：{data['vol_factor']:.2f} | 7日分位数：{data['price_percentile']:.0f}%
+价格：{current:.2f} | 15min ATR：{data['atr_15m']:.2f} | 1h ATR：{data.get('atr_1h', data['atr_15m']*2):.2f} | 1h波动率：{data.get('atr_1h_ratio', 0):.2f}% | 波动因子：{data['vol_factor']:.2f} | 7日分位数：{data['price_percentile']:.0f}%
 
 清算池：
-上方(空头)：{data['above_liq']/1e9:.2f}B，{above_cluster} (距{above_distance})
-下方(多头)：{data['below_liq']/1e9:.2f}B，{below_cluster} (距{below_distance})
+上方(空头)：{data['above_liq']/1e9:.2f}B (约{data['above_liq']/1e7:.0f}亿美元)，{above_cluster} (距{above_distance})
+下方(多头)：{data['below_liq']/1e9:.2f}B (约{data['below_liq']/1e7:.0f}亿美元)，{below_cluster} (距{below_distance})
 比值：{data['liq_ratio']:.3f}
 
 订单簿：买{data['orderbook_bids']/1e6:.1f}M / 卖{data['orderbook_asks']/1e6:.1f}M | 失衡率{data['orderbook_imbalance']:.4f}
 资金费率：{data['funding_rate']:.4f}% (分位{data['funding_percentile']:.0f}%)
-OI：{data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_change_24h']:+.1f}%
+OI：{data['oi']/1e9:.2f}B (约{data['oi']/1e7:.0f}亿美元) (分位{data['oi_percentile']:.0f}%)，24h{data['oi_change_24h']:+.1f}%
 全市场OI：{data['agg_oi']/1e9:.2f}B，24h{data['agg_oi_change_24h']:+.1f}%
 顶级多空比：{data['top_ls_ratio']:.2f} (分位{data['top_ls_percentile']:.0f}%)
 恐慌贪婪：{data['fear_greed']} (7日前{data['fear_greed_prev_7d']})
@@ -111,7 +109,8 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 必须根据以下七步指令以顶尖加密货币交易员角色进行深度分析，犯基本的数据指标解读错误是完全不能接受的，
 ---
 第一步：环境定调
-分析数据：价格7日分位数、15min ATR、1h ATR、波动因子。
+分析数据：价格7日分位数、1h波动率、波动因子。
+【波动率参照】1h波动率<0.2%为低波，0.2%-0.4%为正常，>0.4%为高波。你的判断必须基于此标准。
 第一反应：
 自我质疑：
 最终结论：
@@ -333,7 +332,6 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     if float(s["entry_price_low"]) > float(s["entry_price_high"]):
         return False, "入场区间下限大于上限"
 
-    # 计算实际盈亏比并写入字典，供显示使用
     try:
         entry_low = float(s["entry_price_low"])
         entry_high = float(s["entry_price_high"])
@@ -362,7 +360,6 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     atr_1h = data.get("atr_1h", data.get("atr_15m", 0) * 2) if data else 0
 
     if direction in ("long", "short") and atr_1h > 0:
-        # 1. 检测违禁模式
         first_leg_down = re.search(r'(?:先.*?下[跌挫].*?再.*?上[涨升])|(?:第一段.*?下跌)', reasoning)
         first_leg_up = re.search(r'(?:先.*?上[涨升].*?再.*?下[跌挫])|(?:第一段.*?上涨)', reasoning)
 
@@ -371,13 +368,11 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         if first_leg_up and direction == "short":
             return False, "一致性质检失败: 推演路径先涨后跌，但输出做空，违反短线铁律"
 
-        # 2. 检测明确的矛盾指令
         if "不应做多" in reasoning and direction == "long":
             return False, "一致性质检失败: 推理明确声明不应做多，但输出long"
         if "不应做空" in reasoning and direction == "short":
             return False, "一致性质检失败: 推理明确声明不应做空，但输出short"
 
-    # 3. 方向声明与JSON一致性
     final_decision_match = re.search(r'最终方向[：:]\s*(看涨|看跌|观望)', reasoning)
     if final_decision_match:
         decision_text = final_decision_match.group(1)

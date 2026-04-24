@@ -2,7 +2,7 @@ name: Generate Trading Signal
 
 on:
   schedule:
-    - cron: '55 * * * *'          # 每小时第55分钟自动执行
+    - cron: '58 * * * *'          # 每小时第58分钟自动执行
   workflow_dispatch:
     inputs:
       symbol:
@@ -12,7 +12,6 @@ on:
         options:
           - BTC
           - ETH
-          - BOTH
         default: 'ETH'
 
 jobs:

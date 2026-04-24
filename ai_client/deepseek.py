@@ -17,15 +17,23 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     above_cluster = data.get('above_cluster', 'N/A')
     below_cluster = data.get('below_cluster', 'N/A')
 
+    # 触发距与区底距
+    above_trigger = "N/A"
     above_distance = "N/A"
+    below_trigger = "N/A"
     below_distance = "N/A"
+
     if above_cluster != 'N/A' and '-' in above_cluster:
         parts = above_cluster.split('-')
+        above_low = float(parts[0])
         above_high = float(parts[1])
+        above_trigger = f"+{above_low - current:.0f}"
         above_distance = f"+{above_high - current:.0f}"
     if below_cluster != 'N/A' and '-' in below_cluster:
         parts = below_cluster.split('-')
         below_low = float(parts[0])
+        below_high = float(parts[1])
+        below_trigger = f"-{current - below_high:.0f}"
         below_distance = f"-{current - below_low:.0f}"
 
     data_quality = data.get("data_quality", {})
@@ -46,7 +54,6 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     if core_missing:
         constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(core_missing)}。你必须将置信度设为 'low'；若清算数据缺失，则必须输出 'neutral'。\n"
 
-    # ===== 跨币种辅助数据 =====
     cross_context = ""
     if eth_data is not None:
         if not eth_data.get("_complete", False):
@@ -75,14 +82,17 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
 期权：P/C比{cross_pc:.4f}、最大痛点{cross_max_pain:.2f}
 """
 
-    prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易。
+    prompt = f"""你并不是在完成一个作业。你正在用你自己管理的200万U资金进行真实的交易决策。你的推理是你唯一依赖的依据，你对账户的盈亏负有全责。请完全沉浸在这个角色中，使用第一人称（我）进行所有思考。
+
 {constraint_note}
 【{symbol} | {timestamp}】
 价格：{current:.2f} | 15min ATR：{data['atr_15m']:.2f} | 1h ATR：{data.get('atr_1h', data['atr_15m']*2):.2f} | 1h波动率：{data.get('atr_1h_ratio', 0):.2f}% | 波动因子：{data['vol_factor']:.2f} | 7日分位数：{data['price_percentile']:.0f}%
 
 清算池：
-上方(空头)：{data['above_liq']/1e9:.2f}B (约{data['above_liq']/1e7:.0f}亿美元)，{above_cluster} (距{above_distance})
-下方(多头)：{data['below_liq']/1e9:.2f}B (约{data['below_liq']/1e7:.0f}亿美元)，{below_cluster} (距{below_distance})
+上方(空头)：{data['above_liq']/1e9:.2f}B (约{data['above_liq']/1e7:.0f}亿美元)，{above_cluster}
+  触发距{above_trigger}点 (至下沿)，区底距{above_distance}点 (至上沿)
+下方(多头)：{data['below_liq']/1e9:.2f}B (约{data['below_liq']/1e7:.0f}亿美元)，{below_cluster}
+  触发距{below_trigger}点 (至上沿)，区底距{below_distance}点 (至下沿)
 比值：{data['liq_ratio']:.3f}
 
 订单簿：买{data['orderbook_bids']/1e6:.1f}M / 卖{data['orderbook_asks']/1e6:.1f}M | 失衡率{data['orderbook_imbalance']:.4f}
@@ -98,10 +108,9 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 {cross_context}
 ---
 【硬性约束】
-必须且只能引用上方提供的具体数据，不得编造、估算或使用记忆中的任何数值。所有分析必须基于给定数据，否则输出无效。
-最终回答中的 `reasoning` 字段必须是一个完整的、自包含的推演文本，它必须包含每一步的“分析数据”、“第一反应”、“自我质疑”、“最终结论”子标题及其详细内容，你的思考过程必须显式地写出来，不得简化或跳过。
-必须输出纯文本格式，不得添加任何表情符号或特殊字符，不得以摘要或简写形式输出。
-必须根据以下七步指令以顶尖加密货币交易员角色进行深度分析，犯基本的数据指标解读错误是完全不能接受的，
+1. 必须且只能引用上方提供的具体数据，不得编造、估算或使用记忆中的任何数值。
+2. 你的 `reasoning` 推理过程必须是完整的，必须显式地包含每一步的“分析数据”、“第一反应”、“自我质疑”、“最终结论”，你的思考过程必须显式地写出来，不得跳过或简化。
+
 ---
 第一步：环境定调
 分析数据：价格7日分位数、1h波动率、波动因子。
@@ -111,6 +120,8 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 
 第二步：猎物定位
 分析数据：上下方清算池距离/强度、比值、订单簿买卖盘量、失衡率。
+【猎物定位规则】“猎物距离”必须使用触发距，而非区底距。价格触碰清算区上沿（多头池）或下沿（空头池）即可开始触发清算。你在预估第一段运动幅度时，必须以触发距为基准进行浮动估计。
+【幅度预估规则】第一段运动预估幅度 = 触发距 + 惯性滑点，其中惯性滑点 = 1 × 15min ATR（上限）。你必须明确写出计算过程：触发距[XX] + 惯性滑点[XX] = [XX]点。
 第一反应：
 自我质疑：
 最终结论：
@@ -142,16 +153,17 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 第一反应：
 自我质疑：
 最终结论：
+【跨币种反馈】基于以上对比，我的（BTC/ETH）单币种结论被如何修正？有无新增风险点？如果有，我必须回到第三步或第五步的自我质疑中重新审视。
 
 第七步：矛盾裁决与决策
 请基于前六步的所有数据和结论，独立做出最终交易决策。
 
 你需要：
 1. 指出前六步中最强的看涨信号和最强的看跌信号。
-2. 解释你如何权衡这些矛盾信号——为什么你选择相信某些信号，而压低另一些信号的权重。
-3. 明确写出你的核心假设——你判断方向的核心逻辑链是什么。
-4. 给出证伪条件——必须包含一个具体的、基于价格行为的证伪条件（例如：价格以1小时K线收盘价站上/跌破某个具体点位），一旦触发，你的核心假设即被推翻，你必须立即暂停原计划。
-5. 输出最终方向、置信度、仓位。
+2. 为关键决策因子分配权重（合计100%），并简要说明在当前市况下为何如此分配（如震荡市重支撑阻力，趋势市重动量）。
+3. 解释你如何权衡这些矛盾信号——为什么你选择相信某些信号，而压低另一些信号的权重。
+4. 明确写出你的核心假设——你判断方向的核心逻辑链是什么。
+5. 给出证伪条件——必须包含至少两个元素：（1）价格行为（如1小时K线收盘价站上/跌破某个具体点位），（2）同时发生的资金流或订单簿确认（如CVD斜率转向、订单簿失衡率反转）。单靠价格突破不足以立即推翻，必须看到跟随确认。
 
 【短线交易原则】
 你的交易方向应与价格推演中最先发生的显著运动同向。若你的方向与第一段运动相反，你必须选择观望或顺应第一段运动的方向。
@@ -163,6 +175,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 2. 我在哪一步的“自我质疑”中发现了后来被证实为关键的风险点？
 3. 如果我错了，最可能是在哪一步的假设上栽了跟头？
 4. 我是否遵守了【短线交易原则】？若方向与第一段运动相反，我是否已改为观望或顺势？
+5. 我是否过于武断地压低了某个反向信号的权重？如果该反向信号最终被证明是正确的，我会犯下怎样的错误？
 
 入场区间（说明依据）：
 止损位（说明依据）：
@@ -174,7 +187,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
     "final_direction": "看涨/看跌/观望",
     "first_leg_direction": "上涨/下跌",
     "first_leg_magnitude": 0.0,
-    "effective_threshold": 0.0,
+    "effective_threshold": 0.0,  // 注明计算：max(0.8 * 1h_ATR, price * 0.05%)
     "chosen_action": "短线做多/短线做空/观望"
   }},
   "direction": "long/short/neutral",

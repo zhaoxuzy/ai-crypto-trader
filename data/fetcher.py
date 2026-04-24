@@ -347,8 +347,8 @@ class CoinGlassClient:
         price_percentile = self._calc_percentile(kline_data, mark_price)
         atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
 
-        # 修复：直接基于本地变量计算 atr_1h 和 atr_1h_ratio
-        atr_1h_val = atr_4h * 0.5  # 4小时ATR的一半近似1小时ATR
+        # 1h ATR 估算
+        atr_1h_val = atr_4h * 0.5
         atr_1h_ratio = (atr_1h_val / mark_price) * 100 if mark_price > 0 else 0.0
 
         above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
@@ -446,7 +446,6 @@ class CoinGlassClient:
         }
 
     def get_cross_asset_data(self, cross_symbol: str) -> dict:
-        """获取跨币种验证所需的精简数据"""
         logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
         data = {}
         try:
@@ -545,28 +544,18 @@ class CoinGlassClient:
                 else:
                     data["mark_price"] = 0.0
 
-            logger.info(f"跨币种数据获取完成 {cross_symbol}")
+            # 显式完整性标志
+            required_keys = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile',
+                             'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain', 'mark_price']
+            complete = all(data.get(k) is not None for k in required_keys)
+            data["_complete"] = complete
+
+            logger.info(f"跨币种数据获取完成 {cross_symbol}，完整性: {complete}")
             return data
 
         except Exception as e:
             logger.error(f"获取跨币种数据失败 {cross_symbol}: {e}")
-                # ... 前面的数据获取代码保持不变 ...
-
-    # ******** 新增：显式完整性标志 ********
-    # 检查所有关键字段是否有效获取（非None，且不为空）
-    complete = True
-    required_keys = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile', 
-                     'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain', 'mark_price']
-    for k in required_keys:
-        if data.get(k) is None or data.get(k) == 0:  # 注意：0值也视为未成功获取
-            complete = False
-            break
-    data["_complete"] = complete
-    # **********************************************
-    
-    logger.info(f"跨币种数据获取完成 {cross_symbol}，完整性: {complete}")
-    return data
-            return {}
+            return {"_complete": False}
 
 
 # ---------- OKX 辅助函数 ----------

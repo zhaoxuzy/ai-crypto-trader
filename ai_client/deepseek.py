@@ -50,23 +50,30 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     if core_missing:
         constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(core_missing)}。你必须将置信度设为 'low'；若清算数据缺失，则必须输出 'neutral'。\n"
 
+    # === 跨币种数据完整性检查 ===
     cross_context = ""
     if eth_data is not None:
-        cross_current = eth_data.get('mark_price', 0)
-        cross_above_liq = eth_data.get('above_liq', 0) / 1e9
-        cross_below_liq = eth_data.get('below_liq', 0) / 1e9
-        cross_liq_ratio = eth_data.get('liq_ratio', 0)
-        cross_oi_pct = eth_data.get('oi_percentile', 50)
-        cross_oi_change = eth_data.get('oi_change_24h', 0)
-        cross_funding_pct = eth_data.get('funding_percentile', 50)
-        cross_tls_pct = eth_data.get('top_ls_percentile', 50)
-        cross_cvd = eth_data.get('cvd_slope', 0)
-        cross_pc = eth_data.get('put_call_ratio', 0)
-        cross_max_pain = eth_data.get('max_pain', 0)
+        # 定义对跨币种验证至关重要的字段
+        crucial_fields = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile', 'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain']
+        # 如果所有关键值都为 0 或不存在，则认为数据不完整
+        if all(eth_data.get(field, 0) == 0 for field in crucial_fields):
+            cross_context = "\n【重要：跨币种数据不完整，第六步跨币种验证无法进行，对主逻辑无增强也无削弱。第七步宏裁决必须跳过跨币种对比。】\n"
+        else:
+            cross_current = eth_data.get('mark_price', 0)
+            cross_above_liq = eth_data.get('above_liq', 0) / 1e9
+            cross_below_liq = eth_data.get('below_liq', 0) / 1e9
+            cross_liq_ratio = eth_data.get('liq_ratio', 0)
+            cross_oi_pct = eth_data.get('oi_percentile', 50)
+            cross_oi_change = eth_data.get('oi_change_24h', 0)
+            cross_funding_pct = eth_data.get('funding_percentile', 50)
+            cross_tls_pct = eth_data.get('top_ls_percentile', 50)
+            cross_cvd = eth_data.get('cvd_slope', 0)
+            cross_pc = eth_data.get('put_call_ratio', 0)
+            cross_max_pain = eth_data.get('max_pain', 0)
 
-        cross_cvd_dir = "正（买盘）" if cross_cvd > 0 else "负（卖盘）"
+            cross_cvd_dir = "正（买盘）" if cross_cvd > 0 else "负（卖盘）"
 
-        cross_context = f"""
+            cross_context = f"""
 【跨币种辅助验证数据】
 现价：{cross_current:.2f} | ETH/BTC汇率7日分位：{eth_btc_percentile:.0f}%
 清算池：上方{cross_above_liq:.2f}B / 下方{cross_below_liq:.2f}B（比值{cross_liq_ratio:.3f}）
@@ -98,10 +105,10 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 {cross_context}
 ---
 【硬性约束】
-最终回答中的 `reasoning` 字段必须是一个完整的、自包含的推演文本，它必须包含每一步的“分析数据”、“第一反应”、“自我质疑”、“最终结论”子标题及其详细内容。
-必须输出纯文本格式，不得添加任何表情或特殊字符（但**符号可用），不得以摘要或简写形式输出。
-你的思考过程必须显式地写出来，不得简化或跳过。
-必须根据以下七步指令进行深度分析，犯基本的数据指标解读错误是完全不能接受的，
+必须且只能引用上方提供的具体数据，不得编造、估算或使用记忆中的任何数值。所有分析必须基于给定数据，否则输出无效。
+最终回答中的 `reasoning` 字段必须是一个完整的、自包含的推演文本，它必须包含每一步的“分析数据”、“第一反应”、“自我质疑”、“最终结论”子标题及其详细内容，你的思考过程必须显式地写出来，不得简化或跳过。
+必须输出纯文本格式，不得添加任何表情符号或特殊字符，不得以摘要或简写形式输出。
+必须根据以下七步指令以顶尖加密货币交易员角色进行深度分析，犯基本的数据指标解读错误是完全不能接受的，
 ---
 第一步：环境定调
 分析数据：价格7日分位数、15min ATR、1h ATR、波动因子。
@@ -272,7 +279,7 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
             resp = client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=6000,
+                max_tokens=8192,
                 timeout=TIMEOUT_SECONDS
             )
             content = resp.choices[0].message.content or ""
@@ -349,5 +356,33 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     except Exception as e:
         logger.warning(f"计算盈亏比时出错: {e}")
         s["_calculated_rr"] = None
+
+    # ==================== 新增强制一致性校验 ====================
+    reasoning = s.get("reasoning", "")
+    atr_1h = data.get("atr_1h", data.get("atr_15m", 0) * 2) if data else 0
+
+    if direction in ("long", "short") and atr_1h > 0:
+        # 1. 检测违禁模式
+        first_leg_down = re.search(r'(?:先.*?下[跌挫].*?再.*?上[涨升])|(?:第一段.*?下跌)', reasoning)
+        first_leg_up = re.search(r'(?:先.*?上[涨升].*?再.*?下[跌挫])|(?:第一段.*?上涨)', reasoning)
+
+        if first_leg_down and direction == "long":
+            return False, "一致性质检失败: 推演路径先跌后涨，但输出做多，违反短线铁律"
+        if first_leg_up and direction == "short":
+            return False, "一致性质检失败: 推演路径先涨后跌，但输出做空，违反短线铁律"
+
+        # 2. 检测明确的矛盾指令
+        if "不应做多" in reasoning and direction == "long":
+            return False, "一致性质检失败: 推理明确声明不应做多，但输出long"
+        if "不应做空" in reasoning and direction == "short":
+            return False, "一致性质检失败: 推理明确声明不应做空，但输出short"
+
+    # 3. 方向声明与JSON一致性
+    final_decision_match = re.search(r'最终方向[：:]\s*(看涨|看跌|观望)', reasoning)
+    if final_decision_match:
+        decision_text = final_decision_match.group(1)
+        inferred = {"看涨": "long", "做多": "long", "看跌": "short", "做空": "short", "观望": "neutral"}.get(decision_text)
+        if inferred and inferred != direction:
+            return False, f"一致性质检失败: 推理最终方向为{decision_text}({inferred})，但JSON输出为{direction}"
 
     return True, ""

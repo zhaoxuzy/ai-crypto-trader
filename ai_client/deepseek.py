@@ -308,7 +308,7 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
         try:
             logger.info(f"DeepSeek 调用 (尝试 {attempt+1}/{max_retries})")
             resp = client.chat.completions.create(
-                model="deepseek-chat",
+                model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=8192,
                 timeout=TIMEOUT_SECONDS

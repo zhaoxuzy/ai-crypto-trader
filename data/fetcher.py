@@ -58,8 +58,9 @@ class CoinGlassClient:
                             msg = f"CoinGlass API 错误: {data.get('msg', data)}"
                             last_error = msg
                             if attempt < max_retries - 1:
-                                if "rate limit" in str(msg).lower():
-                                    wait_time = 10 * (attempt + 1)
+                               if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
+                                 # 计算距离下一个整分钟的秒数，再加2秒缓冲，最多等62秒
+                                 wait_time = min(60 - (time.time() % 60) + 2, 62)
                                 else:
                                     wait_time = 2 ** (attempt + 1)
                                 logger.warning(f"{msg}，{wait_time}秒后重试...")

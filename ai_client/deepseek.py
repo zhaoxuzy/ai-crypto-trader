@@ -101,7 +101,12 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
 上方(空头)：{data['above_liq']/1e9:.2f}B (约{data['above_liq']/1e7:.0f}亿美元)，{above_cluster} (距{above_distance})
 下方(多头)：{data['below_liq']/1e9:.2f}B (约{data['below_liq']/1e7:.0f}亿美元)，{below_cluster} (距{below_distance})
 比值：{data['liq_ratio']:.3f}
-
+【清算区概念强制解释】
+- 上方清算区下沿 = 上方空头开始被强制平仓的最低价格。现价到该位置的距离 = {above_distance}点。
+- 上方清算区上沿 = 该清算区的最高价格。
+- 下方清算区上沿 = 下方多头开始被强制平仓的最高价格。现价到该位置的距离 = 你需要自行根据区间计算（现价 - 下方清算区上沿）。
+- 下方清算区下沿 = 该清算区的最低价格。
+- 价格只要触碰到“上沿”或“下沿”，就会开始触发该侧的清算。你在讨论“触达流动性”时，必须明确指代的是哪个沿，并正确计算距离。
 订单簿：买{data['orderbook_bids']/1e6:.1f}M / 卖{data['orderbook_asks']/1e6:.1f}M | 失衡率{data['orderbook_imbalance']:.4f}
 资金费率：{data['funding_rate']:.4f}% (分位{data['funding_percentile']:.0f}%)
 OI：{data['oi']/1e9:.2f}B (约{data['oi']/1e7:.0f}亿美元) (分位{data['oi_percentile']:.0f}%)，24h{data['oi_change_24h']:+.1f}%
@@ -129,6 +134,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 
 第二步：猎物定位
 分析数据：上下方清算池距离/强度、比值、订单簿买卖盘量、失衡率。
+【距离计算强制规则】你必须使用现价与清算区“上沿”（对于下方清算区）或“下沿”（对于上方清算区）的距离作为“触发距离”，并在推理中明确写出该计算。严禁将现价到清算区下沿的距离作为首要判定依据。
 【幻觉提示】禁止直接复述清算池或未平仓合约的原始绝对数值（如“1462.86B”或“1147.50B”），你只能使用相对关系来描述，你可以且应当引用已计算好的距离、比值、分位数、百分比等派生指标。例如：
 - “上方清算池规模远大于下方（比值1.275）”
 - “下方清算池距离更近（-55点 vs +155点），且强度相当”

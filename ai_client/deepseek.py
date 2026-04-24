@@ -50,13 +50,25 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     if core_missing:
         constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(core_missing)}。你必须将置信度设为 'low'；若清算数据缺失，则必须输出 'neutral'。\n"
 
-    # === 跨币种数据完整性检查 ===
+       # === 跨币种数据完整性检查（改用显式标志位） ===
     cross_context = ""
-    if eth_data is not None:
-        crucial_fields = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile', 'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain']
-        if all(eth_data.get(field, 0) == 0 for field in crucial_fields):
-            cross_context = "\n【重要：跨币种数据不完整，第六步跨币种验证无法进行，对主逻辑无增强也无削弱。第七步宏裁决必须跳过跨币种对比。】\n"
-        else:
+    
+    # 显式标志：只要这些关键字段中有一个为 None 或不存在，就认为数据不完整
+    CROSS_CRUCIAL_FIELDS = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile', 'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain']
+    
+    is_cross_data_valid = True
+    if eth_data is None:
+        is_cross_data_valid = False
+    else:
+        for field in CROSS_CRUCIAL_FIELDS:
+            if eth_data.get(field) is None:
+                is_cross_data_valid = False
+                break
+    
+    if not is_cross_data_valid:
+        cross_context = "\n【重要：跨币种数据不完整，第六步跨币种验证无法进行，对主逻辑无增强也无削弱。第七步宏裁决必须跳过跨币种对比。】\n"
+    else:
+        # ... 原有的数据格式化逻辑保持不变 ...
             cross_current = eth_data.get('mark_price', 0)
             cross_above_liq = eth_data.get('above_liq', 0) / 1e9
             cross_below_liq = eth_data.get('below_liq', 0) / 1e9
@@ -314,7 +326,34 @@ def round_to_tick(price: float) -> float:
 
 
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
+    # ==================== 新增：核心数据缺失强制覆盖 ====================
+    if data:
+        # 检查清算数据是否双缺（上方和下方都为0或不存在）
+        above_liq = data.get('above_liq', 0)
+        below_liq = data.get('below_liq', 0)
+        if above_liq <= 0 and below_liq <= 0:
+            s["direction"] = "neutral"
+            s["confidence"] = "low"
+            s["entry_price_low"] = 0
+            s["entry_price_high"] = 0
+            s["stop_loss"] = 0
+            s["take_profit"] = 0
+            logger.warning("核心数据缺失(清算数据双缺)，已强制输出 neutral")
+            # 不直接返回，继续执行其他校验（中性信号的校验会通过）
+        
+        # 检查其他核心字段是否缺失
+        critical_missing = []
+        if data.get("atr_15m", 0) <= 0:
+            critical_missing.append("atr_15m")
+        if data.get("cvd_slope") is None:
+            critical_missing.append("cvd_slope")
+        
+        if critical_missing and s.get("confidence") == "high":
+            s["confidence"] = "medium"
+            logger.warning(f"核心数据缺失 {critical_missing}，置信度强制降级为 medium")
+    # ====================================================================
     direction = s.get("direction")
+    # ... 后续原有校验逻辑保持不变 ...
     if direction not in ["long", "short", "neutral"]:
         return False, f"无效方向: {direction}"
 

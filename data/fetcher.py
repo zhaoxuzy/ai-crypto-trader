@@ -59,7 +59,6 @@ class CoinGlassClient:
                             last_error = msg
                             if attempt < max_retries - 1:
                                 if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
-                                    # 动态计算距离下一个整分钟的秒数，加2秒缓冲，最多等62秒
                                     wait_time = min(60 - (time.time() % 60) + 2, 62)
                                     logger.warning(f"{msg}，等待 {wait_time:.0f} 秒到下一个分钟窗口后重试...")
                                 else:
@@ -348,12 +347,8 @@ class CoinGlassClient:
         price_percentile = self._calc_percentile(kline_data, mark_price)
         atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
 
-        # 新增：1小时ATR比率（用于波动率参照）
-        atr_1h_val = data.get('atr_1h', atr_15m * 2) if isinstance(data, dict) else atr_15m * 2
-        # 从kline数据计算1h ATR会更准确，但这里暂时采用传入的atr_1h或估算
-        # 如果外部没有传入atr_1h，我们也可以使用atr_4h * 0.5 来近似
-        if not isinstance(data, dict) or 'atr_1h' not in data:
-            atr_1h_val = atr_4h * 0.5  # 4小时ATR的一半近似1小时ATR
+        # 修复：直接基于本地变量计算 atr_1h 和 atr_1h_ratio
+        atr_1h_val = atr_4h * 0.5  # 4小时ATR的一半近似1小时ATR
         atr_1h_ratio = (atr_1h_val / mark_price) * 100 if mark_price > 0 else 0.0
 
         above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0

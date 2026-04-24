@@ -6,14 +6,10 @@ from datetime import datetime
 from openai import OpenAI
 from utils.logger import logger
 
-
-# ==================== 配置参数 ====================
 TICK_SIZE = 0.1
 MAX_RETRIES = 2
 RETRY_BASE_WAIT = 2
 TIMEOUT_SECONDS = 180
-# =================================================
-
 
 def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     timestamp = data.get("timestamp", "N/A")
@@ -50,25 +46,12 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     if core_missing:
         constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(core_missing)}。你必须将置信度设为 'low'；若清算数据缺失，则必须输出 'neutral'。\n"
 
-       # === 跨币种数据完整性检查（改用显式标志位） ===
     cross_context = ""
-    
-    # 显式标志：只要这些关键字段中有一个为 None 或不存在，就认为数据不完整
-    CROSS_CRUCIAL_FIELDS = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile', 'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain']
-    
-    is_cross_data_valid = True
-    if eth_data is None:
-        is_cross_data_valid = False
-    else:
-        for field in CROSS_CRUCIAL_FIELDS:
-            if eth_data.get(field) is None:
-                is_cross_data_valid = False
-                break
-    
-    if not is_cross_data_valid:
-        cross_context = "\n【重要：跨币种数据不完整，第六步跨币种验证无法进行，对主逻辑无增强也无削弱。第七步宏裁决必须跳过跨币种对比。】\n"
-    else:
-        # ... 原有的数据格式化逻辑保持不变 ...
+    if eth_data is not None:
+        crucial_fields = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile', 'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain']
+        if all(eth_data.get(field) is None for field in crucial_fields):
+            cross_context = "\n【重要：跨币种数据不完整，第六步跨币种验证无法进行，对主逻辑无增强也无削弱。第七步宏裁决必须跳过跨币种对比。】\n"
+        else:
             cross_current = eth_data.get('mark_price', 0)
             cross_above_liq = eth_data.get('above_liq', 0) / 1e9
             cross_below_liq = eth_data.get('below_liq', 0) / 1e9
@@ -101,12 +84,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
 上方(空头)：{data['above_liq']/1e9:.2f}B (约{data['above_liq']/1e7:.0f}亿美元)，{above_cluster} (距{above_distance})
 下方(多头)：{data['below_liq']/1e9:.2f}B (约{data['below_liq']/1e7:.0f}亿美元)，{below_cluster} (距{below_distance})
 比值：{data['liq_ratio']:.3f}
-【清算区概念强制解释】
-- 上方清算区下沿 = 上方空头开始被强制平仓的最低价格。现价到该位置的距离 = {above_distance}点。
-- 上方清算区上沿 = 该清算区的最高价格。
-- 下方清算区上沿 = 下方多头开始被强制平仓的最高价格。现价到该位置的距离 = 你需要自行根据区间计算（现价 - 下方清算区上沿）。
-- 下方清算区下沿 = 该清算区的最低价格。
-- 价格只要触碰到“上沿”或“下沿”，就会开始触发该侧的清算。你在讨论“触达流动性”时，必须明确指代的是哪个沿，并正确计算距离。
+
 订单簿：买{data['orderbook_bids']/1e6:.1f}M / 卖{data['orderbook_asks']/1e6:.1f}M | 失衡率{data['orderbook_imbalance']:.4f}
 资金费率：{data['funding_rate']:.4f}% (分位{data['funding_percentile']:.0f}%)
 OI：{data['oi']/1e9:.2f}B (约{data['oi']/1e7:.0f}亿美元) (分位{data['oi_percentile']:.0f}%)，24h{data['oi_change_24h']:+.1f}%
@@ -134,11 +112,6 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 
 第二步：猎物定位
 分析数据：上下方清算池距离/强度、比值、订单簿买卖盘量、失衡率。
-【距离计算强制规则】你必须使用现价与清算区“上沿”（对于下方清算区）或“下沿”（对于上方清算区）的距离作为“触发距离”，并在推理中明确写出该计算。严禁将现价到清算区下沿的距离作为首要判定依据。
-【幻觉提示】禁止直接复述清算池或未平仓合约的原始绝对数值（如“1462.86B”或“1147.50B”），你只能使用相对关系来描述，你可以且应当引用已计算好的距离、比值、分位数、百分比等派生指标。例如：
-- “上方清算池规模远大于下方（比值1.275）”
-- “下方清算池距离更近（-55点 vs +155点），且强度相当”
-- “OI规模处于历史高分位（83%），且仍在增加”
 第一反应：
 自我质疑：
 最终结论：
@@ -210,29 +183,24 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 根据你的价格推演，你必须严格执行以下决策树，不得跳过：
 1.  确定第一段运动方向： 价格将先 上涨 / 下跌（选择其一）
 2.  计算第一段运动的预估幅度：_____ 点
-3.  计算有效阈值：_____ 点
-    计算规则：取 (当前1小时ATR × 0.8) 与 (当前价格 × 0.05%) 的较大值作为有效阈值。
-    原因：在低波动市场下，ATR × 0.8 可能过小，导致任何微小波动都触发纪律。
-    用价格百分比作为下限，可确保只有真正显著的波动才会触发决策树。
+3.  有效阈值计算：
+    步骤A：计算 ATR阈值 = 当前1小时ATR × 0.8 = _____ 点
+    步骤B：计算 价格百分比下限 = 当前价格 × 0.05% = _____ 点
+    步骤C：取两者较大值作为有效阈值 = _____ 点
 4.  决策：
-    - 若第一段运动幅度 < 阈值，则方向不受此纪律强制，可自由选择。
-    - 若第一段运动幅度 ≥ 阈值，且方向为下跌，则你只能选择： 短线做空 / 观望 + 挂单
-    - 若第一段运动幅度 ≥ 阈值，且方向为上涨，则你只能选择： 短线做多 / 观望 + 挂单
+    - 若第一段运动幅度 < 有效阈值，则方向不受此纪律强制，可自由选择。
+    - 若第一段运动幅度 ≥ 有效阈值，且方向为下跌，则你只能选择： 短线做空 / 观望 + 挂单
+    - 若第一段运动幅度 ≥ 有效阈值，且方向为上涨，则你只能选择： 短线做多 / 观望 + 挂单
     - **绝对不能跨过第一段反向操作！** 若你想操作的方向与第一段运动相反，你必须输出“观望”！
 5.  你的选择： （填写：短线做多 / 短线做空 / 观望）
-
-【最终决策锁——输出JSON前必须完成】
-在输出JSON之前，你必须先完整确认以下内容，格式如下：
-1. 我的价格推演第一段运动方向是：[上涨/下跌]
-2. 第一段运动预估幅度：[XX]点，有效阈值：[YY]点（已取0.8×1h ATR与现价×0.05%的较大值）
-3. 纪律判定：幅度[≥/<]阈值，且方向为[下跌/上涨]，因此我的强制选择为：[短线做空/短线做多/观望]
-4. JSON映射：我将把此选择映射为 `direction` 字段，值为 `[long/short/neutral]`
-5. 一致性自检：我的 `direction` 值与纪律判定是否严格一致？若否，必须在此步立即纠正JSON映射。
-只有在完成上述选择后，你才能输出最终的JSON（不要代码块），并附上完整的推演过程。
 
 ---
 最终输出标准格式
 最终裁决：
+· 触发一致性检验：是/否
+· (若触发)矛盾根源：[简述BTC与ETH在哪个关键信号上出现分歧]
+· (若触发)宏观环境裁决：判定为 Risk-On / Risk-Off，核心理由：[结合CVD、ETH/BTC汇率、恐慌贪婪指数进行阐述]
+· (若触发)一致性裁决声明：“经过一致性裁决，在宏观环境判定为[Risk-On/Risk-Off]的背景下，我放弃了原[币种]的[原方向]方向，将所有相关币种方向统一为[最终方向]。”
 · 最终方向：看涨 / 看跌 / 观望
 · 核心假设：[列出一两个核心假设]
 · 证伪条件：[明确列出盘中会推翻此决策的具体现象或数据]
@@ -252,6 +220,13 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 主动证伪信号：
 微观盘口确认：
 {{
+  "decision_summary": {{
+    "final_direction": "看涨/看跌/观望",
+    "first_leg_direction": "上涨/下跌",
+    "first_leg_magnitude": 0.0,
+    "effective_threshold": 0.0,
+    "chosen_action": "短线做多/短线做空/观望"
+  }},
   "direction": "long/short/neutral",
   "confidence": "high/medium/low",
   "position_size": "light/medium/heavy/none",
@@ -266,7 +241,6 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 """
     return prompt
 
-
 def _log_response(prompt: str, content: str, reasoning: str = None):
     try:
         os.makedirs("logs", exist_ok=True)
@@ -275,7 +249,6 @@ def _log_response(prompt: str, content: str, reasoning: str = None):
             json.dump({"prompt": prompt, "content": content, "reasoning": reasoning}, f, ensure_ascii=False, indent=2)
     except:
         pass
-
 
 def extract_json(content: str) -> str:
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
@@ -297,11 +270,10 @@ def extract_json(content: str) -> str:
                 return content[start:i+1].strip()
     raise ValueError("JSON 未闭合")
 
-
 def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
     client = OpenAI(
         api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url="https://api.deepseek.com/v1",
+        base_url="https://api.deepseek.com",
         timeout=TIMEOUT_SECONDS
     )
     for attempt in range(max_retries):
@@ -313,7 +285,6 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
                 max_tokens=8192,
                 timeout=TIMEOUT_SECONDS
             )
-            # 在 resp = client.chat.completions.create(...) 之后添加
             logger.info(f"实际调用的模型: {resp.model}")
             content = resp.choices[0].message.content or ""
             reasoning = getattr(resp.choices[0].message, 'reasoning_content', None)
@@ -342,40 +313,23 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
                 raise
     return {}
 
-
 def round_to_tick(price: float) -> float:
     return round(price / TICK_SIZE) * TICK_SIZE
 
+def _force_neutral(s: dict, reason: str):
+    s["direction"] = "neutral"
+    s["confidence"] = "low"
+    s["position_size"] = "none"
+    s["entry_price_low"] = 0
+    s["entry_price_high"] = 0
+    s["stop_loss"] = 0
+    s["take_profit"] = 0
+    s["execution_plan"] = ""
+    s["reasoning"] += f"\n\n[系统自动干预] 原始信号因违反短线铁律被强制改为观望。原因：{reason}"
+    s["risk_note"] = f"[系统干预] 原始方向因违反短线铁律被强制改为观望。原始风险说明：{s.get('risk_note', '')}"
 
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
-    # ==================== 新增：核心数据缺失强制覆盖 ====================
-    if data:
-        # 检查清算数据是否双缺（上方和下方都为0或不存在）
-        above_liq = data.get('above_liq', 0)
-        below_liq = data.get('below_liq', 0)
-        if above_liq <= 0 and below_liq <= 0:
-            s["direction"] = "neutral"
-            s["confidence"] = "low"
-            s["entry_price_low"] = 0
-            s["entry_price_high"] = 0
-            s["stop_loss"] = 0
-            s["take_profit"] = 0
-            logger.warning("核心数据缺失(清算数据双缺)，已强制输出 neutral")
-            # 不直接返回，继续执行其他校验（中性信号的校验会通过）
-        
-        # 检查其他核心字段是否缺失
-        critical_missing = []
-        if data.get("atr_15m", 0) <= 0:
-            critical_missing.append("atr_15m")
-        if data.get("cvd_slope") is None:
-            critical_missing.append("cvd_slope")
-        
-        if critical_missing and s.get("confidence") == "high":
-            s["confidence"] = "medium"
-            logger.warning(f"核心数据缺失 {critical_missing}，置信度强制降级为 medium")
-    # ====================================================================
     direction = s.get("direction")
-    # ... 后续原有校验逻辑保持不变 ...
     if direction not in ["long", "short", "neutral"]:
         return False, f"无效方向: {direction}"
 
@@ -416,7 +370,30 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         logger.warning(f"计算盈亏比时出错: {e}")
         s["_calculated_rr"] = None
 
-    # ==================== 新增强制一致性校验 ====================
+    # decision_summary 校验
+    summary = s.get("decision_summary", {})
+    if summary:
+        final_dir = summary.get("final_direction", "")
+        first_leg = summary.get("first_leg_direction", "")
+        
+        if final_dir == "看涨" and direction != "long":
+            _force_neutral(s, f"decision_summary最终方向为看涨，但direction为{direction}")
+            return True, "已自动修正为观望"
+        if final_dir == "看跌" and direction != "short":
+            _force_neutral(s, f"decision_summary最终方向为看跌，但direction为{direction}")
+            return True, "已自动修正为观望"
+        if final_dir == "观望" and direction != "neutral":
+            _force_neutral(s, f"decision_summary最终方向为观望，但direction为{direction}")
+            return True, "已自动修正为观望"
+        
+        if first_leg == "下跌" and direction == "long":
+            _force_neutral(s, "第一段运动为下跌，但输出做多，违反短线铁律")
+            return True, "已自动修正为观望"
+        if first_leg == "上涨" and direction == "short":
+            _force_neutral(s, "第一段运动为上涨，但输出做空，违反短线铁律")
+            return True, "已自动修正为观望"
+
+    # 一致性校验 (原有的推演路径检查)
     reasoning = s.get("reasoning", "")
     atr_1h = data.get("atr_1h", data.get("atr_15m", 0) * 2) if data else 0
 
@@ -425,20 +402,25 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         first_leg_up = re.search(r'(?:先.*?上[涨升].*?再.*?下[跌挫])|(?:第一段.*?上涨)', reasoning)
 
         if first_leg_down and direction == "long":
-            return False, "一致性质检失败: 推演路径先跌后涨，但输出做多，违反短线铁律"
+            _force_neutral(s, "推演路径先跌后涨，但输出做多，违反短线铁律")
+            return True, "已自动修正为观望"
         if first_leg_up and direction == "short":
-            return False, "一致性质检失败: 推演路径先涨后跌，但输出做空，违反短线铁律"
+            _force_neutral(s, "推演路径先涨后跌，但输出做空，违反短线铁律")
+            return True, "已自动修正为观望"
 
         if "不应做多" in reasoning and direction == "long":
-            return False, "一致性质检失败: 推理明确声明不应做多，但输出long"
+            _force_neutral(s, "推理明确声明不应做多，但输出long")
+            return True, "已自动修正为观望"
         if "不应做空" in reasoning and direction == "short":
-            return False, "一致性质检失败: 推理明确声明不应做空，但输出short"
+            _force_neutral(s, "推理明确声明不应做空，但输出short")
+            return True, "已自动修正为观望"
 
     final_decision_match = re.search(r'最终方向[：:]\s*(看涨|看跌|观望)', reasoning)
     if final_decision_match:
         decision_text = final_decision_match.group(1)
         inferred = {"看涨": "long", "做多": "long", "看跌": "short", "做空": "short", "观望": "neutral"}.get(decision_text)
         if inferred and inferred != direction:
-            return False, f"一致性质检失败: 推理最终方向为{decision_text}({inferred})，但JSON输出为{direction}"
+            _force_neutral(s, f"推理最终方向为{decision_text}，但JSON输出为{direction}")
+            return True, "已自动修正为观望"
 
     return True, ""

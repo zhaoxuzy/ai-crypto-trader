@@ -313,6 +313,8 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
                 max_tokens=8192,
                 timeout=TIMEOUT_SECONDS
             )
+            # 在 resp = client.chat.completions.create(...) 之后添加
+            logger.info(f"实际调用的模型: {resp.model}")
             content = resp.choices[0].message.content or ""
             reasoning = getattr(resp.choices[0].message, 'reasoning_content', None)
             _log_response(prompt, content, reasoning)

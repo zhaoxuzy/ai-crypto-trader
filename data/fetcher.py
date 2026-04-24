@@ -7,7 +7,7 @@ from utils.logger import logger
 
 
 class RateLimiter:
-    def __init__(self, min_interval: float = 1.5):
+    def __init__(self, min_interval: float = 3.0):
         self.min_interval = min_interval
         self._last_request_time = 0.0
 
@@ -25,7 +25,7 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter(min_interval=3.5)
+        self._rate_limiter = RateLimiter(min_interval=3.0)
         self._semaphore = Semaphore(8)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
@@ -58,12 +58,12 @@ class CoinGlassClient:
                             msg = f"CoinGlass API 错误: {data.get('msg', data)}"
                             last_error = msg
                             if attempt < max_retries - 1:
-                               if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
-                                 # 计算距离下一个整分钟的秒数，再加2秒缓冲，最多等62秒
-                                 wait_time = min(60 - (time.time() % 60) + 2, 62)
+                                if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
+                                    # 动态计算距离下一个整分钟的秒数，加2秒缓冲，最多等62秒
+                                    wait_time = min(60 - (time.time() % 60) + 2, 62)
+                                    logger.warning(f"{msg}，等待 {wait_time:.0f} 秒到下一个分钟窗口后重试...")
                                 else:
                                     wait_time = 2 ** (attempt + 1)
-                                logger.warning(f"{msg}，{wait_time}秒后重试...")
                                 time.sleep(wait_time)
                                 continue
                             else:

@@ -282,22 +282,22 @@ class CoinGlassClient:
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
     # ---------- 核心数据组装 ----------
-    def get_all_data(self, symbol: str = "BTC") -> dict:
+    def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
         base_symbol = symbol.upper()
 
         tasks = {
-            "kline": lambda: self.get_kline_history(base_symbol, "4h", 168),
-            "oi": lambda: self.get_oi_ohlc_history(base_symbol, "4h", 168),
-            "funding": lambda: self.get_weighted_funding_rate_history(base_symbol, "4h", 168),
+            "kline": lambda: self.get_kline_history(base_symbol, "4h", kline_limit),
+            "oi": lambda: self.get_oi_ohlc_history(base_symbol, "4h", kline_limit),
+            "funding": lambda: self.get_weighted_funding_rate_history(base_symbol, "4h", kline_limit),
             "heatmap": lambda: self.get_liquidation_heatmap(base_symbol),
-            "top_ls": lambda: self.get_top_long_short_ratio_history(base_symbol, "4h", 168),
+            "top_ls": lambda: self.get_top_long_short_ratio_history(base_symbol, "4h", kline_limit),
             "cvd": lambda: self.get_cvd_history(base_symbol, "1m", 240),
             "max_pain": lambda: self.get_option_max_pain(base_symbol),
             "fg": lambda: self.get_fear_and_greed_index(),
             "netflow": lambda: self.get_netflow(base_symbol),
             "orderbook": lambda: self.get_orderbook_imbalance(base_symbol),
             "exchange_btc": lambda: self.get_exchange_btc_balance(),
-            "agg_oi": lambda: self.get_aggregated_oi_history(base_symbol, "4h", 168),
+            "agg_oi": lambda: self.get_aggregated_oi_history(base_symbol, "4h", kline_limit),
         }
 
         results = {}
@@ -347,6 +347,14 @@ class CoinGlassClient:
         vol_factor = atr_4h / avg_atr_7d if avg_atr_7d > 0 else 1.0
         price_percentile = self._calc_percentile(kline_data, mark_price)
         atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
+
+        # 新增：1小时ATR比率（用于波动率参照）
+        atr_1h_val = data.get('atr_1h', atr_15m * 2) if isinstance(data, dict) else atr_15m * 2
+        # 从kline数据计算1h ATR会更准确，但这里暂时采用传入的atr_1h或估算
+        # 如果外部没有传入atr_1h，我们也可以使用atr_4h * 0.5 来近似
+        if not isinstance(data, dict) or 'atr_1h' not in data:
+            atr_1h_val = atr_4h * 0.5  # 4小时ATR的一半近似1小时ATR
+        atr_1h_ratio = (atr_1h_val / mark_price) * 100 if mark_price > 0 else 0.0
 
         above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
         if heatmap_raw:
@@ -406,6 +414,8 @@ class CoinGlassClient:
             "mark_price": mark_price,
             "atr": atr_4h,
             "atr_15m": atr_15m,
+            "atr_1h": atr_1h_val,
+            "atr_1h_ratio": round(atr_1h_ratio, 2),
             "vol_factor": vol_factor,
             "price_percentile": price_percentile,
             "above_liq": above_liq,
@@ -470,7 +480,7 @@ class CoinGlassClient:
                 data["liq_ratio"] = 0.0
 
             # 2. OI历史
-            oi_data = self.get_oi_ohlc_history(cross_symbol, "4h", 168)
+            oi_data = self.get_oi_ohlc_history(cross_symbol, "4h", 100)
             if oi_data:
                 oi_current = self._get_close_from_candle(oi_data[-1])
                 data["oi_percentile"] = self._calc_percentile(oi_data, oi_current)
@@ -485,7 +495,7 @@ class CoinGlassClient:
                 data["oi_change_24h"] = 0.0
 
             # 3. 资金费率历史
-            funding_data = self.get_weighted_funding_rate_history(cross_symbol, "4h", 168)
+            funding_data = self.get_weighted_funding_rate_history(cross_symbol, "4h", 100)
             if funding_data:
                 funding_current = self._get_close_from_candle(funding_data[-1])
                 data["funding_rate"] = funding_current
@@ -495,7 +505,7 @@ class CoinGlassClient:
                 data["funding_percentile"] = 50.0
 
             # 4. 顶级多空比历史
-            top_ls_data = self.get_top_long_short_ratio_history(cross_symbol, "4h", 168)
+            top_ls_data = self.get_top_long_short_ratio_history(cross_symbol, "4h", 100)
             if top_ls_data:
                 top_ls_current = 0.0
                 latest = top_ls_data[-1]

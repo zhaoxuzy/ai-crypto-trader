@@ -550,6 +550,22 @@ class CoinGlassClient:
 
         except Exception as e:
             logger.error(f"获取跨币种数据失败 {cross_symbol}: {e}")
+                # ... 前面的数据获取代码保持不变 ...
+
+    # ******** 新增：显式完整性标志 ********
+    # 检查所有关键字段是否有效获取（非None，且不为空）
+    complete = True
+    required_keys = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile', 
+                     'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain', 'mark_price']
+    for k in required_keys:
+        if data.get(k) is None or data.get(k) == 0:  # 注意：0值也视为未成功获取
+            complete = False
+            break
+    data["_complete"] = complete
+    # **********************************************
+    
+    logger.info(f"跨币种数据获取完成 {cross_symbol}，完整性: {complete}")
+    return data
             return {}
 
 

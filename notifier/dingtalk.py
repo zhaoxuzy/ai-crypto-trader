@@ -9,18 +9,13 @@ import re
 from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 
-# 钉钉 Markdown 消息最大长度（官方限制约20000，我们留出安全边界）
 DINGTALK_MAX_CONTENT_LENGTH = 18000
 
 
 def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
-    """
-    发送钉钉消息，如果内容超过长度限制，自动拆分成多条发送。
-    """
     webhook = get_webhook()
     if not webhook:
         return False
-
     if len(content) <= DINGTALK_MAX_CONTENT_LENGTH:
         return _post_dingtalk(webhook, content, title)
 
@@ -31,12 +26,10 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         part_title = f"{title} ({i+1}/{len(parts)})" if len(parts) > 1 else title
         if not _post_dingtalk(webhook, part, part_title):
             success = False
-            logger.error(f"拆分消息第 {i+1} 条发送失败")
     return success
 
 
 def get_webhook() -> str:
-    """获取带签名的完整 Webhook URL"""
     webhook = os.getenv("DINGTALK_WEBHOOK_URL", "")
     secret = os.getenv("DINGTALK_SECRET", "")
     if not webhook:
@@ -55,7 +48,6 @@ def get_webhook() -> str:
 
 
 def _post_dingtalk(webhook: str, content: str, title: str) -> bool:
-    """发送单条消息"""
     try:
         payload = {"msgtype": "markdown", "markdown": {"title": title, "text": content}}
         resp = requests.post(webhook, json=payload, timeout=10)
@@ -70,14 +62,9 @@ def _post_dingtalk(webhook: str, content: str, title: str) -> bool:
 
 
 def split_long_message(content: str) -> list:
-    """
-    将长消息按段落拆分，保证每条不超过限制。
-    优先在段落边界（\n\n）处切割。
-    """
     parts = []
     current_part = ""
     paragraphs = content.split("\n\n")
-
     for para in paragraphs:
         if len(current_part) + len(para) + 2 <= DINGTALK_MAX_CONTENT_LENGTH:
             if current_part:
@@ -94,69 +81,71 @@ def split_long_message(content: str) -> list:
                 current_part = ""
             else:
                 current_part = para
-
     if current_part:
         parts.append(current_part)
-
     return parts
 
 
 def format_reasoning(text: str) -> str:
     """
-    格式化推理文本：
-    - 步骤标题加粗
-    - 所有次级标签强制前置换行，确保独立成行
-    - 次级标签前缀为“> ”加两个空格，无装饰符号
+    采用段落拆分的方式，彻底解决标题独立成行问题。
     """
     if not text:
         return "> 无推理过程"
 
     text = text.replace('\r\n', '\n').replace('\r', '\n')
-    text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # 对于所有次级标签，无条件在前面插入换行符
-    secondary_labels = [
+    # 定义所有需要独立成行的标题（步骤 + 次级）
+    all_headers = [
+        "第[一二三四五六七八九]步[：:]",
         "分析数据[：:]", "第一反应[：:]", "自我质疑[：:]", "最终结论[：:]",
         "信号传唤[：:]", "权重审判[：:]", "心证交锋[：:]", "核心假设[：:]", "证伪条件[：:]",
         "价格路径推演[：:]", "合约策略[：:]", "主动证伪信号[：:]", "微观盘口确认[：:]"
     ]
-    for label in secondary_labels:
-        text = re.sub(rf'({label})', r'\n\1', text)
 
-    # 同时也为步骤标题前加换行
-    text = re.sub(r'(第[一二三四五六七八九]步[：:])', r'\n\1', text)
+    # 构建正则：匹配任何标题（作为分隔符）
+    header_pattern = '|'.join(all_headers)
+    # 使用正向前瞻来保留分隔符
+    segments = re.split(rf'(?=({header_pattern}))', text)
 
-    # 清理多余连续换行
-    text = re.sub(r'\n{3,}', '\n\n', text)
-
-    lines = text.split('\n')
-    quoted = []
-    for line in lines:
-        stripped_line = line.strip()
-        if not stripped_line:
-            quoted.append('> ')
+    result_lines = []
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
             continue
 
-        # 步骤标题加粗
-        if re.match(r'^第[一二三四五六七八九]步[：:]', stripped_line):
-            stripped_line = re.sub(r'^(第[一二三四五六七八九]步)', r'**\1**', stripped_line)
-            quoted.append(f'> {stripped_line}')
-        # 次级标题：不加粗，独立成行，前缀为“> ”加两个空格
-        elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|信号传唤|权重审判|心证交锋|核心假设|证伪条件|价格路径推演|合约策略|主动证伪信号|微观盘口确认)[：:]', stripped_line):
-            quoted.append(f'>   {stripped_line}')
+        # 清除行首可能存在的“·”符号
+        seg = re.sub(r'^[·•▪▸►]\s*', '', seg)
+
+        # 检查这一段的开头是否匹配步骤标题
+        step_match = re.match(r'^(第[一二三四五六七八九]步[：:])', seg)
+        secondary_match = re.match(r'^(分析数据|第一反应|自我质疑|最终结论|信号传唤|权重审判|心证交锋|核心假设|证伪条件|价格路径推演|合约策略|主动证伪信号|微观盘口确认)[：:]', seg)
+
+        if step_match:
+            # 步骤标题加粗
+            title_part = step_match.group(1)
+            content_part = seg[len(title_part):].strip()
+            title_part = re.sub(r'^(第[一二三四五六七八九]步)', r'**\1**', title_part)
+            if content_part:
+                result_lines.append(f'> {title_part} {content_part}')
+            else:
+                result_lines.append(f'> {title_part}')
+        elif secondary_match:
+            title_part = secondary_match.group(1)
+            content_part = seg[len(title_part):].strip()
+            # 次级标题独立成行，内容紧跟其后
+            result_lines.append(f'>   {title_part}')
+            if content_part:
+                result_lines.append(f'>     {content_part}')
         else:
-            quoted.append(f'> {stripped_line}')
+            # 普通段落，直接加引用
+            for line in seg.split('\n'):
+                line = line.strip()
+                if line:
+                    result_lines.append(f'> {line}')
 
-    # 压缩连续空引用行
-    cleaned = []
-    prev_empty = False
-    for q in quoted:
-        is_empty = (q.strip() == '>' or q.strip() == '')
-        if is_empty and prev_empty:
-            continue
-        cleaned.append(q)
-        prev_empty = is_empty
-    return '\n'.join(cleaned)
+    # 合并为最终文本，段落间用空引用行分隔
+    return '\n'.join(result_lines)
 
 
 def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
@@ -164,7 +153,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     now = datetime.now(tz).strftime("%m-%d %H:%M")
     direction = strategy.get("direction", "neutral")
 
-    # ----- 标题与参数卡片 -----
     if direction == "neutral":
         title_line = f"## ⚪ 观望 {symbol} · 🔴低 · {now}"
         param_card = f"> 现价{data.get('mark_price',0):.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
@@ -196,18 +184,15 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         rr_str = f"{rr:.2f}" if rr else "N/A"
         param_card = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # ----- 推理内容 -----
     reasoning_raw = strategy.get("reasoning", "无推理过程")
     reasoning_block = format_reasoning(reasoning_raw)
 
-    # ----- 风险说明 -----
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
     if not risk_lines:
         risk_lines = ["> 请严格设置止损"]
     risk_block = "> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
 
-    # ----- 脚注 -----
     atr = data.get("atr_15m", 0)
     funding = data.get("funding_rate", 0)
     oi_chg = data.get("oi_change_24h", 0)
@@ -216,5 +201,4 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fg = data.get("fear_greed", 50)
     footnote = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
-    # ----- 拼接最终消息 -----
     return f"{title_line}\n\n{param_card}\n\n### 🧠 交易员推理\n{reasoning_block}\n\n{risk_block}\n\n{footnote}"

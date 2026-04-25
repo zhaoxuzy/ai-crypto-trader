@@ -17,24 +17,24 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     above_cluster = data.get('above_cluster', 'N/A')
     below_cluster = data.get('below_cluster', 'N/A')
 
-    # 触发距与区底距
-    above_trigger = "N/A"
-    above_distance = "N/A"
-    below_trigger = "N/A"
-    below_distance = "N/A"
+    # ===== 修复1：统一命名，消除方向歧义 =====
+    above_trigger = "N/A"          # 空头池：到最近边（下沿）的距离
+    above_far_boundary = "N/A"     # 空头池：到最远边（上沿）的距离
+    below_trigger = "N/A"          # 多头池：到最近边（上沿）的距离
+    below_far_boundary = "N/A"     # 多头池：到最远边（下沿）的距离
 
     if above_cluster != 'N/A' and '-' in above_cluster:
         parts = above_cluster.split('-')
-        above_low = float(parts[0])
-        above_high = float(parts[1])
+        above_low = float(parts[0])   # 下沿（近边）
+        above_high = float(parts[1])  # 上沿（远边）
         above_trigger = f"+{above_low - current:.0f}"
-        above_distance = f"+{above_high - current:.0f}"
+        above_far_boundary = f"+{above_high - current:.0f}"
     if below_cluster != 'N/A' and '-' in below_cluster:
         parts = below_cluster.split('-')
-        below_low = float(parts[0])
-        below_high = float(parts[1])
+        below_low = float(parts[0])   # 下沿（远边）
+        below_high = float(parts[1])  # 上沿（近边）
         below_trigger = f"-{current - below_high:.0f}"
-        below_distance = f"-{current - below_low:.0f}"
+        below_far_boundary = f"-{current - below_low:.0f}"
 
     data_quality = data.get("data_quality", {})
     missing = [k for k, v in data_quality.items() if v == "❌ 缺失"]
@@ -54,9 +54,19 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     if core_missing:
         constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(core_missing)}。你必须将置信度设为 'low'；若清算数据缺失，则必须输出 'neutral'。\n"
 
+    # ===== 修复2：_complete 显式自检，消除默认值误判 =====
     cross_context = ""
     if eth_data is not None:
-        if not eth_data.get("_complete", False):
+        # 检查是否存在 _complete 字段，若无则自行判定完整性
+        if "_complete" in eth_data:
+            is_complete = eth_data["_complete"]
+        else:
+            crucial_fields = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile',
+                              'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain', 'mark_price']
+            is_complete = all(eth_data.get(f) is not None for f in crucial_fields)
+            logger.warning(f"跨币种数据缺少 _complete 标志，已自检完整性: {is_complete}")
+
+        if not is_complete:
             cross_context = "\n【重要：跨币种数据不完整，第六步跨币种验证无法进行，对主逻辑无增强也无削弱。】\n"
         else:
             cross_current = eth_data.get('mark_price', 0)
@@ -90,9 +100,9 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
 
 清算池：
 上方(空头)：{data['above_liq']/1e9:.2f}B (约{data['above_liq']/1e7:.0f}亿美元)，{above_cluster}
-  触发距{above_trigger}点 (至下沿)，区底距{above_distance}点 (至上沿)
+  触发距{above_trigger}点 (至下沿)，远边界距{above_far_boundary}点 (至上沿)
 下方(多头)：{data['below_liq']/1e9:.2f}B (约{data['below_liq']/1e7:.0f}亿美元)，{below_cluster}
-  触发距{below_trigger}点 (至上沿)，区底距{below_distance}点 (至下沿)
+  触发距{below_trigger}点 (至上沿)，远边界距{below_far_boundary}点 (至下沿)
 比值：{data['liq_ratio']:.3f}
 
 订单簿：买{data['orderbook_bids']/1e6:.1f}M / 卖{data['orderbook_asks']/1e6:.1f}M | 失衡率{data['orderbook_imbalance']:.4f}
@@ -121,7 +131,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 
 第二步：猎物定位
 分析数据：上下方清算池距离/强度、比值、订单簿买卖盘量、失衡率。
-【猎物定位规则】“猎物距离”必须使用触发距，而非区底距。价格触碰清算区上沿（多头池）或下沿（空头池）即可开始触发清算。你在预估第一段运动幅度时，必须以触发距为基准进行浮动估计。
+【猎物定位规则】“猎物距离”必须使用触发距，而非远边界距。价格触碰清算区上沿（多头池）或下沿（空头池）即可开始触发清算。你在预估第一段运动幅度时，必须以触发距为基准进行浮动估计。
 【幅度预估规则】你必须以下列三步推演来估算第一段运动的潜在幅度，不得跳过任何一步：
 1. 基准触发距：[ ]点。这是清算引擎启动的最小距离。
 2. 惯性穿透力评估：当前抛压/买盘是否足以让价格击穿清算区边缘后继续深入？
@@ -296,17 +306,52 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
 def round_to_tick(price: float) -> float:
     return round(price / TICK_SIZE) * TICK_SIZE
 
+# ===== 修复3、5：重新启用 _force_neutral 并用于所有软拦截 =====
+def _force_neutral(s: dict, reason: str):
+    s["direction"] = "neutral"
+    s["confidence"] = "low"
+    s["position_size"] = "none"
+    s["entry_price_low"] = 0
+    s["entry_price_high"] = 0
+    s["stop_loss"] = 0
+    s["take_profit"] = 0
+    s["execution_plan"] = ""
+    s["reasoning"] += f"\n\n[系统自动干预] 原始信号因校验规则被强制改为观望。原因：{reason}"
+    s["risk_note"] = f"[系统干预] 原始方向因校验规则被强制改为观望。原始风险说明：{s.get('risk_note', '')}"
+
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
         return False, f"无效方向: {direction}"
 
+    # ===== 修复6：核心数据缺失强制拦截 =====
+    if data:
+        atr_15m = data.get("atr_15m", 0)
+        above_liq = data.get("above_liq", 0)
+        below_liq = data.get("below_liq", 0)
+        cvd_slope = data.get("cvd_slope", None)
+
+        # 清算数据缺失，强制 neutral
+        if above_liq <= 0 and below_liq <= 0 and direction != "neutral":
+            _force_neutral(s, "清算数据缺失，强制输出 neutral")
+            return True, "已自动修正为观望"
+
+        # 其他核心数据缺失，强制降置信度
+        if atr_15m <= 0 and s.get("confidence") == "high":
+            s["confidence"] = "medium"
+            logger.warning("核心数据缺失(atr_15m)，置信度强制降级为 medium")
+        if cvd_slope is None and s.get("confidence") == "high":
+            s["confidence"] = "medium"
+            logger.warning("核心数据缺失(cvd_slope)，置信度强制降级为 medium")
+
+    # neutral 信号校验
     if direction == "neutral":
         for f in ["entry_price_low", "entry_price_high", "stop_loss", "take_profit"]:
             if s.get(f, 0) != 0:
                 return False, f"neutral 信号不应有非零的 {f}"
         return True, ""
 
+    # 价格字段有效性
     for f in ["entry_price_low", "entry_price_high", "stop_loss", "take_profit"]:
         val = s.get(f)
         if val is None or float(val) <= 0:
@@ -315,6 +360,7 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     if float(s["entry_price_low"]) > float(s["entry_price_high"]):
         return False, "入场区间下限大于上限"
 
+    # 计算盈亏比
     try:
         entry_low = float(s["entry_price_low"])
         entry_high = float(s["entry_price_high"])
@@ -338,15 +384,18 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         logger.warning(f"计算盈亏比时出错: {e}")
         s["_calculated_rr"] = None
 
-    # 保留decision_summary中方向与direction的基础一致性校验（非短线铁律）
+    # decision_summary 与 direction 的一致性校验（不再丢弃，改为强制 neutral）
     summary = s.get("decision_summary", {})
     if summary:
         final_dir = summary.get("final_direction", "")
         if final_dir == "看涨" and direction != "long":
-            return False, f"decision_summary最终方向为看涨，但direction为{direction}"
+            _force_neutral(s, f"decision_summary最终方向为看涨，但direction为{direction}")
+            return True, "已自动修正为观望"
         if final_dir == "看跌" and direction != "short":
-            return False, f"decision_summary最终方向为看跌，但direction为{direction}"
+            _force_neutral(s, f"decision_summary最终方向为看跌，但direction为{direction}")
+            return True, "已自动修正为观望"
         if final_dir == "观望" and direction != "neutral":
-            return False, f"decision_summary最终方向为观望，但direction为{direction}"
+            _force_neutral(s, f"decision_summary最终方向为观望，但direction为{direction}")
+            return True, "已自动修正为观望"
 
     return True, ""

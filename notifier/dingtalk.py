@@ -21,11 +21,9 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     if not webhook:
         return False
 
-    # 如果内容不超长，直接发送
     if len(content) <= DINGTALK_MAX_CONTENT_LENGTH:
         return _post_dingtalk(webhook, content, title)
 
-    # 需要拆分发送
     logger.info(f"消息长度 {len(content)} 超出限制，将拆分为多条发送")
     parts = split_long_message(content)
     success = True
@@ -107,8 +105,8 @@ def format_reasoning(text: str) -> str:
     """
     格式化推理文本：
     - 步骤标题加粗
-    - 所有次级标签独立成行，前缀为“> ”加两个空格，确保不与上文粘连
-    - 强制在次级标签前插入换行符
+    - 所有次级标签强制前置换行，确保独立成行
+    - 次级标签前缀为“> ”加两个空格，无装饰符号
     """
     if not text:
         return "> 无推理过程"
@@ -116,14 +114,20 @@ def format_reasoning(text: str) -> str:
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # 强制在次级标签前插入换行符（避免与上文粘连）
+    # 对于所有次级标签，无条件在前面插入换行符
     secondary_labels = [
         "分析数据[：:]", "第一反应[：:]", "自我质疑[：:]", "最终结论[：:]",
         "信号传唤[：:]", "权重审判[：:]", "心证交锋[：:]", "核心假设[：:]", "证伪条件[：:]",
         "价格路径推演[：:]", "合约策略[：:]", "主动证伪信号[：:]", "微观盘口确认[：:]"
     ]
     for label in secondary_labels:
-        text = re.sub(rf'(?<!\n)({label})', r'\n\1', text)
+        text = re.sub(rf'({label})', r'\n\1', text)
+
+    # 同时也为步骤标题前加换行
+    text = re.sub(r'(第[一二三四五六七八九]步[：:])', r'\n\1', text)
+
+    # 清理多余连续换行
+    text = re.sub(r'\n{3,}', '\n\n', text)
 
     lines = text.split('\n')
     quoted = []
@@ -137,16 +141,13 @@ def format_reasoning(text: str) -> str:
         if re.match(r'^第[一二三四五六七八九]步[：:]', stripped_line):
             stripped_line = re.sub(r'^(第[一二三四五六七八九]步)', r'**\1**', stripped_line)
             quoted.append(f'> {stripped_line}')
-        
-        # 次级标题不加粗，但独立成行，前缀为“> ”加两个空格
+        # 次级标题：不加粗，独立成行，前缀为“> ”加两个空格
         elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|信号传唤|权重审判|心证交锋|核心假设|证伪条件|价格路径推演|合约策略|主动证伪信号|微观盘口确认)[：:]', stripped_line):
             quoted.append(f'>   {stripped_line}')
-        
-        # 普通行
         else:
             quoted.append(f'> {stripped_line}')
 
-    # 压缩连续空行
+    # 压缩连续空引用行
     cleaned = []
     prev_empty = False
     for q in quoted:

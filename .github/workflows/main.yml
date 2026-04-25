@@ -1,8 +1,6 @@
 name: Generate Trading Signal
 
 on:
-  schedule:
-    - cron: '55 * * * *'
   workflow_dispatch:
     inputs:
       symbol:
@@ -12,8 +10,7 @@ on:
         options:
           - BTC
           - ETH
-          - BOTH
-        default: 'ETH'
+        default: 'BTC'
 
 jobs:
   run-strategy:

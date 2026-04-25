@@ -40,7 +40,7 @@ def format_reasoning(text: str) -> str:
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     text = re.sub(r'\n{3,}', '\n\n', text)
     titles = [
-        "第[一二三四五六七]步[：:]",
+        "第[一二三四五六七八九]步[：:]",
         "分析数据[：:]",
         "第一反应[：:]",
         "自我质疑[：:]",
@@ -63,9 +63,9 @@ def format_reasoning(text: str) -> str:
         if not line:
             quoted.append('> ')
             continue
-        if re.match(r'^第[一二三四五六七]步[：:]', line):
-            line = re.sub(r'^(第[一二三四五六七]步)', r'**\1**', line)
-        elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|交叉验证与裁决|价格路径推演|推理自检|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
+        if re.match(r'^第[一二三四五六七八九]步[：:]', line):
+            line = re.sub(r'^(第[一二三四五六七八九]步)', r'**\1**', line)
+        elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|交叉验证与裁决|流动性猎杀推演|推理自检|合约策略|)[：:]', line):
             line = re.sub(r'^([^：:]+)', r'**\1**', line)
         quoted.append(f'> {line}' if not line.startswith('>') else line)
     cleaned = []

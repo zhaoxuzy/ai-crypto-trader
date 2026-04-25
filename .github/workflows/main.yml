@@ -13,7 +13,7 @@ on:
           - BTC
           - ETH
           - BOTH
-        default: 'BTC'
+        default: 'ETH'
 
 jobs:
   run-strategy:

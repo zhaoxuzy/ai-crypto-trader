@@ -11,25 +11,32 @@ def main():
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
 
     client = CoinGlassClient()
-    data = client.get_all_data(symbol)
+    data = client.get_all_data(symbol, kline_limit=100)
 
-    # 补充 OKX 实时价格
     inst_id = f"{symbol}-USDT-SWAP"
     real_price = get_current_price(inst_id)
     if real_price > 0:
         data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
-    # 获取跨币种验证数据（精简版）
-    cross_symbol = "ETH" if symbol == "BTC" else "BTC"
-    cross_data = None
-    try:
-        cross_data = client.get_cross_asset_data(cross_symbol)
-    except Exception as e:
-        logger.warning(f"获取跨币种数据失败：{e}，将跳过第六步验证")
+    # 跨币种对比基准
+    if symbol == "BTC":
+        cross_symbol = "ETH"
+    elif symbol == "ETH":
+        cross_symbol = "BTC"
+    elif symbol == "SOL":
+        cross_symbol = "BTC"
+    else:
+        cross_symbol = None
 
-    # 构建prompt（传入 eth_data 参数，与 deepseek.py 兼容）
-    prompt = build_prompt(data, symbol, eth_data=cross_data)
+    cross_data = None
+    if cross_symbol:
+        try:
+            cross_data = client.get_cross_asset_data(cross_symbol)
+        except Exception as e:
+            logger.warning(f"获取跨币种数据失败：{e}，将跳过第六步验证")
+
+    prompt = build_prompt(data, symbol, eth_data=cross_data, cross_symbol=cross_symbol)
 
     try:
         strategy = call_deepseek(prompt)

@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Semaphore
@@ -15,7 +16,9 @@ class RateLimiter:
         now = time.time()
         elapsed = now - self._last_request_time
         if elapsed < self.min_interval:
-            time.sleep(self.min_interval - elapsed)
+            time.sleep(self.min_interval - elapsed + random.uniform(0, 0.5))
+        else:
+            time.sleep(random.uniform(0, 0.2))
         self._last_request_time = time.time()
 
 
@@ -143,15 +146,15 @@ class CoinGlassClient:
         return f"{base}-USDT-SWAP"
 
     # ---------- 各数据获取接口 ----------
-    def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+    def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 100):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
 
-    def get_oi_ohlc_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+    def get_oi_ohlc_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 100):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/open-interest/history", params, allow_backup=True, silent_fail=True)
 
-    def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+    def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 100):
         params = {"exchange": self.primary_exchange, "symbol": symbol.upper(), "interval": interval, "limit": limit}
         return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
 
@@ -159,7 +162,7 @@ class CoinGlassClient:
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "range": "3d"}
         return self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
 
-    def get_top_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+    def get_top_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 100):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=True, silent_fail=True)
 
@@ -242,7 +245,7 @@ class CoinGlassClient:
             return {"total_btc": total, "change_24h": change_24h}
         return {"total_btc": 0.0, "change_24h": 0.0}
 
-    def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+    def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 100):
         params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
         return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True)
 
@@ -250,32 +253,22 @@ class CoinGlassClient:
         try:
             eth_kline = self.get_kline_history("ETH", "4h", 42)
             btc_kline = self.get_kline_history("BTC", "4h", 42)
-
             if not eth_kline or not btc_kline:
                 return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
-
             ratios = []
             for eth_candle, btc_candle in zip(eth_kline, btc_kline):
                 eth_close = self._get_close_from_candle(eth_candle)
                 btc_close = self._get_close_from_candle(btc_candle)
                 if btc_close > 0:
                     ratios.append(eth_close / btc_close)
-
             if not ratios:
                 return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
-
             current = ratios[-1]
             ma_7d = sum(ratios) / len(ratios)
-
             sorted_ratios = sorted(ratios)
             rank = sum(1 for r in sorted_ratios if r < current)
             percentile = round((rank / len(sorted_ratios)) * 100, 2)
-
-            return {
-                "current": current,
-                "ma_7d": round(ma_7d, 6),
-                "percentile_7d": percentile
-            }
+            return {"current": current, "ma_7d": round(ma_7d, 6), "percentile_7d": percentile}
         except Exception as e:
             logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
@@ -283,7 +276,6 @@ class CoinGlassClient:
     # ---------- 核心数据组装 ----------
     def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
         base_symbol = symbol.upper()
-
         tasks = {
             "kline": lambda: self.get_kline_history(base_symbol, "4h", kline_limit),
             "oi": lambda: self.get_oi_ohlc_history(base_symbol, "4h", kline_limit),
@@ -298,7 +290,6 @@ class CoinGlassClient:
             "exchange_btc": lambda: self.get_exchange_btc_balance(),
             "agg_oi": lambda: self.get_aggregated_oi_history(base_symbol, "4h", kline_limit),
         }
-
         results = {}
         with ThreadPoolExecutor(max_workers=8) as executor:
             future_to_key = {executor.submit(task): key for key, task in tasks.items()}
@@ -346,8 +337,6 @@ class CoinGlassClient:
         vol_factor = atr_4h / avg_atr_7d if avg_atr_7d > 0 else 1.0
         price_percentile = self._calc_percentile(kline_data, mark_price)
         atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
-
-        # 1h ATR 估算
         atr_1h_val = atr_4h * 0.5
         atr_1h_ratio = (atr_1h_val / mark_price) * 100 if mark_price > 0 else 0.0
 
@@ -380,10 +369,8 @@ class CoinGlassClient:
         if len(oi_data) >= 6:
             oi_24h_ago = self._get_close_from_candle(oi_data[-6])
             oi_change_24h = (oi_current - oi_24h_ago) / oi_24h_ago * 100 if oi_24h_ago > 0 else 0.0
-
         funding_current = self._get_close_from_candle(funding_data[-1]) if funding_data else 0.0
         funding_percentile = self._calc_percentile(funding_data, funding_current)
-
         top_ls_current = 0.0
         if top_ls_data and isinstance(top_ls_data, list) and len(top_ls_data) > 0:
             latest = top_ls_data[-1]
@@ -392,16 +379,13 @@ class CoinGlassClient:
             else:
                 top_ls_current = self._get_close_from_candle(latest)
         top_ls_percentile = self._calc_percentile(top_ls_data, top_ls_current) if top_ls_data else 50.0
-
         cvd_series = [self._get_close_from_candle(c) for c in cvd_data] if cvd_data else []
         cvd_slope = self._calc_slope(cvd_series)
-
         agg_oi_current = self._get_close_from_candle(agg_oi_data[-1]) if agg_oi_data else 0.0
         agg_oi_change_24h = 0.0
         if len(agg_oi_data) >= 6:
             agg_oi_24h_ago = self._get_close_from_candle(agg_oi_data[-6])
             agg_oi_change_24h = (agg_oi_current - agg_oi_24h_ago) / agg_oi_24h_ago * 100 if agg_oi_24h_ago > 0 else 0.0
-
         fear_greed = fg_data.get("current", 50)
         fear_greed_prev_7d = fg_data.get("prev_7d", 50)
 
@@ -449,7 +433,6 @@ class CoinGlassClient:
         logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
         data = {}
         try:
-            # 1. 清算池热力图
             heatmap = self.get_liquidation_heatmap(cross_symbol)
             if heatmap:
                 mark_price = 0
@@ -473,7 +456,6 @@ class CoinGlassClient:
                 data["below_liq"] = 0
                 data["liq_ratio"] = 0.0
 
-            # 2. OI历史
             oi_data = self.get_oi_ohlc_history(cross_symbol, "4h", 100)
             if oi_data:
                 oi_current = self._get_close_from_candle(oi_data[-1])
@@ -488,7 +470,6 @@ class CoinGlassClient:
                 data["oi_percentile"] = 50.0
                 data["oi_change_24h"] = 0.0
 
-            # 3. 资金费率历史
             funding_data = self.get_weighted_funding_rate_history(cross_symbol, "4h", 100)
             if funding_data:
                 funding_current = self._get_close_from_candle(funding_data[-1])
@@ -498,7 +479,6 @@ class CoinGlassClient:
                 data["funding_rate"] = 0.0
                 data["funding_percentile"] = 50.0
 
-            # 4. 顶级多空比历史
             top_ls_data = self.get_top_long_short_ratio_history(cross_symbol, "4h", 100)
             if top_ls_data:
                 top_ls_current = 0.0
@@ -513,7 +493,6 @@ class CoinGlassClient:
                 data["top_ls_ratio"] = 0.0
                 data["top_ls_percentile"] = 50.0
 
-            # 5. CVD历史
             cvd_data = self.get_cvd_history(cross_symbol, "1m", 240)
             if cvd_data:
                 cvd_series = [self._get_close_from_candle(c) for c in cvd_data]
@@ -521,12 +500,10 @@ class CoinGlassClient:
             else:
                 data["cvd_slope"] = 0.0
 
-            # 6. 期权数据
             option_data = self.get_option_max_pain(cross_symbol)
             data["put_call_ratio"] = option_data.get("put_call_ratio", 0.0)
             data["max_pain"] = option_data.get("max_pain", 0.0)
 
-            # 7. 现价
             try:
                 real_price = get_current_price(f"{cross_symbol}-USDT-SWAP")
                 if real_price > 0:
@@ -544,21 +521,17 @@ class CoinGlassClient:
                 else:
                     data["mark_price"] = 0.0
 
-            # 显式完整性标志
             required_keys = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile',
                              'top_ls_percentile', 'cvd_slope', 'put_call_ratio', 'max_pain', 'mark_price']
             complete = all(data.get(k) is not None for k in required_keys)
             data["_complete"] = complete
-
             logger.info(f"跨币种数据获取完成 {cross_symbol}，完整性: {complete}")
             return data
-
         except Exception as e:
             logger.error(f"获取跨币种数据失败 {cross_symbol}: {e}")
             return {"_complete": False}
 
 
-# ---------- OKX 辅助函数 ----------
 def get_current_price(inst_id: str) -> float:
     try:
         url = f"https://www.okx.com/api/v5/market/ticker?instId={inst_id}"

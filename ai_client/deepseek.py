@@ -91,7 +91,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
 期权：P/C比{cross_pc:.4f}、最大痛点{cross_max_pain:.2f}
 """
 
-    prompt = f"""你并不是在完成一个作业。你正在用你自己管理的200万U资金进行真实的交易决策。你的推理是你唯一依赖的依据，你对账户的盈亏负有全责。请完全沉浸在这个角色中，使用第一人称（我）进行所有思考。
+    prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易。请完全沉浸在这个角色中，使用第一人称（我）进行所有思考。
 
 {constraint_note}
 【{symbol} | {timestamp}】
@@ -367,7 +367,7 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     # 止损位几何合理性检查（仅日志警告）
    if direction == "long" and stop_loss >= entry_low:
     s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间下方，请人工确认。"
-elif direction == "short" and stop_loss <= entry_high:
+   elif direction == "short" and stop_loss <= entry_high:
     s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间上方，请人工确认。"
 
     # 计算盈亏比

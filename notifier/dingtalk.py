@@ -105,10 +105,10 @@ def split_long_message(content: str) -> list:
 
 def format_reasoning(text: str) -> str:
     """
-    优化后的推理文本格式化：
-    - 关键步骤标题（如“第一步：环境定调”）加粗显示
-    - 次级标签（如“分析数据：”、“第一反应：”）不加粗，但独立成行且仅用引用标记
-    - 不再添加 • 等装饰符号
+    格式化推理文本：
+    - 步骤标题加粗
+    - 所有次级标签独立成行，前缀为“> ”加两个空格，确保不与上文粘连
+    - 强制在次级标签前插入换行符
     """
     if not text:
         return "> 无推理过程"
@@ -116,37 +116,37 @@ def format_reasoning(text: str) -> str:
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # 1. 强制换行：所有需要独立成行的标题
-    force_break_titles = [
-        "第[一二三四五六七八九]步[：:]",
+    # 强制在次级标签前插入换行符（避免与上文粘连）
+    secondary_labels = [
         "分析数据[：:]", "第一反应[：:]", "自我质疑[：:]", "最终结论[：:]",
         "信号传唤[：:]", "权重审判[：:]", "心证交锋[：:]", "核心假设[：:]", "证伪条件[：:]",
         "价格路径推演[：:]", "合约策略[：:]", "主动证伪信号[：:]", "微观盘口确认[：:]"
     ]
-    for title in force_break_titles:
-        text = re.sub(rf'(?<!\n)({title})', r'\n\1', text)
+    for label in secondary_labels:
+        text = re.sub(rf'(?<!\n)({label})', r'\n\1', text)
 
     lines = text.split('\n')
     quoted = []
     for line in lines:
-        line = line.strip()
-        if not line:
+        stripped_line = line.strip()
+        if not stripped_line:
             quoted.append('> ')
             continue
 
-        # 2. 步骤标题：加粗显示
-        if re.match(r'^第[一二三四五六七八九]步[：:]', line):
-            line = re.sub(r'^(第[一二三四五六七八九]步)', r'**\1**', line)
-            quoted.append(f'> {line}' if not line.startswith('>') else line)
-        # 3. 次级标题：不加粗，不添加符号，仅引用并保持缩进
-        elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|信号传唤|权重审判|心证交锋|核心假设|证伪条件|价格路径推演|合约策略|主动证伪信号|微观盘口确认)[：:]', line):
-            # 直接用引用符号加两个空格缩进，不加任何装饰符号
-            quoted.append(f'>   {line}' if not line.startswith('>') else f'>   {line[1:].strip()}')
-        # 4. 普通行：添加引用前缀
+        # 步骤标题加粗
+        if re.match(r'^第[一二三四五六七八九]步[：:]', stripped_line):
+            stripped_line = re.sub(r'^(第[一二三四五六七八九]步)', r'**\1**', stripped_line)
+            quoted.append(f'> {stripped_line}')
+        
+        # 次级标题不加粗，但独立成行，前缀为“> ”加两个空格
+        elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|信号传唤|权重审判|心证交锋|核心假设|证伪条件|价格路径推演|合约策略|主动证伪信号|微观盘口确认)[：:]', stripped_line):
+            quoted.append(f'>   {stripped_line}')
+        
+        # 普通行
         else:
-            quoted.append(f'> {line}' if not line.startswith('>') else line)
+            quoted.append(f'> {stripped_line}')
 
-    # 压缩连续空引用行
+    # 压缩连续空行
     cleaned = []
     prev_empty = False
     for q in quoted:

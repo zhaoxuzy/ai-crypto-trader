@@ -1,6 +1,11 @@
 name: Generate Trading Signal
 
 on:
+  schedule:
+    # 北京时间 16:10 (UTC 8:10)
+    - cron: '10 8 * * *'
+    # 北京时间 22:10 (UTC 14:10)
+    - cron: '10 14 * * *'
   workflow_dispatch:
     inputs:
       symbol:
@@ -10,7 +15,8 @@ on:
         options:
           - BTC
           - ETH
-        default: 'BTC'
+          - BOTH
+        default: 'ETH'
 
 jobs:
   run-strategy:

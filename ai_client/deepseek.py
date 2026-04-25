@@ -361,7 +361,7 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     stop_loss = float(s["stop_loss"])
     take_profit = float(s["take_profit"])
 
-        if entry_low > entry_high:
+    if entry_low > entry_high:
         return False, "入场区间下限大于上限"
 
     # 止损位几何合理性检查（仅提示，不拦截）

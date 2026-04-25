@@ -1,6 +1,5 @@
 import os
 import time
-import random
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Semaphore, Lock
@@ -9,9 +8,13 @@ from utils.logger import logger
 
 
 class RateLimiter:
-    """基于滑动窗口的自适应限速器，确保严格遵守20次/分钟限制"""
+    """
+    基于滑动窗口的限速器。
+    不限制每次请求间隔，只限制窗口内（60秒）的最大请求数（19次，留1次余量）。
+    前19次请求几乎不需要等待，第20次请求短暂等待到窗口刷新。
+    """
     def __init__(self, max_requests: int = 20, window_seconds: int = 60, safety_margin: int = 1):
-        self.max_requests = max_requests - safety_margin  # 留1次余量，实际最大19次/分钟
+        self.max_requests = max_requests - safety_margin  # 实际最大19次/分钟
         self.window_seconds = window_seconds
         self._timestamps = deque()
         self._lock = Lock()
@@ -25,10 +28,10 @@ class RateLimiter:
             
             # 如果窗口内请求数已达上限，等待直到有配额释放
             if len(self._timestamps) >= self.max_requests:
-                sleep_time = self._timestamps[0] + self.window_seconds - now + 0.5
+                sleep_time = self._timestamps[0] + self.window_seconds - now + 0.3
                 if sleep_time > 0:
                     time.sleep(sleep_time)
-                # 重新清理和计算
+                # 重新清理
                 now = time.time()
                 while self._timestamps and self._timestamps[0] < now - self.window_seconds:
                     self._timestamps.popleft()
@@ -44,7 +47,7 @@ class CoinGlassClient:
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
         self._rate_limiter = RateLimiter(max_requests=20, window_seconds=60, safety_margin=1)
-        self._semaphore = Semaphore(6)
+        self._semaphore = Semaphore(8)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -306,7 +309,7 @@ class CoinGlassClient:
             "agg_oi": lambda: self.get_aggregated_oi_history(base_symbol, "4h", kline_limit),
         }
         results = {}
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             future_to_key = {executor.submit(task): key for key, task in tasks.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
@@ -515,7 +518,7 @@ class CoinGlassClient:
             else:
                 data["cvd_slope"] = 0.0
 
-            # 跨币种不再请求期权数据
+            # 不再请求跨币种期权数据
             data["put_call_ratio"] = None
             data["max_pain"] = None
 

@@ -298,18 +298,6 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
 def round_to_tick(price: float) -> float:
     return round(price / TICK_SIZE) * TICK_SIZE
 
-def _force_neutral(s: dict, reason: str):
-    s["direction"] = "neutral"
-    s["confidence"] = "low"
-    s["position_size"] = "none"
-    s["entry_price_low"] = 0
-    s["entry_price_high"] = 0
-    s["stop_loss"] = 0
-    s["take_profit"] = 0
-    s["execution_plan"] = ""
-    s["reasoning"] += f"\n\n[系统自动干预] 原始信号因违反短线铁律被强制改为观望。原因：{reason}"
-    s["risk_note"] = f"[系统干预] 原始方向因违反短线铁律被强制改为观望。原始风险说明：{s.get('risk_note', '')}"
-
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
@@ -352,57 +340,15 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         logger.warning(f"计算盈亏比时出错: {e}")
         s["_calculated_rr"] = None
 
-    # decision_summary 校验
+    # 保留decision_summary中方向与direction的基础一致性校验（非短线铁律）
     summary = s.get("decision_summary", {})
     if summary:
         final_dir = summary.get("final_direction", "")
-        first_leg = summary.get("first_leg_direction", "")
-
         if final_dir == "看涨" and direction != "long":
-            _force_neutral(s, f"decision_summary最终方向为看涨，但direction为{direction}")
-            return True, "已自动修正为观望"
+            return False, f"decision_summary最终方向为看涨，但direction为{direction}"
         if final_dir == "看跌" and direction != "short":
-            _force_neutral(s, f"decision_summary最终方向为看跌，但direction为{direction}")
-            return True, "已自动修正为观望"
+            return False, f"decision_summary最终方向为看跌，但direction为{direction}"
         if final_dir == "观望" and direction != "neutral":
-            _force_neutral(s, f"decision_summary最终方向为观望，但direction为{direction}")
-            return True, "已自动修正为观望"
-
-        if first_leg == "下跌" and direction == "long":
-            _force_neutral(s, "第一段运动为下跌，但输出做多，违反短线铁律")
-            return True, "已自动修正为观望"
-        if first_leg == "上涨" and direction == "short":
-            _force_neutral(s, "第一段运动为上涨，但输出做空，违反短线铁律")
-            return True, "已自动修正为观望"
-
-    # 原有的一致性校验（推演路径与方向矛盾）
-    reasoning = s.get("reasoning", "")
-    atr_1h = data.get("atr_1h", data.get("atr_15m", 0) * 2) if data else 0
-
-    if direction in ("long", "short") and atr_1h > 0:
-        first_leg_down = re.search(r'(?:先.*?下[跌挫].*?再.*?上[涨升])|(?:第一段.*?下跌)', reasoning)
-        first_leg_up = re.search(r'(?:先.*?上[涨升].*?再.*?下[跌挫])|(?:第一段.*?上涨)', reasoning)
-
-        if first_leg_down and direction == "long":
-            _force_neutral(s, "推演路径先跌后涨，但输出做多，违反短线铁律")
-            return True, "已自动修正为观望"
-        if first_leg_up and direction == "short":
-            _force_neutral(s, "推演路径先涨后跌，但输出做空，违反短线铁律")
-            return True, "已自动修正为观望"
-
-        if "不应做多" in reasoning and direction == "long":
-            _force_neutral(s, "推理明确声明不应做多，但输出long")
-            return True, "已自动修正为观望"
-        if "不应做空" in reasoning and direction == "short":
-            _force_neutral(s, "推理明确声明不应做空，但输出short")
-            return True, "已自动修正为观望"
-
-    final_decision_match = re.search(r'最终方向[：:]\s*(看涨|看跌|观望)', reasoning)
-    if final_decision_match:
-        decision_text = final_decision_match.group(1)
-        inferred = {"看涨": "long", "做多": "long", "看跌": "short", "做空": "short", "观望": "neutral"}.get(decision_text)
-        if inferred and inferred != direction:
-            _force_neutral(s, f"推理最终方向为{decision_text}，但JSON输出为{direction}")
-            return True, "已自动修正为观望"
+            return False, f"decision_summary最终方向为观望，但direction为{direction}"
 
     return True, ""

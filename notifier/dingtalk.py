@@ -87,65 +87,63 @@ def split_long_message(content: str) -> list:
 
 
 def format_reasoning(text: str) -> str:
-    """
-    采用段落拆分的方式，彻底解决标题独立成行问题。
-    """
     if not text:
         return "> 无推理过程"
 
     text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # 定义所有需要独立成行的标题（步骤 + 次级）
-    all_headers = [
-        "第[一二三四五六七八九]步[：:]",
+    # 1. 清除AI可能自行添加的行首“·”符号（同时处理全角/半角）
+    lines = text.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # 去掉行首的“·”及空格
+        stripped = re.sub(r'^[·•▪▸►]\s*', '', stripped)
+        cleaned_lines.append(stripped)
+    text = '\n'.join(cleaned_lines)
+
+    # 2. 强制在次级标题前插入换行（确保独立成行）
+    secondary_labels = [
         "分析数据[：:]", "第一反应[：:]", "自我质疑[：:]", "最终结论[：:]",
         "信号传唤[：:]", "权重审判[：:]", "心证交锋[：:]", "核心假设[：:]", "证伪条件[：:]",
         "价格路径推演[：:]", "合约策略[：:]", "主动证伪信号[：:]", "微观盘口确认[：:]"
     ]
+    for label in secondary_labels:
+        text = re.sub(rf'({label})', r'\n\1', text)
 
-    # 构建正则：匹配任何标题（作为分隔符）
-    header_pattern = '|'.join(all_headers)
-    # 使用正向前瞻来保留分隔符
-    segments = re.split(rf'(?=({header_pattern}))', text)
+    # 步骤标题前也强制换行
+    text = re.sub(r'(第[一二三四五六七八九]步[：:])', r'\n\1', text)
 
-    result_lines = []
-    for seg in segments:
-        seg = seg.strip()
-        if not seg:
+    # 3. 按行处理，添加引用标记
+    lines = text.split('\n')
+    quoted = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            quoted.append('> ')
             continue
 
-        # 清除行首可能存在的“·”符号
-        seg = re.sub(r'^[·•▪▸►]\s*', '', seg)
-
-        # 检查这一段的开头是否匹配步骤标题
-        step_match = re.match(r'^(第[一二三四五六七八九]步[：:])', seg)
-        secondary_match = re.match(r'^(分析数据|第一反应|自我质疑|最终结论|信号传唤|权重审判|心证交锋|核心假设|证伪条件|价格路径推演|合约策略|主动证伪信号|微观盘口确认)[：:]', seg)
-
-        if step_match:
-            # 步骤标题加粗
-            title_part = step_match.group(1)
-            content_part = seg[len(title_part):].strip()
-            title_part = re.sub(r'^(第[一二三四五六七八九]步)', r'**\1**', title_part)
-            if content_part:
-                result_lines.append(f'> {title_part} {content_part}')
-            else:
-                result_lines.append(f'> {title_part}')
-        elif secondary_match:
-            title_part = secondary_match.group(1)
-            content_part = seg[len(title_part):].strip()
-            # 次级标题独立成行，内容紧跟其后
-            result_lines.append(f'>   {title_part}')
-            if content_part:
-                result_lines.append(f'>     {content_part}')
+        # 步骤标题加粗
+        if re.match(r'^第[一二三四五六七八九]步[：:]', stripped):
+            stripped = re.sub(r'^(第[一二三四五六七八九]步)', r'**\1**', stripped)
+            quoted.append(f'> {stripped}')
+        # 次级标题：不加粗，独立成行，仅添加 >   前缀（两个空格）
+        elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|信号传唤|权重审判|心证交锋|核心假设|证伪条件|价格路径推演|合约策略|主动证伪信号|微观盘口确认)[：:]', stripped):
+            quoted.append(f'>   {stripped}')
         else:
-            # 普通段落，直接加引用
-            for line in seg.split('\n'):
-                line = line.strip()
-                if line:
-                    result_lines.append(f'> {line}')
+            quoted.append(f'> {stripped}')
 
-    # 合并为最终文本，段落间用空引用行分隔
-    return '\n'.join(result_lines)
+    # 压缩连续空行
+    cleaned = []
+    prev_empty = False
+    for q in quoted:
+        is_empty = (q.strip() == '>')
+        if is_empty and prev_empty:
+            continue
+        cleaned.append(q)
+        prev_empty = is_empty
+    return '\n'.join(cleaned)
 
 
 def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:

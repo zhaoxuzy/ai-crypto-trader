@@ -118,8 +118,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 ---
 【硬性约束】
 1. 必须且只能引用上方提供的具体数据，不得编造、估算或使用记忆中的任何数值。
-2. 你的 `reasoning` 推理过程必须是完整的，必须显式地包含每一步的“分析数据”、“第一反应”、“自我质疑”、“最终结论”等子标题后的完整内容。
-3. 你的思考过程必须显式地写出来，不得跳过或简化。
+2. 你的 `reasoning` 字段必须包含从第一步到第九步的完整推演文本，每一步都必须显式包含“分析数据”、“第一反应”、“自我质疑”、“最终结论”子标题及详细内容。
 
 ---
 第一步：环境定调
@@ -162,9 +161,9 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 
 第六步：跨币种验证
 分析数据：（必须完成以下三项强制对比，每项写出具体数值）
-① 清算池比值方向对比：BTC比值 [ ]，ETH比值 [ ]，两者方向是否一致？
-② CVD斜率方向对比：BTC CVD = [ ]，ETH CVD = [ ]，资金流向是否共振？
-③ 顶级多空比分位对比：BTC分位 [ ]%，ETH分位 [ ]%，哪个币种的机构空头更极端？
+① 清算池比值方向对比：[ ] vs [ ]，两者方向是否一致？
+② CVD斜率方向对比：[ ] vs [ ]，资金流向是否共振？
+③ 顶级多空比分位对比：[ ]% vs [ ]%，哪个币种的机构空头更极端？
 【基于此三组客观对比，深度分析两币种整体方向是一致还是矛盾，并解释共振或背离的市场含义】
 第一反应：
 自我质疑：
@@ -227,7 +226,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话指令",
-  "reasoning": "完整的九步推演内容，必须包含价格路径推演与推理自检",
+  "reasoning": "第一步到第九步的完整推演文本",
   "risk_note": "风险说明"
 }}
 """
@@ -274,7 +273,7 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=16384,
+                max_tokens=32768,
                 timeout=TIMEOUT_SECONDS
             )
             logger.info(f"实际调用的模型: {resp.model}")
@@ -366,10 +365,10 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         return False, "入场区间下限大于上限"
 
     # 止损位几何合理性检查（仅日志警告）
-    if direction == "long" and stop_loss >= entry_low:
-        logger.warning(f"做多信号止损位({stop_loss})未处于入场区间({entry_low}-{entry_high})下方，请人工确认")
-    elif direction == "short" and stop_loss <= entry_high:
-        logger.warning(f"做空信号止损位({stop_loss})未处于入场区间({entry_low}-{entry_high})上方，请人工确认")
+   if direction == "long" and stop_loss >= entry_low:
+    s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间下方，请人工确认。"
+elif direction == "short" and stop_loss <= entry_high:
+    s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间上方，请人工确认。"
 
     # 计算盈亏比
     try:

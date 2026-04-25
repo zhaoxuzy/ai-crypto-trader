@@ -256,7 +256,7 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=8192,
+                max_tokens=16384,
                 timeout=TIMEOUT_SECONDS
             )
             logger.info(f"实际调用的模型: {resp.model}")

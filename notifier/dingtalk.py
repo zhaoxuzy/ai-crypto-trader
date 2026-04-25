@@ -104,7 +104,12 @@ def split_long_message(content: str) -> list:
 
 
 def format_reasoning(text: str) -> str:
-    """优化后的推理文本格式化：关键步骤加粗，次级标签独立成行并添加装饰符号。"""
+    """
+    优化后的推理文本格式化：
+    - 关键步骤标题（如“第一步：环境定调”）加粗显示
+    - 次级标签（如“分析数据：”、“第一反应：”）不加粗，但独立成行且仅用引用标记
+    - 不再添加 • 等装饰符号
+    """
     if not text:
         return "> 无推理过程"
 
@@ -133,9 +138,9 @@ def format_reasoning(text: str) -> str:
         if re.match(r'^第[一二三四五六七八九]步[：:]', line):
             line = re.sub(r'^(第[一二三四五六七八九]步)', r'**\1**', line)
             quoted.append(f'> {line}' if not line.startswith('>') else line)
-        # 3. 次级标题：不加粗，但添加符号并独立成行
+        # 3. 次级标题：不加粗，不添加符号，仅引用并保持缩进
         elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|信号传唤|权重审判|心证交锋|核心假设|证伪条件|价格路径推演|合约策略|主动证伪信号|微观盘口确认)[：:]', line):
-            # 使用 ">   • " 前缀，实现缩进和符号装饰
+            # 直接用引用符号加两个空格缩进，不加任何装饰符号
             quoted.append(f'>   {line}' if not line.startswith('>') else f'>   {line[1:].strip()}')
         # 4. 普通行：添加引用前缀
         else:

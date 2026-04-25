@@ -17,7 +17,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     above_cluster = data.get('above_cluster', 'N/A')
     below_cluster = data.get('below_cluster', 'N/A')
 
-    # ===== 修复1：统一命名，消除方向歧义 =====
+    # ===== 修正1：统一命名，消除方向歧义 =====
     above_trigger = "N/A"          # 空头池：到最近边（下沿）的距离
     above_far_boundary = "N/A"     # 空头池：到最远边（上沿）的距离
     below_trigger = "N/A"          # 多头池：到最近边（上沿）的距离
@@ -57,7 +57,6 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
     # ===== 修复2：_complete 显式自检，消除默认值误判 =====
     cross_context = ""
     if eth_data is not None:
-        # 检查是否存在 _complete 字段，若无则自行判定完整性
         if "_complete" in eth_data:
             is_complete = eth_data["_complete"]
         else:
@@ -208,6 +207,9 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 3. 如果我错了，最可能是在哪一步的假设上栽了跟头？
 4. 我是否过于武断地压低了某个反向信号的权重？具体是哪一个信号？如果该反向信号最终被证明是正确的，我会犯下怎样的错误？
 
+【有效阈值计算指令】
+`decision_summary` 中的 `effective_threshold` 必须按 `max(0.8 * 1h_ATR, 当前价格 * 0.05%)` 计算，`threshold_rationale` 中需写明该计算式及你对此阈值在当前市况中的看法。
+
 {{
   "decision_summary": {{
     "final_direction": "看涨/看跌/观望",
@@ -306,8 +308,8 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
 def round_to_tick(price: float) -> float:
     return round(price / TICK_SIZE) * TICK_SIZE
 
-# ===== 修复3、5：重新启用 _force_neutral 并用于所有软拦截 =====
 def _force_neutral(s: dict, reason: str):
+    old_risk = s.get('risk_note', '')
     s["direction"] = "neutral"
     s["confidence"] = "low"
     s["position_size"] = "none"
@@ -317,26 +319,24 @@ def _force_neutral(s: dict, reason: str):
     s["take_profit"] = 0
     s["execution_plan"] = ""
     s["reasoning"] += f"\n\n[系统自动干预] 原始信号因校验规则被强制改为观望。原因：{reason}"
-    s["risk_note"] = f"[系统干预] 原始方向因校验规则被强制改为观望。原始风险说明：{s.get('risk_note', '')}"
+    s["risk_note"] = f"[系统干预] 原始方向因校验规则被强制改为观望。" + (f" 原始风险说明：{old_risk}" if old_risk else "")
 
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
         return False, f"无效方向: {direction}"
 
-    # ===== 修复6：核心数据缺失强制拦截 =====
+    # 核心数据缺失强制拦截
     if data:
         atr_15m = data.get("atr_15m", 0)
         above_liq = data.get("above_liq", 0)
         below_liq = data.get("below_liq", 0)
         cvd_slope = data.get("cvd_slope", None)
 
-        # 清算数据缺失，强制 neutral
         if above_liq <= 0 and below_liq <= 0 and direction != "neutral":
             _force_neutral(s, "清算数据缺失，强制输出 neutral")
             return True, "已自动修正为观望"
 
-        # 其他核心数据缺失，强制降置信度
         if atr_15m <= 0 and s.get("confidence") == "high":
             s["confidence"] = "medium"
             logger.warning("核心数据缺失(atr_15m)，置信度强制降级为 medium")
@@ -357,24 +357,30 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         if val is None or float(val) <= 0:
             return False, f"缺少或无效的 {f}"
 
-    if float(s["entry_price_low"]) > float(s["entry_price_high"]):
+    entry_low = float(s["entry_price_low"])
+    entry_high = float(s["entry_price_high"])
+    stop_loss = float(s["stop_loss"])
+    take_profit = float(s["take_profit"])
+
+    if entry_low > entry_high:
         return False, "入场区间下限大于上限"
+
+    # 止损位几何合理性检查（仅日志警告）
+    if direction == "long" and stop_loss >= entry_low:
+        logger.warning(f"做多信号止损位({stop_loss})未处于入场区间({entry_low}-{entry_high})下方，请人工确认")
+    elif direction == "short" and stop_loss <= entry_high:
+        logger.warning(f"做空信号止损位({stop_loss})未处于入场区间({entry_low}-{entry_high})上方，请人工确认")
 
     # 计算盈亏比
     try:
-        entry_low = float(s["entry_price_low"])
-        entry_high = float(s["entry_price_high"])
-        stop = float(s["stop_loss"])
-        tp = float(s["take_profit"])
-
         if direction == "long":
             worst_entry = entry_high
-            risk = worst_entry - stop
-            reward = tp - worst_entry
+            risk = worst_entry - stop_loss
+            reward = take_profit - worst_entry
         else:
             worst_entry = entry_low
-            risk = stop - worst_entry
-            reward = worst_entry - tp
+            risk = stop_loss - worst_entry
+            reward = worst_entry - take_profit
 
         if risk > 0:
             s["_calculated_rr"] = round(reward / risk, 2)
@@ -384,7 +390,7 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         logger.warning(f"计算盈亏比时出错: {e}")
         s["_calculated_rr"] = None
 
-    # decision_summary 与 direction 的一致性校验（不再丢弃，改为强制 neutral）
+    # decision_summary 与 direction 的一致性校验（强制转为 neutral）
     summary = s.get("decision_summary", {})
     if summary:
         final_dir = summary.get("final_direction", "")

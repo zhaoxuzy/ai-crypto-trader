@@ -11,11 +11,22 @@ MAX_RETRIES = 2
 RETRY_BASE_WAIT = 2
 TIMEOUT_SECONDS = 180
 
-def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
+def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: str = None) -> str:
     timestamp = data.get("timestamp", "N/A")
     current = data['mark_price']
     above_cluster = data.get('above_cluster', 'N/A')
     below_cluster = data.get('below_cluster', 'N/A')
+
+    # 自动推断对比币种
+    if cross_symbol is None:
+        if symbol == "BTC":
+            cross_symbol = "ETH"
+        elif symbol == "ETH":
+            cross_symbol = "BTC"
+        elif symbol == "SOL":
+            cross_symbol = "BTC"
+        else:
+            cross_symbol = "ETH"
 
     # ===== 修正1：统一命名，消除方向歧义 =====
     above_trigger = "N/A"          # 空头池：到最近边（下沿）的距离
@@ -91,6 +102,19 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None) -> str:
 期权：P/C比{cross_pc:.4f}、最大痛点{cross_max_pain:.2f}
 """
 
+    # 动态生成第六步对比文本
+    step6_text = f"""第六步：跨币种验证
+分析数据：（必须完成以下三项强制对比，每项写出具体数值）
+① 清算池比值方向对比：{symbol}比值 [ ]，{cross_symbol}比值 [ ]，两者方向是否一致？
+② CVD斜率方向对比：{symbol} CVD = [ ]，{cross_symbol} CVD = [ ]，资金流向是否共振？
+③ 顶级多空比分位对比：{symbol}分位 [ ]%，{cross_symbol}分位 [ ]%，哪个币种的机构空头更极端？
+【基于此三组客观对比，深度分析两币种整体方向是一致还是矛盾，并解释共振或背离的市场含义】
+第一反应：
+自我质疑：
+最终结论：
+【跨币种反馈】基于以上对比，我的（{symbol}/{cross_symbol}）单币种结论被如何修正？有无新增风险点？如果有，我必须回到第三步或第五步的自我质疑中重新审视。
+"""
+
     prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易。请完全沉浸在这个角色中，使用第一人称（我）进行所有思考。
 
 {constraint_note}
@@ -159,16 +183,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 自我质疑：
 最终结论：
 
-第六步：跨币种验证
-分析数据：（必须完成以下三项强制对比，每项写出具体数值）
-① 清算池比值方向对比：[ ] vs [ ]，两者方向是否一致？
-② CVD斜率方向对比：[ ] vs [ ]，资金流向是否共振？
-③ 顶级多空比分位对比：[ ]% vs [ ]%，哪个币种的机构空头更极端？
-【基于此三组客观对比，深度分析两币种整体方向是一致还是矛盾，并解释共振或背离的市场含义】
-第一反应：
-自我质疑：
-最终结论：
-【跨币种反馈】基于以上对比，我的（BTC/ETH）单币种结论被如何修正？有无新增风险点？如果有，我必须回到第三步或第五步的自我质疑中重新审视。
+{step6_text}
 
 第七步：交叉验证与裁决
 【你刚刚完成了对市场所有维度的扫描。现在，你面对的可能是一个多空交织的矛盾体。请基于前六步的所有数据和结论，独立完成以下裁决。你的回答必须明确包含最终方向、置信度和仓位】

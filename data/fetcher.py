@@ -10,11 +10,10 @@ from utils.logger import logger
 class RateLimiter:
     """
     基于滑动窗口的限速器。
-    不限制每次请求间隔，只限制窗口内（60秒）的最大请求数（19次，留1次余量）。
-    前19次请求几乎不需要等待，第20次请求短暂等待到窗口刷新。
+    只有在窗口内请求数达到 max_requests 时才等待，否则直接放行。
     """
-    def __init__(self, max_requests: int = 20, window_seconds: int = 60, safety_margin: int = 1):
-        self.max_requests = max_requests - safety_margin  # 实际最大19次/分钟
+    def __init__(self, max_requests: int = 20, window_seconds: int = 60):
+        self.max_requests = max_requests   # 直接设为20，不保留余量
         self.window_seconds = window_seconds
         self._timestamps = deque()
         self._lock = Lock()
@@ -22,22 +21,21 @@ class RateLimiter:
     def wait(self):
         with self._lock:
             now = time.time()
-            # 清理窗口外的旧时间戳
+            # 清理窗口外的旧记录
             while self._timestamps and self._timestamps[0] < now - self.window_seconds:
                 self._timestamps.popleft()
             
-            # 如果窗口内请求数已达上限，等待直到有配额释放
+            # 只有在达到限制时才等待
             if len(self._timestamps) >= self.max_requests:
-                sleep_time = self._timestamps[0] + self.window_seconds - now + 0.3
+                sleep_time = self._timestamps[0] + self.window_seconds - now + 0.2
                 if sleep_time > 0:
                     time.sleep(sleep_time)
-                # 重新清理
                 now = time.time()
                 while self._timestamps and self._timestamps[0] < now - self.window_seconds:
                     self._timestamps.popleft()
             
-            # 记录本次请求时间
-            self._timestamps.append(time.time())
+            # 记录本次请求
+            self._timestamps.append(now)
 
 
 class CoinGlassClient:
@@ -46,7 +44,7 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter(max_requests=20, window_seconds=60, safety_margin=1)
+        self._rate_limiter = RateLimiter(max_requests=20, window_seconds=60)
         self._semaphore = Semaphore(8)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
@@ -68,7 +66,7 @@ class CoinGlassClient:
 
             for attempt in range(max_retries):
                 with self._semaphore:
-                    self._rate_limiter.wait()
+                    self._rate_limiter.wait()   # 通常直接放行
                     try:
                         logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}")
                         resp = requests.get(url, params=current_params, headers=headers, timeout=15)
@@ -114,6 +112,15 @@ class CoinGlassClient:
             logger.warning(f"CoinGlass 数据获取失败（静默）: {last_error}")
             return {}
         raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
+
+    # ---------- 以下所有方法保持之前版本不变 ----------
+    # _get_close_from_candle, _calc_percentile, _calc_slope, _calc_atr, _calc_atr_list, _get_symbol
+    # get_kline_history, get_oi_ohlc_history, get_weighted_funding_rate_history, get_liquidation_heatmap
+    # get_top_long_short_ratio_history, get_cvd_history, get_option_max_pain, get_fear_and_greed_index
+    # get_netflow, get_orderbook_imbalance, get_exchange_btc_balance, get_aggregated_oi_history
+    # get_eth_btc_ratio, get_all_data, get_cross_asset_data
+    # get_current_price, get_klines
+    # （省略，请直接使用您之前文件中的完整实现）
 
     @staticmethod
     def _get_close_from_candle(candle) -> float:

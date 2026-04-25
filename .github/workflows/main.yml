@@ -2,10 +2,8 @@ name: Generate Trading Signal
 
 on:
   schedule:
-    # 北京时间 16:10 (UTC 8:10)
-    - cron: '10 8 * * *'
-    # 北京时间 22:10 (UTC 14:10)
-    - cron: '10 14 * * *'
+    - cron: '10 8 * * *'   # 北京时间 16:10
+    - cron: '10 14 * * *'  # 北京时间 22:10
   workflow_dispatch:
     inputs:
       symbol:
@@ -15,6 +13,7 @@ on:
         options:
           - BTC
           - ETH
+          - SOL
           - BOTH
         default: 'ETH'
 
@@ -34,7 +33,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 缓存完整的虚拟环境目录
       - name: Cache virtual environment
         uses: actions/cache@v4
         with:
@@ -43,7 +41,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-venv-
 
-      # 如果缓存未命中，创建虚拟环境并安装依赖
       - name: Install dependencies (if cache missed)
         run: |
           if [ ! -d .venv ]; then

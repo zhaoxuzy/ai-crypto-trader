@@ -136,7 +136,7 @@ def format_reasoning(text: str) -> str:
         # 3. 次级标题：不加粗，但添加符号并独立成行
         elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|信号传唤|权重审判|心证交锋|核心假设|证伪条件|价格路径推演|合约策略|主动证伪信号|微观盘口确认)[：:]', line):
             # 使用 ">   • " 前缀，实现缩进和符号装饰
-            quoted.append(f'>   • {line}' if not line.startswith('>') else f'>   • {line[1:].strip()}')
+            quoted.append(f'>   {line}' if not line.startswith('>') else f'>   {line[1:].strip()}')
         # 4. 普通行：添加引用前缀
         else:
             quoted.append(f'> {line}' if not line.startswith('>') else line)

@@ -361,14 +361,14 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     stop_loss = float(s["stop_loss"])
     take_profit = float(s["take_profit"])
 
-    if entry_low > entry_high:
+        if entry_low > entry_high:
         return False, "入场区间下限大于上限"
 
-    # 止损位几何合理性检查（仅日志警告）
-   if direction == "long" and stop_loss >= entry_low:
-    s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间下方，请人工确认。"
-   elif direction == "short" and stop_loss <= entry_high:
-    s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间上方，请人工确认。"
+    # 止损位几何合理性检查（仅提示，不拦截）
+    if direction == "long" and stop_loss >= entry_low:
+        s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间下方，请人工确认。"
+    elif direction == "short" and stop_loss <= entry_high:
+        s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间上方，请人工确认。"
 
     # 计算盈亏比
     try:

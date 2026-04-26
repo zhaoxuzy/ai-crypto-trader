@@ -490,57 +490,101 @@ class CoinGlassClient:
             "lure_risk_factor": lure_risk_factor,
         }
 
-    def get_cross_asset_data(self, cross_symbol: str) -> dict:
-    logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
-    data = {}
-    complete = True
-    try:
-        heatmap = self.get_liquidation_heatmap(cross_symbol)
-        if heatmap:
-            # 不再单独请求K线获取现价，直接用后面的OKX实时价格
-            mark_price = 0  # 临时占位
-            above_liq, below_liq = 0, 0
-            y_axis = heatmap.get("y_axis", [])
-            liq_data = heatmap.get("liquidation_leverage_data", [])
-            # ... 清算池计算逻辑不变 ...
-        else:
-            complete = False
-
-        # ... OI、资金费率、顶级多空比、CVD、期权数据获取不变 ...
-
-        # 现价统一使用OKX实时价格
+        def get_cross_asset_data(self, cross_symbol: str) -> dict:
+        """获取跨币种验证所需的精简数据"""
+        logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
+        data = {}
         try:
-            real_price = get_current_price(f"{cross_symbol}-USDT-SWAP")
-            data["mark_price"] = real_price if real_price > 0 else 0.0
-        except:
-            data["mark_price"] = 0.0
+            # 1. 清算池热力图（不再单独请求K线，后续用OKX实时价格计算）
+            heatmap = self.get_liquidation_heatmap(cross_symbol)
+            if heatmap:
+                # 先获取OKX实时价格
+                mark_price = 0
+                try:
+                    real_price = get_current_price(f"{cross_symbol}-USDT-SWAP")
+                    if real_price > 0:
+                        mark_price = real_price
+                except:
+                    pass
+                above_liq, below_liq = 0, 0
+                y_axis = heatmap.get("y_axis", [])
+                liq_data = heatmap.get("liquidation_leverage_data", [])
+                for item in liq_data:
+                    if isinstance(item, list) and len(item) >= 3:
+                        price = float(y_axis[int(item[1])]) if int(item[1]) < len(y_axis) else 0
+                        intensity = float(item[2])
+                        if price > mark_price: above_liq += intensity
+                        elif price < mark_price: below_liq += intensity
+                data["above_liq"] = above_liq
+                data["below_liq"] = below_liq
+                data["liq_ratio"] = above_liq / below_liq if below_liq > 0 else 0.0
+                data["mark_price"] = mark_price
+            else:
+                data["above_liq"] = 0
+                data["below_liq"] = 0
+                data["liq_ratio"] = 0.0
+                data["mark_price"] = 0.0
 
-        # 用OKX实时价格重新计算清算池上下方
-        if heatmap and data.get("mark_price", 0) > 0:
-            # 重新计算above_liq和below_liq，基于修正后的mark_price
-            # 因为之前mark_price=0，暂时跳过了价格判断
-            mark_price = data["mark_price"]
-            above_liq, below_liq = 0, 0
-            y_axis = heatmap.get("y_axis", [])
-            liq_data = heatmap.get("liquidation_leverage_data", [])
-            for item in liq_data:
-                if isinstance(item, list) and len(item) >= 3:
-                    price = float(y_axis[int(item[1])]) if int(item[1]) < len(y_axis) else 0
-                    intensity = float(item[2])
-                    if price > mark_price:
-                        above_liq += intensity
-                    elif price < mark_price:
-                        below_liq += intensity
-            data["above_liq"] = above_liq
-            data["below_liq"] = below_liq
-            data["liq_ratio"] = above_liq / below_liq if below_liq > 0 else 0.0
+            # 2. OI历史
+            oi_data = self.get_oi_ohlc_history(cross_symbol, "4h", 100)
+            if oi_data:
+                oi_current = self._get_close_from_candle(oi_data[-1])
+                data["oi_percentile"] = self._calc_percentile(oi_data, oi_current)
+                oi_change_24h = 0.0
+                if len(oi_data) >= 6:
+                    oi_24h_ago = self._get_close_from_candle(oi_data[-6])
+                    if oi_24h_ago > 0:
+                        oi_change_24h = (oi_current - oi_24h_ago) / oi_24h_ago * 100
+                data["oi_change_24h"] = oi_change_24h
+            else:
+                data["oi_percentile"] = 50.0
+                data["oi_change_24h"] = 0.0
 
-        data["_complete"] = complete
-        logger.info(f"跨币种数据获取完成 {cross_symbol}")
-        return data
-    except Exception as e:
-        logger.error(f"获取跨币种数据失败 {cross_symbol}: {e}")
-        return {"_complete": False}
+            # 3. 资金费率历史
+            funding_data = self.get_weighted_funding_rate_history(cross_symbol, "4h", 100)
+            if funding_data:
+                funding_current = self._get_close_from_candle(funding_data[-1])
+                data["funding_rate"] = funding_current
+                data["funding_percentile"] = self._calc_percentile(funding_data, funding_current)
+            else:
+                data["funding_rate"] = 0.0
+                data["funding_percentile"] = 50.0
+
+            # 4. 顶级多空比历史
+            top_ls_data = self.get_top_long_short_ratio_history(cross_symbol, "4h", 100)
+            if top_ls_data:
+                top_ls_current = 0.0
+                latest = top_ls_data[-1]
+                if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
+                    top_ls_current = float(latest.get("top_position_long_short_ratio", 0))
+                else:
+                    top_ls_current = self._get_close_from_candle(latest)
+                data["top_ls_ratio"] = top_ls_current
+                data["top_ls_percentile"] = self._calc_percentile(top_ls_data, top_ls_current)
+            else:
+                data["top_ls_ratio"] = 0.0
+                data["top_ls_percentile"] = 50.0
+
+            # 5. CVD历史
+            cvd_data = self.get_cvd_history(cross_symbol, "1m", 240)
+            if cvd_data:
+                cvd_series = [self._get_close_from_candle(c) for c in cvd_data]
+                data["cvd_slope"] = self._calc_slope(cvd_series)
+            else:
+                data["cvd_slope"] = 0.0
+
+            # 6. 期权数据
+            option_data = self.get_option_max_pain(cross_symbol)
+            data["put_call_ratio"] = option_data.get("put_call_ratio", 0.0)
+            data["max_pain"] = option_data.get("max_pain", 0.0)
+
+            data["_complete"] = True
+            logger.info(f"跨币种数据获取完成 {cross_symbol}")
+            return data
+
+        except Exception as e:
+            logger.error(f"获取跨币种数据失败 {cross_symbol}: {e}")
+            return {"_complete": False}
 
 # ---------- OKX 实时价格 ----------
 def get_current_price(inst_id: str) -> float:

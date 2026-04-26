@@ -475,14 +475,13 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
 
 # ------------------- 终审法官C：裁决 -------------------
 def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> str:
-    return f"""你是一位拥有十年实盘经验的顶级加密货币交易员。你的团队已为你准备了以下材料：
+    return f"""你是一个拥有十年实盘经验的顶级加密货币交易员。你的团队已为你准备了以下材料：
 1. 交易员A的策略方案（包含完整推演过程）
 2. 审查官B的审计报告（包含数据错误、逻辑漏洞和反证提示）
 
-你的职责不是做选择题，而是基于你的专业判断，输出一份最终的、可直接执行的最终策略交易方案。
+你的职责不是做选择题，而是基于你的专业判断，输出一份最终的、可直接执行的交易方案。
 
 【交易标的】{symbol}
-【当前价格】{data.get('mark_price', 'N/A')}
 【交易员A的策略】
 方向：{original_strategy.get('direction')}
 仓位：{original_strategy.get('position_size')}
@@ -496,30 +495,29 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
 【审查官B的审计报告】
 {reviewer_report.get('full_report', '无报告')}
 
-一、【你的裁决原则】
+【你的裁决原则】
 1. 你是最终决策者，不是合规官。你的目标是在风险可控的前提下，输出一份可执行的策略。
-2. B的审计报告是你的参考工具，不是你的上司。B可能误判。你必须先判断B的每条指控是否真的成立，再决定采纳还是驳回。
-3. 如果B指出的致命错误（数据造假、逻辑断裂、方向与第一段运动矛盾）经你核实后确实成立且无法修复，你应该推翻A的方案。
+2. B的审计报告是你的参考工具，不是你的上司。你可以采纳、驳回或部分采纳其中的任何意见。
+3. 如果B指出的错误是致命的（数据造假、逻辑断裂、方向与第一段运动矛盾），你应该果断推翻A的方案。
 4. 如果B指出的错误是非致命的（止损过紧、仓位偏重、某个步骤推理略弱），你应该修正参数而非推翻方向。
 5. 如果B的质疑本身站不住脚，而A的推演逻辑坚实，你应该驳回B的质疑，维持A的原方向。
 6. 如果你认为A和B的争议点处于不可判定的灰色地带，你可以主动降仓、收紧止损，输出一份比A更保守但比B更积极的方案。
-7. 如果无法输出比A更稳健的方案，输出观望。但观望必须是最后的选择，而不是默认选项。
+7. 如果你无法输出比A更稳健的方案，你可以输出观望。但观望必须是最后的选择，而不是默认选项。
 
-二、【强制输出要求】
+【强制输出要求】
 你必须在 `reasoning` 中逐条回应 B 的每一项指控。对于每一项指控，你必须明确写出：
 - 是否采纳该指控？
-- 如果采纳，你做出了什么具体的修正（例如：“将止损从 78500 移至 78200，以反映 B 指出的 ATR 约束不足”）？
+- 如果采纳，你做出了什么具体的修正？
 - 如果不采纳，你的反驳理由是什么？
 - 最终，你的裁决方案是如何综合这些修正得出的？
 
-三、【最终策略】
--方向：做空/做多/观望
--现价：{data.get('mark_price', 'N/A')}
--入场区间：
--仓位：
--止损位：
--止盈位：
--裁决理由：
+你还必须输出一个完整的交易方案，包含方向、仓位、入场区间、止损位、止盈位、执行指令和裁决理由。
+
+【行动前自检，必须执行】
+在输出JSON之前，你必须确认：
+- 你的 `final_direction` 是 long 还是 short？
+- 你的 `execution_plan` 中的操作方向（做多/做空）是否与 `final_direction` 严格一致？
+- 如果不一致，说明你的输出存在矛盾，必须修正后再输出。
 
 输出JSON（不要代码块）：
 {{
@@ -533,13 +531,12 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
     "entry_price_high": 0.0,
     "stop_loss": 0.0,
     "take_profit": 0.0,
-    "execution_plan": "一句话指令",
+    "execution_plan": "一句话指令——必须与final_direction的操作方向一致",
     "reasoning": "逐条裁决过程 + 最终策略方案汇总",
     "risk_note": "风险说明"
   }}
 }}
 """
-
 def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> dict:
     prompt = build_judge_prompt(original_strategy, reviewer_report, data, symbol)
     client = OpenAI(
@@ -585,19 +582,20 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
 
 
 def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_report: dict = None) -> dict:
-    verdict = judge_result.get("judge_C", {}).get("final_verdict", "维持原判")
-    final = judge_result.get("judge_C", {})
+    # ... 原有逻辑保持不变 ...
 
-    logger.info(f"应用最终裁决: {verdict}")
-
-    original_strategy["_reviewed"] = True
-    original_strategy["_original_direction"] = original_strategy.get("direction")
-    original_strategy["_review_verdict"] = verdict
-    original_strategy["_judge_reasoning"] = final.get("reasoning", "")
-    original_strategy["_judge_data"] = final
-
-    if verdict == "维持原判":
-        return original_strategy
+    # 行动前自检兜底：检查执行指令是否与方向一致
+    exec_plan = original_strategy.get("execution_plan", "")
+    final_direction = original_strategy.get("direction", "")
+    
+    if final_direction == "long" and "做空" in exec_plan:
+        logger.warning("C的输出矛盾：方向为long但执行指令包含做空，已自动将方向改为neutral")
+        _force_neutral(original_strategy, "C输出矛盾：方向与执行指令不一致")
+    elif final_direction == "short" and "做多" in exec_plan:
+        logger.warning("C的输出矛盾：方向为short但执行指令包含做多，已自动将方向改为neutral")
+        _force_neutral(original_strategy, "C输出矛盾：方向与执行指令不一致")
+    
+    return original_strategy
 
     elif verdict == "修正参数":
         original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))

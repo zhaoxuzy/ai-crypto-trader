@@ -87,7 +87,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     # 审查标记提前获取
     reviewed = strategy.get("_reviewed", False)
     verdict = strategy.get("_review_verdict", "")
-    original_dir = strategy.get("_original_direction", "")
+    preliminary = strategy.get("_preliminary", False)
     issues = strategy.get("_review_issues", [])
 
     # ---------- 标题行 ----------
@@ -111,12 +111,14 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         parts.append(now)
         title = "## " + " · ".join(parts)
 
-        if reviewed:
+        if preliminary:
+            title += " · ⏳审查中"
+        elif reviewed:
             if verdict == "维持原判":
                 title += " · ✅审查确认"
-            elif verdict == "推翻原判改为观望":
+            elif verdict == "推翻改为观望":
                 title += " · ⚠️审查推翻"
-            elif verdict == "修正原判":
+            elif verdict in ("修正参数", "降级执行", "补充条件执行"):
                 title += " · 🔧审查修正"
 
         entry_low = strategy.get("entry_price_low", 0)
@@ -144,11 +146,9 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         risk_lines = ["> 请严格设置止损"]
     risk_block = "> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
 
-    # ---------- 审查意见（无论方向，只要审查过且非维持原判就显示）----------
-    if reviewed and verdict != "维持原判":
-        review_block = "> ### 🔍 异议审查意见\n"
-        if original_dir:
-            review_block += f"> 原方向：{original_dir}\n"
+    # ---------- 审查意见 ----------
+    if reviewed and verdict != "维持原判" and not preliminary:
+        review_block = "> ### 🔍 法庭判决\n"
         review_block += f"> 判决：{verdict}\n"
         if issues:
             review_block += "> 发现的问题：\n"

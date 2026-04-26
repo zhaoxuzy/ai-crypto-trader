@@ -133,7 +133,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
 
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
-    """格式化审查官B的错误报告"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
     
@@ -153,18 +152,39 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     if severity:
         summary += f"> 严重性统计：高={severity.get('高', 0)} 中={severity.get('中', 0)} 低={severity.get('低', 0)}\n"
     
-    report_lines = full_report.split('\n') if full_report else []
+    # 格式化报告内容，为四个标题加粗
     report_block = ""
-    for line in report_lines:
+    section_titles = [
+        "一、数据与解读错误",
+        "二、逻辑错误", 
+        "三、关键反证提示",
+        "四、博弈层面审视"
+    ]
+    
+    for line in full_report.split('\n'):
         line = line.strip()
-        if line:
-            report_block += f"> {line}\n"
+        if not line:
+            report_block += "> \n"
+            continue
+            
+        # 检查是否为四个主标题
+        is_title = False
+        for title_text in section_titles:
+            if line.startswith(title_text):
+                report_block += f"> **{line}**\n"
+                is_title = True
+                break
+        
+        if not is_title:
+            if line.startswith('>'):
+                report_block += f"{line}\n"
+            else:
+                report_block += f"> {line}\n"
     
     return f"{title}\n\n{summary}\n\n{report_block}"
 
 
 def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
-    """格式化法官C的最终裁决"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
     
@@ -181,7 +201,7 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
         size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
         conf = strategy.get("confidence", "medium")
         conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
-        parts = [f"{emoji} {text} 最终裁决 {symbol}"]
+        parts = [f"{emoji} 最终裁决 {symbol}"]
         if size_cn:
             parts.append(size_cn)
         parts.append(conf_cn)
@@ -220,17 +240,10 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
             if line:
                 reasoning_block += f"> {line}\n"
     
-    # 最终执行方案（单独一行醒目展示）
-    if direction != "neutral":
-        execution_block = "> \n> ### 🎯 最终执行方案\n"
-        execution_block += f"> **{text} {symbol}** | 仓位: {size_cn} | 入场: {entry_low:.0f}-{entry_high:.0f} | 止损: {stop:.0f} | 止盈: {tp:.0f} | 盈亏比: {rr_str}\n"
-    else:
-        execution_block = ""
-    
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
     if not risk_lines:
         risk_lines = ["> 请严格设置止损"]
     risk_block = "> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
     
-    return f"{title}\n\n{param}\n\n{reasoning_block}{execution_block}\n\n{risk_block}"
+    return f"{title}\n\n{param}\n\n{reasoning_block}\n\n{risk_block}"

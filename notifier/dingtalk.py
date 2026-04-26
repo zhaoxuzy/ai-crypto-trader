@@ -88,156 +88,69 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     verdict = strategy.get("_review_verdict", "")
     preliminary = strategy.get("_preliminary", False)
 
-    # ---------- 审查后的最终信号：只输出裁决结果 ----------
-    if reviewed and not preliminary:
-        # 标题行
-        if direction == "neutral":
-            title = f"## ⚪ 观望 {symbol} · 🔴低 · {now} · ⚠️审查推翻"
-        else:
-            emoji = "🟢" if direction == "long" else "🔴"
-            text = "做多" if direction == "long" else "做空"
-            size = strategy.get("position_size", "none")
-            size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
-            conf = strategy.get("confidence", "medium")
-            conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
-            parts = [f"{emoji} {text} {symbol}"]
-            if size_cn:
-                parts.append(size_cn)
-            parts.append(conf_cn)
-            parts.append(now)
-            title = "## " + " · ".join(parts)
+    # 标题行
+    if direction == "neutral":
+        title = f"## ⚪ 观望 {symbol} · 🔴低 · {now}"
+        param = f"> 现价{data.get('mark_price', 0):.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
+        if reviewed and verdict != "维持原判":
+            title += " · ⚠️审查推翻"
+    else:
+        emoji = "🟢" if direction == "long" else "🔴"
+        text = "做多" if direction == "long" else "做空"
+        size = strategy.get("position_size", "none")
+        size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
+        conf = strategy.get("confidence", "medium")
+        conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
+
+        parts = [f"{emoji} {text} {symbol}"]
+        if size_cn:
+            parts.append(size_cn)
+        parts.append(conf_cn)
+        parts.append(now)
+        title = "## " + " · ".join(parts)
+
+        if preliminary:
+            title += " · ⏳审查中"
+        elif reviewed:
             if verdict == "维持原判":
                 title += " · ✅审查确认"
-            elif verdict in ("修正参数", "降级执行"):
-                title += " · 🔧审查修正"
             elif verdict == "推翻改为观望":
                 title += " · ⚠️审查推翻"
+            elif verdict in ("修正参数", "降级执行"):
+                title += " · 🔧审查修正"
 
-        # 参数卡片
         entry_low = strategy.get("entry_price_low", 0)
         entry_high = strategy.get("entry_price_high", 0)
         stop = strategy.get("stop_loss", 0)
         tp = strategy.get("take_profit", 0)
         current = data.get("mark_price", 0)
-        if direction == "neutral":
-            param = f"> 现价{current:.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
-        else:
-            mid = (entry_low + entry_high) / 2 if entry_low and entry_high else 0
-            risk = abs(mid - stop) if stop else 0
-            reward = abs(tp - mid) if tp else 0
-            rr = reward / risk if risk > 0 else 0
-            rr_str = f"{rr:.2f}" if rr else "N/A"
-            param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-        # 法官C裁决数据
-        judge_data = strategy.get("_judge_data", {})
-        judge_reasoning = strategy.get("_judge_reasoning", "")
-        
-        # 法庭判决块
-        review_block = "> ### 🔍 法庭最终判决\n"
-        review_block += f"> **法官C裁决：{verdict}**\n"
-        
-        if verdict == "降级执行":
-            original_size = strategy.get("_original_size", "")
-            review_block += f"> 仓位降级为：{size_cn}\n"
-        
-        # 法官C的裁决理由
-        if judge_reasoning:
-            reasoning_lines = judge_reasoning.split('\n')
-            for line in reasoning_lines[:15]:  # 最多显示15行
-                line = line.strip()
-                if line:
-                    review_block += f"> {line}\n"
-        
-        # B的错误报告
-        review_report = strategy.get("_review_report", "")
-        if review_report:
-            review_block += "> \n> ### 📋 审查官B错误报告\n"
-            report_lines = review_report.split('\n')
-            for line in report_lines[:10]:  # 最多显示10行
-                line = line.strip()
-                if line and (line.startswith('-') or line.startswith('【') or line.startswith('一') or line.startswith('二') or line.startswith('三')):
-                    review_block += f"> {line}\n"
+        mid = (entry_low + entry_high) / 2 if entry_low and entry_high else 0
+        risk = abs(mid - stop) if stop else 0
+        reward = abs(tp - mid) if tp else 0
+        rr = reward / risk if risk > 0 else 0
+        rr_str = f"{rr:.2f}" if rr else "N/A"
 
-        # 风险说明
-        risk_raw = strategy.get("risk_note", "请严格设置止损")
-        risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
-        if not risk_lines:
-            risk_lines = ["> 请严格设置止损"]
-        risk_block = "> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
+        param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-        # 脚注
-        atr = data.get("atr_15m", 0)
-        funding = data.get("funding_rate", 0)
-        oi_chg = data.get("oi_change_24h", 0)
-        cvd = data.get("cvd_slope", 0)
-        cvd_dir = "↗" if cvd > 0 else ("↘" if cvd < 0 else "→")
-        fg = data.get("fear_greed", 50)
-        foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
-
-        return f"{title}\n\n{param}\n\n{review_block}\n\n{risk_block}\n\n{foot}"
-
-    # ---------- 审查中的初步信号：包含完整推演 ----------
-    if direction == "neutral":
-        title = f"## ⚪ 观望 {symbol} · 🔴低 · {now}"
-        if preliminary:
-            title += " · ⏳审查中"
-        reasoning_raw = strategy.get("reasoning", "无推理过程")
-        reasoning_block = format_reasoning(reasoning_raw)
-        risk_raw = strategy.get("risk_note", "请严格设置止损")
-        risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
-        if not risk_lines:
-            risk_lines = ["> 请严格设置止损"]
-        risk_block = "> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
-        atr = data.get("atr_15m", 0)
-        funding = data.get("funding_rate", 0)
-        oi_chg = data.get("oi_change_24h", 0)
-        cvd = data.get("cvd_slope", 0)
-        cvd_dir = "↗" if cvd > 0 else ("↘" if cvd < 0 else "→")
-        fg = data.get("fear_greed", 50)
-        foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
-        return f"{title}\n\n### 🧠 交易员推理\n{reasoning_block}\n\n{risk_block}\n\n{foot}"
-
-    emoji = "🟢" if direction == "long" else "🔴"
-    text = "做多" if direction == "long" else "做空"
-    size = strategy.get("position_size", "none")
-    size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
-    conf = strategy.get("confidence", "medium")
-    conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
-
-    parts = [f"{emoji} {text} {symbol}"]
-    if size_cn:
-        parts.append(size_cn)
-    parts.append(conf_cn)
-    parts.append(now)
-    title = "## " + " · ".join(parts)
-
-    if preliminary:
-        title += " · ⏳审查中"
-
-    entry_low = strategy.get("entry_price_low", 0)
-    entry_high = strategy.get("entry_price_high", 0)
-    stop = strategy.get("stop_loss", 0)
-    tp = strategy.get("take_profit", 0)
-    current = data.get("mark_price", 0)
-
-    mid = (entry_low + entry_high) / 2 if entry_low and entry_high else 0
-    risk = abs(mid - stop) if stop else 0
-    reward = abs(tp - mid) if tp else 0
-    rr = reward / risk if risk > 0 else 0
-    rr_str = f"{rr:.2f}" if rr else "N/A"
-
-    param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
-
+    # 推理内容
     reasoning_raw = strategy.get("reasoning", "无推理过程")
     reasoning_block = format_reasoning(reasoning_raw)
 
+    # 风险说明
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
     if not risk_lines:
         risk_lines = ["> 请严格设置止损"]
     risk_block = "> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
 
+    # 审查意见
+    if reviewed and verdict != "维持原判" and not preliminary:
+        review_block = "> ### 🔍 法庭判决\n"
+        review_block += f"> 判决：{verdict}\n"
+        risk_block = review_block + "\n" + risk_block
+
+    # 脚注
     atr = data.get("atr_15m", 0)
     funding = data.get("funding_rate", 0)
     oi_chg = data.get("oi_change_24h", 0)
@@ -247,12 +160,13 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
     return f"{title}\n\n{param}\n\n### 🧠 交易员推理\n{reasoning_block}\n\n{risk_block}\n\n{foot}"
-    def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
+
+
+def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
     """格式化审查官B的错误报告"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
     
-    direction = strategy.get("direction", "neutral")
     verdict = reviewer_report.get("verdict", "通过")
     severity = reviewer_report.get("severity_counts", {})
     full_report = reviewer_report.get("full_report", "")

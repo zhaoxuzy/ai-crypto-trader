@@ -68,7 +68,7 @@ def main():
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()
-    review_thread.join(timeout=60)
+    review_thread.join(timeout=90)
 
     # 4. 超时保护
     if review_thread.is_alive():

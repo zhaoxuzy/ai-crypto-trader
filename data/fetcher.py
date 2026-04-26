@@ -8,8 +8,9 @@ from utils.logger import logger
 
 
 class RateLimiter:
-    def __init__(self, max_requests: int = 20, window_seconds: int = 60, safety_margin: int = 1):
-        self.max_requests = max_requests - safety_margin
+    """基于滑动窗口的限速器，不限制请求间隔，只在窗口内请求数达到上限时等待"""
+    def __init__(self, max_requests: int = 20, window_seconds: int = 60):
+        self.max_requests = max_requests    # 直接使用 20 次配额，不保留余量
         self.window_seconds = window_seconds
         self._timestamps = deque()
         self._lock = Lock()
@@ -17,16 +18,22 @@ class RateLimiter:
     def wait(self):
         with self._lock:
             now = time.time()
+            # 清理窗口外的旧记录
             while self._timestamps and self._timestamps[0] < now - self.window_seconds:
                 self._timestamps.popleft()
+            
+            # 只有当窗口内请求数达到上限时才等待
             if len(self._timestamps) >= self.max_requests:
-                sleep_time = self._timestamps[0] + self.window_seconds - now + 0.3
+                sleep_time = self._timestamps[0] + self.window_seconds - now + 0.1
                 if sleep_time > 0:
                     time.sleep(sleep_time)
+                # 重新清理
                 now = time.time()
                 while self._timestamps and self._timestamps[0] < now - self.window_seconds:
                     self._timestamps.popleft()
-            self._timestamps.append(time.time())
+            
+            # 记录本次请求
+            self._timestamps.append(now)
 
 
 class CoinGlassClient:
@@ -35,7 +42,7 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter(max_requests=20, window_seconds=60, safety_margin=1)
+        self._rate_limiter = RateLimiter(max_requests=20, window_seconds=60)  # 移除安全余量
         self._semaphore = Semaphore(8)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:

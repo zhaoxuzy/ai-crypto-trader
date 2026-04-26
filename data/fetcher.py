@@ -6,17 +6,21 @@ from threading import Semaphore
 from utils.logger import logger
 
 
+from threading import Lock
+
 class RateLimiter:
-    def __init__(self, min_interval: float = 0.1):  # 极微小间隔，削峰，防止并发冲撞
+    def __init__(self, min_interval: float = 0.1):
         self.min_interval = min_interval
         self._last_request_time = 0.0
+        self._lock = Lock()                       # 新增线程锁
 
     def wait(self):
-        now = time.time()
-        elapsed = now - self._last_request_time
-        if elapsed < self.min_interval:
-            time.sleep(self.min_interval - elapsed)
-        self._last_request_time = time.time()
+        with self._lock:                          # 加锁，确保串行
+            now = time.time()
+            elapsed = now - self._last_request_time
+            if elapsed < self.min_interval:
+                time.sleep(self.min_interval - elapsed)
+            self._last_request_time = time.time()
 
 
 class CoinGlassClient:

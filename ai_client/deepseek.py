@@ -181,7 +181,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 最终结论：
 跨币种反馈：基于以上对比，我的单币种结论被如何修正？有无新增风险点？如果有，我必须回到第三步或第五步的自我质疑中重新审视。
 
-第七步：交易计划【基于前六步的分析，独自裁决，你直接做出方向判断并制定具体的交易计划】
+第七步：交易计划【基于前六步的分析，你直接做出方向判断并制定具体的交易计划】
 方向判断：我决定做多 / 做空 / 观望。我的置信度为 high / medium / low，仓位为 heavy / medium / light。
 价格路径推演：必须综合运用流动性猎杀理论（清算池位置/强度）、行为金融学（对手盘心理、恐慌/贪婪、顶级多空比极端值）以及博弈论（做市商与散户的短期博弈策略）进行推演，价格最可能如何测试并触发关键流动性区域？触发后会产生何种连锁强平或踩踏？
 合约策略：入场区间+止损位+止盈位，说明具体的依据。
@@ -372,7 +372,7 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
     bias_map = {'long': '偏向上方', 'short': '偏向下止', 'neutral': '无明确偏向'}
     bias_text = bias_map.get(liquidity_bias, '无数据')
 
-    return f"""你是一位顶级加密货币交易策略的审查官。你的唯一任务是快速找出交易员A策略中的错误。你只找错误，不做裁决，不写建议。
+    return f"""你是一位顶级加密货币交易策略的审查官，你的唯一任务是快速找出交易员A策略中的错误。你只依据客观事实找错误，不得强行编造。
 
 【交易标的】{symbol}
 【代码层客观锚点】清算池综合吸引力评分：{bias_text}（基于规模/触发距/订单簿计算，数学模型得出）
@@ -413,7 +413,7 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=1024,  # 精简输出，加快响应
+                max_tokens=1024,
                 timeout=60
             )
             content = resp.choices[0].message.content or ""
@@ -428,13 +428,12 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
                     if f"严重性：{level}" in line:
                         severity_counts[level] += 1
             
-            # 简单判决：存在“高”严重性错误则驳回，无任何错误则通过，其余存疑
+            # 提取审查结论
+            verdict = "通过"
             if severity_counts["高"] > 0:
                 verdict = "驳回"
             elif severity_counts["中"] > 0 or severity_counts["低"] > 0:
                 verdict = "存疑"
-            else:
-                verdict = "通过"
                 
             return {"verdict": verdict, "full_report": content, "severity_counts": severity_counts}
         except Exception as e:
@@ -447,17 +446,23 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
 
 # ------------------- 终审法官C：裁决 -------------------
 def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> str:
-    return f"""你是一位顶级加密货币交易策略的终审法官。交易员A的策略和审查官B的审查报告已提交给你。请严格按以下决策树进行裁决：
+    return f"""你是一位制衡武断的终审法官。你的目标不是满足B的审查要求，而是输出一份比A更准确、更稳健、更能应对市场不确定性的策略。
 
 【交易标的】{symbol}
-【原策略】
-{json.dumps(original_strategy, ensure_ascii=False, indent=2)}
+【交易员A的策略】
+方向：{original_strategy.get('direction')}
+仓位：{original_strategy.get('position_size')}
+入场：{original_strategy.get('entry_price_low')} - {original_strategy.get('entry_price_high')}
+止损：{original_strategy.get('stop_loss')}
+止盈：{original_strategy.get('take_profit')}
 
-【审查官B的审查报告】
+【A的原始推演过程】
+{original_strategy.get('reasoning', '无推演过程')}
+
+【审查官B的错误报告】
 {reviewer_report.get('full_report', '无报告')}
 
-【你的角色：制衡武断的终审法官】
-你的目标不是满足B的审查要求，而是输出一份比A更准确、更稳健、更能应对市场不确定性的策略。
+【你的工作流程——严格按此执行，不得跳过】
 
 第一步：逐条审视B的指控
 对每条指控，回答三个问题：
@@ -482,13 +487,18 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
 【核心原则】
 你输出的策略必须比A的原策略更稳健。如果无法做到更稳健，就输出观望。
 
+【铁律清单】
+以下任一情况即为致命错误，必须输出E级（推翻改为观望）：
+1. 数据造假或严重误读：B标注为“高”严重性，且该错误直接影响方向判断。
+2. 核心逻辑链断裂：B标注为“断裂”，且无法通过调整参数修复。
+3. 方向与第一段显著运动违反：A预测“先跌后涨”（跌幅≥有效阈值），却输出做多。
+4. 止损未满足1.2倍ATR且你无法在合理范围内外移。
+
 输出JSON（不要代码块）：
 {{
   "judge_C": {{
     "final_verdict": "维持原判/修正参数/降级执行/推翻改为观望",
     "verdict_level": "A/B/C/E",
-    "exception_used": "是/否",
-    "exception_reason": "若使用例外条款，填写原因",
     "final_direction": "long/short/neutral",
     "final_confidence": "high/medium/low",
     "final_position_size": "light/medium/heavy/none",
@@ -497,7 +507,7 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
     "stop_loss": 0.0,
     "take_profit": 0.0,
     "execution_plan": "一句话指令",
-    "reasoning": "裁决理由",
+    "reasoning": "裁决理由——必须说明每个有效错误是如何修复的，或为何驳回",
     "risk_note": "风险说明"
   }}
 }}

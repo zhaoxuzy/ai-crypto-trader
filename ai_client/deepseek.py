@@ -413,8 +413,8 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=2048,
-                timeout=60
+                max_tokens=4096,   # 提升至4096，避免输出截断
+                timeout=120        # 延长超时
             )
             content = resp.choices[0].message.content or ""
             _log_response(prompt, content)
@@ -428,7 +428,6 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
                     if f"严重性：{level}" in line:
                         severity_counts[level] += 1
             
-            # 提取审查结论
             verdict = "通过"
             if severity_counts["高"] > 0:
                 verdict = "驳回"
@@ -441,6 +440,8 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
             else:
+                # 兜底：所有重试均失败，标记为通过，避免中断
+                logger.warning("审查官B所有重试均失败，标记为通过，跳过审查")
                 return {"verdict": "通过", "full_report": "审查官调用失败，跳过审查"}
 
 
@@ -527,8 +528,8 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=2048,
-                timeout=60
+                max_tokens=4096,   # 提升至4096，避免输出截断
+                timeout=120        # 延长超时
             )
             content = resp.choices[0].message.content or ""
             _log_response(prompt, content)

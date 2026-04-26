@@ -7,7 +7,7 @@ from utils.logger import logger
 
 
 class RateLimiter:
-    def __init__(self, min_interval: float = 0.0):  # 改为 0
+    def __init__(self, min_interval: float = 0.1):   # 极微小间隔，削峰
         self.min_interval = min_interval
         self._last_request_time = 0.0
 

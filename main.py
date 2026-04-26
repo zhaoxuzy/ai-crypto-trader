@@ -74,7 +74,7 @@ def main():
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()
-    review_thread.join(timeout=300)
+    review_thread.join(timeout=240)
 
     if review_thread.is_alive():
         logger.warning("审查总线程超时，按原策略降级执行")
@@ -93,7 +93,6 @@ def main():
         final_msg = format_judge_message(symbol, strategy, data)
         send_dingtalk_message(final_msg, title=f"{symbol} 最终裁决 (C-法官)")
     else:
-        # 兜底推送
         final_msg = format_strategy_message(symbol, strategy, data)
         send_dingtalk_message(final_msg, title=f"{symbol} 策略推送 (最终)")
 

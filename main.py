@@ -47,9 +47,13 @@ def main():
     prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
     send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (审查中...)")
 
-    # 3. 审查官B + 法官C 异步执行
-    def run_review_and_judge():
+
+     # 3. 审查官B + 法官C 异步执行（独立超时）
+def run_review_and_judge():
         nonlocal strategy
+        
+        # --- 审查官B，独立超时60秒 ---
+        reviewer_report = None
         try:
             reviewer_report = call_reviewer(strategy, data, symbol)
         except Exception as e:
@@ -57,6 +61,7 @@ def main():
             strategy["_reviewed"] = False
             return
 
+        # --- 法官C，独立超时120秒 ---
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
         except Exception as e:
@@ -68,11 +73,11 @@ def main():
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()
-    review_thread.join(timeout=90)
+    review_thread.join(timeout=180)  # 总超时延长至180秒
 
     # 4. 超时保护
     if review_thread.is_alive():
-        logger.warning("审查超时，按原策略降级执行")
+        logger.warning("审查总线程超时，按原策略降级执行")
         strategy["_reviewed"] = False
         strategy["_review_timeout"] = True
         size_map = {"heavy": "medium", "medium": "light", "light": "light"}

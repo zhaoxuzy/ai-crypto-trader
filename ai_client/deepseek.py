@@ -183,6 +183,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 
 第七步：交易计划【基于前六步的分析，你直接做出方向判断并制定具体的交易计划。你的责任是交易员，不需要在此处自我审查或裁决。】
 方向判断：我决定做多 / 做空 / 观望。我的置信度为 high / medium / low，仓位为 heavy / medium / light。
+【盈亏比硬约束】你必须确保策略的盈亏比 ≥ 1.5。如果当前波动率（1h ATR）无法支撑此盈亏比，你必须放弃交易（输出观望）。计算方式：盈亏比 = |止盈 - 最差入场| / |止损 - 最差入场|。
 价格路径推演：必须综合运用流动性猎杀理论（清算池位置/强度）、行为金融学（对手盘心理、恐慌/贪婪、顶级多空比极端值）以及博弈论（做市商与散户的短期博弈策略）进行推演，价格最可能如何测试并触发关键流动性区域？触发后会产生何种连锁强平或踩踏？
 合约策略：入场区间+止损位+止盈位，说明具体的依据。
 主动证伪信号：
@@ -216,24 +217,46 @@ def _log_response(prompt: str, content: str, reasoning: str = None):
 
 
 def extract_json(content: str) -> str:
+    # 提取 ```json ... ``` 代码块
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
     if m:
         return m.group(1).strip()
     m = re.search(r'```\s*([\s\S]*?)\s*```', content)
     if m:
         return m.group(1).strip()
+    # 栈匹配
     start = content.find('{')
     if start == -1:
         raise ValueError("未找到 JSON")
     count = 0
+    end = -1
     for i, c in enumerate(content[start:], start):
         if c == '{':
             count += 1
         elif c == '}':
             count -= 1
             if count == 0:
-                return content[start:i+1].strip()
-    raise ValueError("JSON 未闭合")
+                end = i
+                break
+        elif c == '"':
+            # 简单跳过字符串
+            j = i + 1
+            while j < len(content):
+                if content[j] == '\\':
+                    j += 2
+                    continue
+                if content[j] == '"':
+                    i = j
+                    break
+                j += 1
+    if end > start:
+        return content[start:end+1].strip()
+    else:
+        # 补全缺失的 }
+        logger.warning("JSON 可能被截断，尝试自动补全")
+        json_candidate = content[start:]
+        json_candidate = json_candidate.rstrip() + '}' * count
+        return json_candidate
 
 
 def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
@@ -285,7 +308,6 @@ def round_to_tick(price: float) -> float:
 
 
 def _force_neutral(s: dict, reason: str):
-    old_risk = s.get('risk_note', '')
     s["direction"] = "neutral"
     s["confidence"] = "low"
     s["position_size"] = "none"
@@ -294,8 +316,9 @@ def _force_neutral(s: dict, reason: str):
     s["stop_loss"] = 0
     s["take_profit"] = 0
     s["execution_plan"] = ""
-    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[法官裁决] 原策略被推翻改为观望。原因：{reason}").strip()
-    s["risk_note"] = f"[法官裁决] 原策略被推翻改为观望。"
+    if "reasoning" in s:
+        s["reasoning"] += f"\n\n[系统自动干预] 信号被强制改为观望。原因：{reason}"
+    s["risk_note"] = f"[系统干预] 强制观望。{reason}"
 
 
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
@@ -339,11 +362,15 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     if entry_low > entry_high:
         return False, "入场区间下限大于上限"
 
+    # 止损逻辑硬拦截
     if direction == "long" and stop_loss >= entry_low:
-        s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间下方，请人工确认。"
-    elif direction == "short" and stop_loss <= entry_high:
-        s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间上方，请人工确认。"
+        _force_neutral(s, "做多止损位高于入场下限，风控逻辑错误，强制观望")
+        return True, "已自动修正为观望"
+    if direction == "short" and stop_loss <= entry_high:
+        _force_neutral(s, "做空止损位低于入场上限，风控逻辑错误，强制观望")
+        return True, "已自动修正为观望"
 
+    # 盈亏比计算
     try:
         if direction == "long":
             worst_entry = entry_high
@@ -371,7 +398,7 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
     bias_map = {'long': '偏向上方', 'short': '偏向下止', 'neutral': '无明确偏向'}
     bias_text = bias_map.get(liquidity_bias, '无数据')
 
-    return f"""你是一位顶级加密货币交易策略的审查官，你必须全面审查交易员A策略中的错误，必须符合客观事实，不得强行编造。
+    return f"""你是一位顶级加密货币交易策略的审查官。你的唯一任务是快速找出交易员A策略中的错误。你只找错误，不做裁决，不写建议。
 
 【交易标的】{symbol}
 【代码层客观锚点】清算池综合吸引力评分：{bias_text}（基于规模/触发距/订单簿计算，数学模型得出）
@@ -384,20 +411,20 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
 【审查要求】
 请严格按照以下模板输出，只输出报告内容，不要额外解释：
 
-【审查官B - 审查报告】
+【审查官B - 错误报告】
 
 一、数据与解读错误
 - [若有错误，按此格式：在[步骤X]中，A声称[数值/解读]，但实际数据为[数值/正确含义]。此错误[是否影响方向判断]。 [严重性：高/中/低]]
 - [若无，写“未发现数据或解读错误”]
 
-二、逻辑错误审查
-- [若有错误，按此格式：[错误类型]A在[步骤X]：[描述]。 [严重性：高/中/低]]
+二、逻辑错误
+- [若有错误，按此格式：[错误类型]在[步骤X]：[描述]。 [严重性：高/中/低]]
 - [若无，写“未发现明显逻辑错误”]
 
 三、关键反证提示
 - [若A选择性忽略了某个关键反向数据，按此格式：在[步骤X]中，[反向数据X]被忽略或低估，该数据暗示[方向]，可能与A的结论构成矛盾。 [严重性：高/中/低]]
 
-四、博弈层面审视
+四、博弈层面审视（可选）
 - A的策略假设做市商站在哪一边？做市商是否有可能反向利用A的止损簇来猎杀流动性？
 - A的入场点位是否恰好是另一类聪明钱（如趋势跟踪基金、期权做市商）的理想反向入场点？
 """
@@ -417,7 +444,7 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=4096,
-                timeout=180
+                timeout=120
             )
             content = resp.choices[0].message.content or ""
             _log_response(prompt, content)
@@ -480,17 +507,13 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
 【强制输出要求】
 你必须在 `reasoning` 中逐条回应 B 的每一项指控。对于每一项指控，你必须明确写出：
 - 是否采纳该指控？
-- 如果采纳，采纳理由：你做出了什么具体的修正（例如：“将止损从 78500 移至 78200，以反映 B 指出的 ATR 约束不足”）？
-- 如果不采纳，驳回理由：你的反驳理由是什么？
-【最终方案】
-在逐条回应完所有指控后，输出完整的最终策略：
-- 方向：[A的原方向 / neutral]
-- 仓位：[light/medium/heavy/none]
-- 入场区间：[修正后的入场区间]
-- 止损位：[修正后的止损位]
-- 止盈位：[修正后的止盈位]
-- 执行指令：[一句话指令]
-- 裁决理由：[你修正或驳回的核心逻辑]
+- 如果采纳，你做出了什么具体的修正（例如：“将止损从 78500 移至 78200，以反映 B 指出的 ATR 约束不足”）？
+- 如果不采纳，你的反驳理由是什么？
+- 最终，你的裁决方案是如何综合这些修正得出的？
+
+【胜率预期校准】在 `reasoning` 末尾，请额外写一句：“我预期此策略的胜率约为 X%，若执行100次，盈利次数约 X 次，最大连续回撤可能达到 Y%。”
+
+你还必须输出一个完整的交易方案，包含方向、仓位、入场区间、止损位、止盈位、执行指令和裁决理由。
 
 输出JSON（不要代码块）：
 {{
@@ -510,6 +533,7 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
   }}
 }}
 """
+
 
 def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> dict:
     prompt = build_judge_prompt(original_strategy, reviewer_report, data, symbol)
@@ -547,8 +571,11 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
         except Exception as e:
             logger.warning(f"法官C调用失败: {e}")
             if attempt < MAX_RETRIES - 1:
-                time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
+                wait_time = RETRY_BASE_WAIT ** (attempt + 1)
+                logger.info(f"等待 {wait_time} 秒后重试...")
+                time.sleep(wait_time)
             else:
+                logger.warning("法官C所有重试均失败，维持原判")
                 return {"judge_C": {"final_verdict": "维持原判", "verdict_level": "A"}}
 
 

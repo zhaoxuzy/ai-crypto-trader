@@ -24,7 +24,7 @@ def main():
     try:
         cross_data = client.get_cross_asset_data(cross_symbol)
     except Exception as e:
-        logger.warning(f"获取跨币种数据失败：{e}，将跳过第六步验证")
+        logger.warning(f"获取跨币种数据失败：{e}")
 
     prompt = build_prompt(data, symbol, eth_data=cross_data)
 
@@ -70,7 +70,7 @@ def main():
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()
-    review_thread.join(timeout=30)
+    review_thread.join(timeout=60)  # 给予更充裕的时间
 
     if review_thread.is_alive():
         logger.warning("审查超时，按原策略降级执行")

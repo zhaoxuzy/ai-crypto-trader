@@ -582,20 +582,19 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
 
 
 def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_report: dict = None) -> dict:
-    # ... 原有逻辑保持不变 ...
+    verdict = judge_result.get("judge_C", {}).get("final_verdict", "维持原判")
+    final = judge_result.get("judge_C", {})
 
-    # 行动前自检兜底：检查执行指令是否与方向一致
-    exec_plan = original_strategy.get("execution_plan", "")
-    final_direction = original_strategy.get("direction", "")
-    
-    if final_direction == "long" and "做空" in exec_plan:
-        logger.warning("C的输出矛盾：方向为long但执行指令包含做空，已自动将方向改为neutral")
-        _force_neutral(original_strategy, "C输出矛盾：方向与执行指令不一致")
-    elif final_direction == "short" and "做多" in exec_plan:
-        logger.warning("C的输出矛盾：方向为short但执行指令包含做多，已自动将方向改为neutral")
-        _force_neutral(original_strategy, "C输出矛盾：方向与执行指令不一致")
-    
-    return original_strategy
+    logger.info(f"应用最终裁决: {verdict}")
+
+    original_strategy["_reviewed"] = True
+    original_strategy["_original_direction"] = original_strategy.get("direction")
+    original_strategy["_review_verdict"] = verdict
+    original_strategy["_judge_reasoning"] = final.get("reasoning", "")
+    original_strategy["_judge_data"] = final
+
+    if verdict == "维持原判":
+        return original_strategy
 
     elif verdict == "修正参数":
         original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
@@ -605,6 +604,8 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
         original_strategy["entry_price_high"] = final.get("entry_price_high", original_strategy["entry_price_high"])
         original_strategy["stop_loss"] = final.get("stop_loss", original_strategy["stop_loss"])
         original_strategy["take_profit"] = final.get("take_profit", original_strategy["take_profit"])
+        # 代码层兜底：检查执行指令方向一致性
+        _validate_execution_direction(original_strategy)
         return original_strategy
 
     elif verdict == "降级执行":
@@ -618,10 +619,39 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
         else:
             size_map = {"heavy": "medium", "medium": "light", "light": "light"}
             original_strategy["position_size"] = size_map.get(original_strategy.get("position_size", "light"), "light")
+        # 代码层兜底：检查执行指令方向一致性
+        _validate_execution_direction(original_strategy)
         return original_strategy
 
     elif verdict == "推翻改为观望":
         _force_neutral(original_strategy, f"法官判决: {verdict}")
         return original_strategy
 
+    elif verdict == "推翻改为反向操作":
+        # 完全采用C的新方向和参数
+        original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
+        original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
+        original_strategy["position_size"] = final.get("final_position_size", original_strategy.get("position_size"))
+        original_strategy["entry_price_low"] = final.get("entry_price_low", 0)
+        original_strategy["entry_price_high"] = final.get("entry_price_high", 0)
+        original_strategy["stop_loss"] = final.get("stop_loss", 0)
+        original_strategy["take_profit"] = final.get("take_profit", 0)
+        # 代码层兜底：检查执行指令方向一致性
+        _validate_execution_direction(original_strategy)
+        return original_strategy
+
+    # 如果走到这里，说明是未知判决，默认维持原判
     return original_strategy
+
+
+def _validate_execution_direction(s: dict):
+    """代码层兜底：检查执行指令是否与方向一致，不一致则强制中立"""
+    exec_plan = s.get("execution_plan", "")
+    final_direction = s.get("direction", "")
+    
+    if final_direction == "long" and "做空" in exec_plan:
+        logger.warning("C的输出矛盾：方向为long但执行指令包含做空，已自动将方向改为neutral")
+        _force_neutral(s, "C输出矛盾：方向与执行指令不一致")
+    elif final_direction == "short" and "做多" in exec_plan:
+        logger.warning("C的输出矛盾：方向为short但执行指令包含做多，已自动将方向改为neutral")
+        _force_neutral(s, "C输出矛盾：方向与执行指令不一致")

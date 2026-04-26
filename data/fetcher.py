@@ -8,12 +8,8 @@ from utils.logger import logger
 
 
 class RateLimiter:
-    """
-    基于滑动窗口的限速器。
-    只有在窗口内请求数达到 max_requests 时才等待，否则直接放行。
-    """
-    def __init__(self, max_requests: int = 20, window_seconds: int = 60):
-        self.max_requests = max_requests   # 直接设为20，不保留余量
+    def __init__(self, max_requests: int = 20, window_seconds: int = 60, safety_margin: int = 1):
+        self.max_requests = max_requests - safety_margin
         self.window_seconds = window_seconds
         self._timestamps = deque()
         self._lock = Lock()
@@ -21,21 +17,16 @@ class RateLimiter:
     def wait(self):
         with self._lock:
             now = time.time()
-            # 清理窗口外的旧记录
             while self._timestamps and self._timestamps[0] < now - self.window_seconds:
                 self._timestamps.popleft()
-            
-            # 只有在达到限制时才等待
             if len(self._timestamps) >= self.max_requests:
-                sleep_time = self._timestamps[0] + self.window_seconds - now + 0.2
+                sleep_time = self._timestamps[0] + self.window_seconds - now + 0.3
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                 now = time.time()
                 while self._timestamps and self._timestamps[0] < now - self.window_seconds:
                     self._timestamps.popleft()
-            
-            # 记录本次请求
-            self._timestamps.append(now)
+            self._timestamps.append(time.time())
 
 
 class CoinGlassClient:
@@ -44,29 +35,25 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter(max_requests=20, window_seconds=60)
+        self._rate_limiter = RateLimiter(max_requests=20, window_seconds=60, safety_margin=1)
         self._semaphore = Semaphore(8)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {"accept": "application/json", "X-Api-Key": self.api_key}
         base_params = params.copy() if params else {}
-        
         if allow_backup and "exchange" in base_params:
             exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
         else:
             exchanges_to_try = [base_params.get("exchange", self.primary_exchange)]
-
         last_error = None
-
         for exchange in exchanges_to_try:
             current_params = base_params.copy()
             if exchange is not None and "exchange" in current_params:
                 current_params["exchange"] = exchange
-
             for attempt in range(max_retries):
                 with self._semaphore:
-                    self._rate_limiter.wait()   # 通常直接放行
+                    self._rate_limiter.wait()
                     try:
                         logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}")
                         resp = requests.get(url, params=current_params, headers=headers, timeout=15)
@@ -107,20 +94,10 @@ class CoinGlassClient:
                         else:
                             logger.warning(f"{exchange} 重试{max_retries}次后仍异常")
                             break
-
         if silent_fail:
             logger.warning(f"CoinGlass 数据获取失败（静默）: {last_error}")
             return {}
         raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
-
-    # ---------- 以下所有方法保持之前版本不变 ----------
-    # _get_close_from_candle, _calc_percentile, _calc_slope, _calc_atr, _calc_atr_list, _get_symbol
-    # get_kline_history, get_oi_ohlc_history, get_weighted_funding_rate_history, get_liquidation_heatmap
-    # get_top_long_short_ratio_history, get_cvd_history, get_option_max_pain, get_fear_and_greed_index
-    # get_netflow, get_orderbook_imbalance, get_exchange_btc_balance, get_aggregated_oi_history
-    # get_eth_btc_ratio, get_all_data, get_cross_asset_data
-    # get_current_price, get_klines
-    # （省略，请直接使用您之前文件中的完整实现）
 
     @staticmethod
     def _get_close_from_candle(candle) -> float:
@@ -216,10 +193,7 @@ class CoinGlassClient:
     def get_fear_and_greed_index(self) -> dict:
         data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
         if data and isinstance(data, list) and len(data) >= 8:
-            return {
-                "current": int(data[0].get("value", 50)),
-                "prev_7d": int(data[7].get("value", 50))
-            }
+            return {"current": int(data[0].get("value", 50)), "prev_7d": int(data[7].get("value", 50))}
         return {"current": 50, "prev_7d": 50}
 
     def get_netflow(self, symbol: str = "BTC") -> float:
@@ -406,6 +380,43 @@ class CoinGlassClient:
         top_ls_percentile = self._calc_percentile(top_ls_data, top_ls_current) if top_ls_data else 50.0
         cvd_series = [self._get_close_from_candle(c) for c in cvd_data] if cvd_data else []
         cvd_slope = self._calc_slope(cvd_series)
+
+        # ====== 新增时间维度二阶指标 ======
+        cvd_acceleration = 0.0
+        if len(cvd_series) >= 120:
+            cvd_older = cvd_series[:120]
+            cvd_newer = cvd_series[-120:]
+            slope_older = self._calc_slope(cvd_older)
+            slope_newer = self._calc_slope(cvd_newer)
+            cvd_acceleration = round((slope_newer - slope_older) / abs(slope_older), 3) if abs(slope_older) > 1e-6 else 0.0
+
+        oi_acceleration = 0.0
+        if len(oi_data) >= 12:
+            oi_series = [self._get_close_from_candle(c) for c in oi_data]
+            if len(oi_series) >= 12:
+                oi_older = oi_series[:6]
+                oi_newer = oi_series[-6:]
+                slope_oi_older = (oi_older[-1] - oi_older[0]) / len(oi_older)
+                slope_oi_newer = (oi_newer[-1] - oi_newer[0]) / len(oi_newer)
+                oi_acceleration = round((slope_oi_newer - slope_oi_older) / abs(slope_oi_older), 3) if abs(slope_oi_older) > 1e-6 else 0.0
+
+        funding_momentum = 0.0
+        if funding_data and len(funding_data) >= 4:
+            funding_series = [self._get_close_from_candle(c) for c in funding_data]
+            current_funding = funding_series[-1] if funding_series else 0.0
+            funding_12h_ago = funding_series[-4] if len(funding_series) >= 4 else current_funding
+            funding_momentum = round(current_funding - funding_12h_ago, 6)
+
+        lure_risk_factor = 0.0
+        if above_liq > 0 and below_liq > 0:
+            liq_ratio_extreme = max(above_liq, below_liq) / min(above_liq, below_liq)
+            if liq_ratio_extreme > 2.5:
+                lure_risk_factor += 0.4
+        if len(closes) >= 2 and cvd_slope > 50000 and mark_price < closes[-2]:
+            lure_risk_factor += 0.3
+        elif len(closes) >= 2 and cvd_slope < -50000 and mark_price > closes[-2]:
+            lure_risk_factor += 0.3
+
         agg_oi_current = self._get_close_from_candle(agg_oi_data[-1]) if agg_oi_data else 0.0
         agg_oi_change_24h = 0.0
         if len(agg_oi_data) >= 6:
@@ -440,6 +451,10 @@ class CoinGlassClient:
             "agg_oi_change_24h": agg_oi_change_24h,
             "cvd_mean": sum(cvd_series) / len(cvd_series) / 1e6 if cvd_series else 0.0,
             "cvd_slope": cvd_slope,
+            "cvd_acceleration": cvd_acceleration,
+            "oi_acceleration": oi_acceleration,
+            "funding_momentum": funding_momentum,
+            "lure_risk_factor": round(lure_risk_factor, 2),
             "fear_greed": fear_greed,
             "fear_greed_prev_7d": fear_greed_prev_7d,
             "eth_btc_ratio": eth_btc_ratio,
@@ -480,7 +495,6 @@ class CoinGlassClient:
                 data["above_liq"] = 0
                 data["below_liq"] = 0
                 data["liq_ratio"] = 0.0
-
             oi_data = self.get_oi_ohlc_history(cross_symbol, "4h", 80)
             if oi_data:
                 oi_current = self._get_close_from_candle(oi_data[-1])
@@ -494,7 +508,6 @@ class CoinGlassClient:
             else:
                 data["oi_percentile"] = 50.0
                 data["oi_change_24h"] = 0.0
-
             funding_data = self.get_weighted_funding_rate_history(cross_symbol, "4h", 80)
             if funding_data:
                 funding_current = self._get_close_from_candle(funding_data[-1])
@@ -503,7 +516,6 @@ class CoinGlassClient:
             else:
                 data["funding_rate"] = 0.0
                 data["funding_percentile"] = 50.0
-
             top_ls_data = self.get_top_long_short_ratio_history(cross_symbol, "4h", 80)
             if top_ls_data:
                 top_ls_current = 0.0
@@ -517,18 +529,14 @@ class CoinGlassClient:
             else:
                 data["top_ls_ratio"] = 0.0
                 data["top_ls_percentile"] = 50.0
-
             cvd_data = self.get_cvd_history(cross_symbol, "1m", 240)
             if cvd_data:
                 cvd_series = [self._get_close_from_candle(c) for c in cvd_data]
                 data["cvd_slope"] = self._calc_slope(cvd_series)
             else:
                 data["cvd_slope"] = 0.0
-
-            # 不再请求跨币种期权数据
             data["put_call_ratio"] = None
             data["max_pain"] = None
-
             try:
                 real_price = get_current_price(f"{cross_symbol}-USDT-SWAP")
                 if real_price > 0:
@@ -545,7 +553,6 @@ class CoinGlassClient:
                     data["mark_price"] = self._get_close_from_candle(kline[-1])
                 else:
                     data["mark_price"] = 0.0
-
             required_keys = ['above_liq', 'below_liq', 'oi_percentile', 'funding_percentile',
                              'top_ls_percentile', 'cvd_slope', 'mark_price']
             complete = all(data.get(k) is not None for k in required_keys)

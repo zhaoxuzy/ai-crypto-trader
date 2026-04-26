@@ -16,10 +16,6 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     if not webhook:
         logger.error("未配置钉钉 Webhook")
         return False
-    
-    # 在内容开头自动追加一个安全关键词，防止机器人关键词过滤
-    content = "策略信号 " + content
-    
     ts = str(round(time.time() * 1000))
     if secret and secret.lower() != "none":
         sign_str = f"{ts}\n{secret}"
@@ -89,7 +85,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     direction = strategy.get("direction", "neutral")
 
     if direction == "neutral":
-        title = f"## ⚪ 观望 {symbol} · 🔴低 · {now}"
+        title = f"## 策略信号：{symbol} 交易员策略：观望·{now}"
         param = f"> 现价{data.get('mark_price', 0):.0f} · 入场0-0 · 止损0 · 止盈0"
     else:
         emoji = "🟢" if direction == "long" else "🔴"
@@ -98,12 +94,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
         conf = strategy.get("confidence", "medium")
         conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
-        parts = [f"{emoji} {text} {symbol}"]
-        if size_cn:
-            parts.append(size_cn)
-        parts.append(conf_cn)
-        parts.append(now)
-        title = "## " + " · ".join(parts)
+        title = f"## 策略信号：{symbol} 交易员策略：{emoji} {text}·{size_cn}·{conf_cn}·{now}"
         entry_low = strategy.get("entry_price_low", 0)
         entry_high = strategy.get("entry_price_high", 0)
         stop = strategy.get("stop_loss", 0)
@@ -134,50 +125,46 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
-    
+
     verdict = reviewer_report.get("verdict", "通过")
     severity = reviewer_report.get("severity_counts", {})
     full_report = reviewer_report.get("full_report", "")
-    
-    title = f"## 🔍 审查报告 {symbol} · {now}"
-    if verdict == "驳回":
-        title += " · ⚠️驳回"
-    elif verdict == "存疑":
-        title += " · ⚡存疑"
-    else:
-        title += " · ✅通过"
-    
-    summary = f"> 审查结论：{verdict}\n"
+
+    verdict_display = {"通过": "✅通过", "存疑": "⚡存疑", "驳回": "⚠️驳回"}.get(verdict, verdict)
+    title = f"## 策略信号：{symbol} 审查报告·{verdict_display}·{now}"
+
+    # 审查概览，加粗并分行
+    summary = f"> **审查结论**：{verdict}\n"
     if severity:
-        summary += f"> 严重性统计：高={severity.get('高', 0)} 中={severity.get('中', 0)} 低={severity.get('低', 0)}\n"
-    
+        summary += f"> **严重性统计**：高={severity.get('高', 0)} 中={severity.get('中', 0)} 低={severity.get('低', 0)}\n"
+
     report_block = ""
     section_titles = [
         "一、数据与解读错误",
-        "二、逻辑错误", 
+        "二、逻辑错误",
         "三、关键反证提示",
         "四、博弈层面审视"
     ]
-    
+
     for line in full_report.split('\n'):
         line = line.strip()
         if not line:
             report_block += "> \n"
             continue
-            
+
         is_title = False
         for title_text in section_titles:
             if line.startswith(title_text):
                 report_block += f"> **{line}**\n"
                 is_title = True
                 break
-        
+
         if not is_title:
             if line.startswith('>'):
                 report_block += f"{line}\n"
             else:
                 report_block += f"> {line}\n"
-    
+
     return f"{title}\n\n{summary}\n\n{report_block}"
 
 
@@ -200,9 +187,9 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
     }
     verdict_emoji = verdict_emoji_map.get(verdict, "•")
 
-    # ----- 标题 -----
+    # 标题
     if direction == "neutral":
-        title = f"## ⚪ 最终裁决 {symbol} · 观望 · {now} · {verdict_emoji}{verdict}"
+        title = f"## 策略信号：{symbol} 最终裁决：观望·{now}·{verdict_emoji}{verdict}"
     else:
         emoji = "🟢" if direction == "long" else "🔴"
         text = "做多" if direction == "long" else "做空"
@@ -210,15 +197,9 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
         size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
         conf = strategy.get("confidence", "medium")
         conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
-        parts = [f"{emoji} 最终裁决 {symbol}"]
-        if size_cn:
-            parts.append(size_cn)
-        parts.append(conf_cn)
-        parts.append(now)
-        parts.append(f"{verdict_emoji}{verdict}")
-        title = "## " + " · ".join(parts)
+        title = f"## 策略信号：{symbol} 最终裁决：{emoji} {text}·{size_cn}·{conf_cn}·{now}·{verdict_emoji}{verdict}"
 
-    # ----- 参数卡片 (移除盈亏比) -----
+    # 参数卡片
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
@@ -230,7 +211,7 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
     else:
         param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f}"
 
-    # ----- 判决摘要 (增加反向操作描述) -----
+    # 判决摘要
     reversed_direction = False
     if original_direction and original_direction != direction:
         reversed_direction = True
@@ -249,7 +230,7 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
 
     summary_block = f"> **📌 判决：{verdict}**\n> {summary_text}\n" if summary_text else ""
 
-    # ----- 裁决理由 -----
+    # 裁决理由
     reasoning_block = ""
     if judge_reasoning:
         lines = judge_reasoning.split('\n')
@@ -264,11 +245,11 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
             else:
                 reasoning_block += f"> {stripped}\n"
 
-    # ----- 执行指令 -----
+    # 执行指令
     if exec_plan and direction != "neutral":
         reasoning_block += f"\n> ### 🎯 执行指令\n> {exec_plan}\n"
 
-    # ----- 风险说明 -----
+    # 风险说明
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
     if not risk_lines:

@@ -396,6 +396,10 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
 
 三、关键反证提示
 - [若A选择性忽略了某个关键反向数据，按此格式：在[步骤X]中，[反向数据X]被忽略或低估，该数据暗示[方向]，可能与A的结论构成矛盾。 [严重性：高/中/低]]
+
+四、博弈层面审视（可选）
+- A的策略假设做市商站在哪一边？做市商是否有可能反向利用A的止损簇来猎杀流动性？
+- A的入场点位是否恰好是另一类聪明钱（如趋势跟踪基金、期权做市商）的理想反向入场点？
 """
 
 
@@ -444,7 +448,11 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
 
 # ------------------- 终审法官C：裁决 -------------------
 def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> str:
-    return f"""你是一位制衡武断的终审法官。你的目标不是满足B的审查要求，而是输出一份比A更准确、更稳健、更能应对市场不确定性的策略。
+    return f"""你是一位拥有十年实盘经验的顶级加密货币交易员。你的团队已为你准备了以下材料：
+1. 交易员A的策略方案（包含完整推演过程）
+2. 审查官B的审计报告（包含数据错误、逻辑漏洞和反证提示）
+
+你的职责不是做选择题，而是基于你的专业判断，输出一份最终的、可直接执行的交易方案。
 
 【交易标的】{symbol}
 【交易员A的策略】
@@ -457,40 +465,20 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
 【A的原始推演过程】
 {original_strategy.get('reasoning', '无推演过程')}
 
-【审查官B的错误报告】
+【审查官B的审计报告】
 {reviewer_report.get('full_report', '无报告')}
 
-【你的工作流程——严格按此执行，不得跳过】
+【你的裁决原则】
+1. 你是最终决策者，不是合规官。你的目标是在风险可控的前提下，输出一份可执行的策略。
+2. B的审计报告是你的参考工具，不是你的上司。你可以采纳、驳回或部分采纳其中的任何意见。
+3. 如果B指出的错误是致命的（数据造假、逻辑断裂、方向与第一段运动矛盾），你应该果断推翻A的方案。
+4. 如果B指出的错误是非致命的（止损过紧、仓位偏重、某个步骤推理略弱），你应该修正参数而非推翻方向。
+5. 如果B的质疑本身站不住脚，而A的推演逻辑坚实，你应该驳回B的质疑，维持A的原方向。
+6. 如果你认为A和B的争议点处于不可判定的灰色地带，你可以主动降仓、收紧止损，输出一份比A更保守但比B更积极的方案。
+7. 如果你无法输出比A更稳健的方案，你可以输出观望。但观望必须是最后的选择，而不是默认选项。
 
-第一步：逐条审视B的指控
-对每条指控，回答三个问题：
-1. A是否在推演中提前回应了这个点？回应是否充分？
-2. B的指控是否合理？是部分合理还是完全合理？
-3. 在这个争议点上，A和B谁更武断？还是两者都有武断之处？
-
-第二步：独立权衡并修复
-基于第一步的判断，对每条指控做出独立决定：
-- B说得完全对 → 采纳，按B的建议方向修复
-- B说得完全错 → 驳回，保留A的原参数
-- B说得部分对 → 采纳对的部分，但修正幅度由你基于经验决定，不必按B的建议调到最极端
-- A和B都有武断 → 你主动选择一个中间值，比A更保守，但比B更积极
-
-第三步：综合输出
-- 如果所有指控被驳回 → 维持原判（A级）
-- 如果存在有效指控且可修复 → 修正参数（B级），输出你权衡后的参数
-- 如果存在轻度瑕疵且不影响方向 → 降级执行（C级）
-- 如果任何一个有效指控导致方向逻辑不可信 → 推翻改为观望（E级）
-- 如果你判断A和B的争议本身就处于不可判定的灰色地带 → 你可以选择降仓、收紧止损、或输出观望，这是你作为交易员的独立判断
-
-【核心原则】
-你输出的策略必须比A的原策略更稳健。如果无法做到更稳健，就输出观望。
-
-【铁律清单】
-以下任一情况即为致命错误，必须输出E级（推翻改为观望）：
-1. 数据造假或严重误读：B标注为“高”严重性，且该错误直接影响方向判断。
-2. 核心逻辑链断裂：B标注为“断裂”，且无法通过调整参数修复。
-3. 方向与第一段显著运动违反：A预测“先跌后涨”（跌幅≥有效阈值），却输出做多。
-4. 止损未满足1.2倍ATR且你无法在合理范围内外移。
+【输出要求】
+你必须输出一个完整的交易方案，包含方向、仓位、入场区间、止损位、止盈位、执行指令和裁决理由。
 
 输出JSON（不要代码块）：
 {{
@@ -505,7 +493,7 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
     "stop_loss": 0.0,
     "take_profit": 0.0,
     "execution_plan": "一句话指令",
-    "reasoning": "裁决理由——必须说明每个有效错误是如何修复的，或为何驳回",
+    "reasoning": "裁决理由——必须说明你如何处理B的每一条质疑，以及为何最终选择此方案",
     "risk_note": "风险说明"
   }}
 }}
@@ -563,8 +551,6 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
     original_strategy["_original_direction"] = original_strategy.get("direction")
     original_strategy["_review_verdict"] = verdict
     original_strategy["_judge_reasoning"] = final.get("reasoning", "")
-    original_strategy["_judge_verdict"] = verdict
-    # 将法官C的完整裁决信息注入到策略中
     original_strategy["_judge_data"] = final
 
     if verdict == "维持原判":
@@ -581,12 +567,10 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
         return original_strategy
 
     elif verdict == "降级执行":
-        # 应用法官C修正的方向、置信度和参数，并将仓位降一级
         original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
         original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
         original_strategy["stop_loss"] = final.get("stop_loss", original_strategy["stop_loss"])
         original_strategy["take_profit"] = final.get("take_profit", original_strategy["take_profit"])
-        # 法官C指定的仓位，或原仓位降一级
         final_size = final.get("final_position_size", "")
         if final_size:
             original_strategy["position_size"] = final_size

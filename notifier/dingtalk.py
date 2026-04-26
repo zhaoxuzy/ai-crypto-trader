@@ -86,7 +86,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     if direction == "neutral":
         title = f"## ⚪ 观望 {symbol} · 🔴低 · {now}"
-        param = f"> 现价{data.get('mark_price', 0):.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
+        param = f"> 现价{data.get('mark_price', 0):.0f} · 入场0-0 · 止损0 · 止盈0"
     else:
         emoji = "🟢" if direction == "long" else "🔴"
         text = "做多" if direction == "long" else "做空"
@@ -105,12 +105,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         stop = strategy.get("stop_loss", 0)
         tp = strategy.get("take_profit", 0)
         current = data.get("mark_price", 0)
-        mid = (entry_low + entry_high) / 2 if entry_low and entry_high else 0
-        risk = abs(mid - stop) if stop else 0
-        reward = abs(tp - mid) if tp else 0
-        rr = reward / risk if risk > 0 else 0
-        rr_str = f"{rr:.2f}" if rr else "N/A"
-        param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
+        param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f}"
 
     reasoning_raw = strategy.get("reasoning", "无推理过程")
     reasoning_block = format_reasoning(reasoning_raw)
@@ -152,7 +147,6 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     if severity:
         summary += f"> 严重性统计：高={severity.get('高', 0)} 中={severity.get('中', 0)} 低={severity.get('低', 0)}\n"
     
-    # 格式化报告内容，为四个标题加粗
     report_block = ""
     section_titles = [
         "一、数据与解读错误",
@@ -167,7 +161,6 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
             report_block += "> \n"
             continue
             
-        # 检查是否为四个主标题
         is_title = False
         for title_text in section_titles:
             if line.startswith(title_text):
@@ -194,12 +187,12 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
     exec_plan = strategy.get("execution_plan", "")
     original_direction = strategy.get("_original_direction", "")
 
-    # 判决级别映射
     verdict_emoji_map = {
         "维持原判": "✅",
         "修正参数": "🔧",
         "降级执行": "⬇️",
-        "推翻改为观望": "⚠️"
+        "推翻改为观望": "⚠️",
+        "推翻改为反向操作": "🔄"
     }
     verdict_emoji = verdict_emoji_map.get(verdict, "•")
 
@@ -221,7 +214,7 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
         parts.append(f"{verdict_emoji}{verdict}")
         title = "## " + " · ".join(parts)
 
-    # ----- 参数卡片 -----
+    # ----- 参数卡片 (移除盈亏比) -----
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
@@ -229,17 +222,11 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
     current = data.get("mark_price", 0)
 
     if direction == "neutral":
-        param = f"> 现价{current:.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
+        param = f"> 现价{current:.0f} · 入场0-0 · 止损0 · 止盈0"
     else:
-        mid = (entry_low + entry_high) / 2 if entry_low and entry_high else 0
-        risk = abs(mid - stop) if stop else 0
-        reward = abs(tp - mid) if tp else 0
-        rr = reward / risk if risk > 0 else 0
-        rr_str = f"{rr:.2f}" if rr else "N/A"
-        param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
+        param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f}"
 
-    # ----- 判决摘要（完整版） -----
-    # 检测是否推翻方向
+    # ----- 判决摘要 (增加反向操作描述) -----
     reversed_direction = False
     if original_direction and original_direction != direction:
         reversed_direction = True
@@ -248,17 +235,17 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
         "维持原判": "C认为A的策略无明显瑕疵，予以维持。",
         "修正参数": "C认为A的方向正确，但对参数进行了优化修正。",
         "降级执行": "C认为A的逻辑有瑕疵，降仓后仍可执行。",
-        "推翻改为观望": "C认为A的方向存在致命问题，改为观望。"
+        "推翻改为观望": "C认为A的方向存在致命问题，改为观望。",
+        "推翻改为反向操作": "C认为A的方向与市场结构完全相反，已转向反向操作。"
     }
     summary_text = verdict_summary.get(verdict, "")
 
     if reversed_direction and verdict not in verdict_summary:
-        # 如果判决不在标准列表且方向被翻转，生成特定描述
         summary_text = f"C认为A的{original_direction}方向存在致命问题，改为完全相反的{direction}方向。"
 
     summary_block = f"> **📌 判决：{verdict}**\n> {summary_text}\n" if summary_text else ""
 
-    # ----- 裁决理由（格式化列表）-----
+    # ----- 裁决理由 -----
     reasoning_block = ""
     if judge_reasoning:
         lines = judge_reasoning.split('\n')
@@ -284,5 +271,4 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
         risk_lines = ["> 请严格设置止损"]
     risk_block = "> ---\n> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
 
-    # 拼接最终消息
     return f"{title}\n\n{param}\n\n{summary_block}\n{reasoning_block}\n{risk_block}"

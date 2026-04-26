@@ -7,7 +7,7 @@ from openai import OpenAI
 from utils.logger import logger
 
 TICK_SIZE = 0.1
-MAX_RETRIES = 2
+MAX_RETRIES = 3
 RETRY_BASE_WAIT = 2
 TIMEOUT_SECONDS = 180
 
@@ -181,7 +181,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 最终结论：
 跨币种反馈：基于以上对比，我的单币种结论被如何修正？有无新增风险点？如果有，我必须回到第三步或第五步的自我质疑中重新审视。
 
-第七步：交易计划【基于前六步的分析，你直接做出方向判断并制定具体的交易计划】
+第七步：交易计划【基于前六步的分析，你直接做出方向判断并制定具体的交易计划。你的责任是交易员，不需要在此处自我审查或裁决。】
 方向判断：我决定做多 / 做空 / 观望。我的置信度为 high / medium / low，仓位为 heavy / medium / light。
 价格路径推演：必须综合运用流动性猎杀理论（清算池位置/强度）、行为金融学（对手盘心理、恐慌/贪婪、顶级多空比极端值）以及博弈论（做市商与散户的短期博弈策略）进行推演，价格最可能如何测试并触发关键流动性区域？触发后会产生何种连锁强平或踩踏？
 合约策略：入场区间+止损位+止盈位，说明具体的依据。
@@ -285,7 +285,6 @@ def round_to_tick(price: float) -> float:
 
 
 def _force_neutral(s: dict, reason: str):
-    old_risk = s.get('risk_note', '')
     s["direction"] = "neutral"
     s["confidence"] = "low"
     s["position_size"] = "none"
@@ -294,8 +293,9 @@ def _force_neutral(s: dict, reason: str):
     s["stop_loss"] = 0
     s["take_profit"] = 0
     s["execution_plan"] = ""
-    s["reasoning"] += f"\n\n[系统自动干预] 原始信号因校验规则被强制改为观望。原因：{reason}"
-    s["risk_note"] = f"[系统干预] 原始方向因校验规则被强制改为观望。" + (f" 原始风险说明：{old_risk}" if old_risk else "")
+    if "reasoning" in s:
+        s["reasoning"] += f"\n\n[法官裁决] 原策略被推翻改为观望。原因：{reason}"
+    s["risk_note"] = f"[法官裁决] 原策略被推翻改为观望。"
 
 
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
@@ -367,12 +367,11 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
 
 # ------------------- 审查官B：逻辑审计 -------------------
 def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> str:
-    # 客观锚点：清算池综合吸引力评分
     liquidity_bias = data.get('liquidity_bias', 'neutral')
     bias_map = {'long': '偏向上方', 'short': '偏向下止', 'neutral': '无明确偏向'}
     bias_text = bias_map.get(liquidity_bias, '无数据')
 
-    return f"""你是一位顶级加密货币交易策略的审查官，你的唯一任务是快速找出交易员A策略中的错误。你只依据客观事实找错误，不得强行编造。
+    return f"""你是一位顶级加密货币交易策略的审查官。你的唯一任务是快速找出交易员A策略中的错误。你只找错误，不做裁决，不写建议。
 
 【交易标的】{symbol}
 【代码层客观锚点】清算池综合吸引力评分：{bias_text}（基于规模/触发距/订单簿计算，数学模型得出）
@@ -413,15 +412,14 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=4096,   # 提升至4096，避免输出截断
-                timeout=120        # 延长超时
+                max_tokens=4096,
+                timeout=120
             )
             content = resp.choices[0].message.content or ""
             _log_response(prompt, content)
             if not content.strip():
                 raise ValueError("审查官响应为空")
             
-            # 解析严重性：提取所有高/中/低标记
             severity_counts = {"高": 0, "中": 0, "低": 0}
             for line in content.split('\n'):
                 for level in ["高", "中", "低"]:
@@ -440,7 +438,6 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
             else:
-                # 兜底：所有重试均失败，标记为通过，避免中断
                 logger.warning("审查官B所有重试均失败，标记为通过，跳过审查")
                 return {"verdict": "通过", "full_report": "审查官调用失败，跳过审查"}
 
@@ -528,15 +525,26 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=4096,   # 提升至4096，避免输出截断
-                timeout=120        # 延长超时
+                max_tokens=4096,
+                timeout=120
             )
             content = resp.choices[0].message.content or ""
             _log_response(prompt, content)
             if not content.strip():
                 raise ValueError("法官响应为空")
+            
             json_str = extract_json(content)
-            return json.loads(json_str)
+            logger.info(f"法官C原始输出: {json_str[:500]}")
+            
+            judge_result = json.loads(json_str)
+            
+            if "judge_C" not in judge_result:
+                logger.error(f"法官C输出缺少judge_C字段: {judge_result}")
+                raise ValueError("法官C输出缺少judge_C字段")
+            
+            logger.info(f"法官C裁决: {judge_result.get('judge_C', {}).get('final_verdict')}")
+            return judge_result
+            
         except Exception as e:
             logger.warning(f"法官C调用失败: {e}")
             if attempt < MAX_RETRIES - 1:
@@ -548,6 +556,8 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
 def apply_final_verdict(original_strategy: dict, judge_result: dict) -> dict:
     verdict = judge_result.get("judge_C", {}).get("final_verdict", "维持原判")
     final = judge_result.get("judge_C", {})
+
+    logger.info(f"应用最终裁决: {verdict}")
 
     original_strategy["_reviewed"] = True
     original_strategy["_original_direction"] = original_strategy.get("direction")

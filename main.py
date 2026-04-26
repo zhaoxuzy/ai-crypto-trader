@@ -13,14 +13,12 @@ def main():
     client = CoinGlassClient()
     data = client.get_all_data(symbol)
 
-    # 补充 OKX 实时价格
     inst_id = f"{symbol}-USDT-SWAP"
     real_price = get_current_price(inst_id)
     if real_price > 0:
         data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
-    # 获取跨币种验证数据（精简版）
     cross_symbol = "ETH" if symbol == "BTC" else "BTC"
     cross_data = None
     try:
@@ -28,36 +26,30 @@ def main():
     except Exception as e:
         logger.warning(f"获取跨币种数据失败：{e}，将跳过第六步验证")
 
-    # 构建 prompt（跨币种数据传入 eth_data 参数）
     prompt = build_prompt(data, symbol, eth_data=cross_data)
 
-    # 1. 交易员A生成策略
     try:
         strategy = call_deepseek(prompt)
     except Exception as e:
         logger.error(f"{symbol} 策略生成失败: {e}")
         return
 
-    # 基础校验
     valid, msg = validate_strategy(strategy, data)
     if not valid:
         logger.error(f"策略校验失败: {msg}")
         return
 
-    # 快速路径：如果置信度已为low或neutral，跳过审查
     if strategy.get("confidence") == "low" or strategy.get("direction") == "neutral":
         logger.info("策略置信度低或观望，跳过审查，直接推送")
         markdown_msg = format_strategy_message(symbol, strategy, data)
         send_dingtalk_message(markdown_msg, title=f"{symbol} 策略推送")
         return
 
-    # 2. 推送初步信号（异步审查）
     preliminary_strategy = strategy.copy()
     preliminary_strategy["_preliminary"] = True
     prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
     send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (审查中...)")
 
-    # 3. 审查官B质检（带超时保护）
     def run_review_and_judge():
         nonlocal strategy
         try:
@@ -67,7 +59,6 @@ def main():
             strategy["_reviewed"] = False
             return
 
-        # 4. 终审法官C裁决
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
         except Exception as e:
@@ -75,28 +66,24 @@ def main():
             strategy["_reviewed"] = False
             return
 
-        # 5. 应用最终判决
         strategy = apply_final_verdict(strategy, judge_result)
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()
-    review_thread.join(timeout=90)  # 等待45秒超时
+    review_thread.join(timeout=30)
 
     if review_thread.is_alive():
         logger.warning("审查超时，按原策略降级执行")
         strategy["_reviewed"] = False
         strategy["_review_timeout"] = True
-        # 超时降级
         size_map = {"heavy": "medium", "medium": "light", "light": "light"}
         strategy["position_size"] = size_map.get(strategy.get("position_size", "light"), "light")
 
-    # 最终校验
     valid, msg = validate_strategy(strategy, data)
     if not valid:
         logger.error(f"最终策略校验失败: {msg}")
         return
 
-    # 推送最终信号
     final_msg = format_strategy_message(symbol, strategy, data)
     if strategy.get("_review_timeout"):
         final_msg = "> ⚠️ **审查超时，按原策略降级执行**\n\n" + final_msg

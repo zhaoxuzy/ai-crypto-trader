@@ -11,6 +11,7 @@ MAX_RETRIES = 2
 RETRY_BASE_WAIT = 2
 TIMEOUT_SECONDS = 180
 
+# ------------------- 交易员A：策略生成 -------------------
 def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: str = None) -> str:
     timestamp = data.get("timestamp", "N/A")
     current = data['mark_price']
@@ -180,7 +181,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 最终结论：
 跨币种反馈：基于以上对比，我的单币种结论被如何修正？有无新增风险点？如果有，我必须回到第三步或第五步的自我质疑中重新审视。
 
-第七步：交易计划【基于前六步的分析，独自裁决，直接做出方向判断并制定具体的交易计划】
+第七步：交易计划【基于前六步的分析，独自裁决，你直接做出方向判断并制定具体的交易计划】
 方向判断：我决定做多 / 做空 / 观望。我的置信度为 high / medium / low，仓位为 heavy / medium / light。
 价格路径推演：必须综合运用流动性猎杀理论（清算池位置/强度）、行为金融学（对手盘心理、恐慌/贪婪、顶级多空比极端值）以及博弈论（做市商与散户的短期博弈策略）进行推演，价格最可能如何测试并触发关键流动性区域？触发后会产生何种连锁强平或踩踏？
 合约策略：入场区间+止损位+止盈位，说明具体的依据。
@@ -364,58 +365,38 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     return True, ""
 
 
+# ------------------- 审查官B：逻辑审计 -------------------
 def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> str:
-    # 获取客观锚点
+    # 客观锚点：清算池综合吸引力评分
     liquidity_bias = data.get('liquidity_bias', 'neutral')
     bias_map = {'long': '偏向上方', 'short': '偏向下止', 'neutral': '无明确偏向'}
     bias_text = bias_map.get(liquidity_bias, '无数据')
 
-    return f"""你是一位顶级加密货币交易策略的审查官。你的任务是对交易员A的策略进行深度质检，输出一份简洁的《策略解剖报告》。你必须逐项完成，不得遗漏。
+    return f"""你是一位顶级加密货币交易策略的审查官。你的唯一任务是快速找出交易员A策略中的错误。你只找错误，不做裁决，不写建议。
 
 【交易标的】{symbol}
 【代码层客观锚点】清算池综合吸引力评分：{bias_text}（基于规模/触发距/订单簿计算，数学模型得出）
 【原策略方向】{original_strategy.get('direction')}
-【原策略仓位】{original_strategy.get('position_size')}
 【入场/止损/止盈】{original_strategy.get('entry_price_low')} - {original_strategy.get('entry_price_high')} / {original_strategy.get('stop_loss')} / {original_strategy.get('take_profit')}
 
 【原策略推演过程】
 {original_strategy.get('reasoning', '无推演过程')}
 
-【输出格式】
+【审查要求】
 请严格按照以下模板输出，只输出报告内容，不要额外解释：
 
-【策略解剖报告】
+【审查官B - 错误报告】
 
-一、核心逻辑链还原
-A的策略本质上在赌：[一句话核心假设]
-此逻辑链的关键传导环节为：
-1. [环节1]
-2. [环节2]
-...
-5. [最终传导至方向判断]
+一、数据与解读错误
+- [若有错误，按此格式：在[步骤X]中，A声称[数值/解读]，但实际数据为[数值/正确含义]。此错误[是否影响方向判断]。 [严重性：高/中/低]]
+- [若无，写“未发现数据或解读错误”]
 
-二、各环节强度检验
-- 环节1：[坚实/可接受/薄弱/断裂]，理由：[一句话]
-- 环节2：[坚实/可接受/薄弱/断裂]，理由：[一句话]
-...
-- 环节5：[坚实/可接受/薄弱/断裂]，理由：[一句话]
+二、逻辑错误
+- [若有错误，按此格式：[错误类型]在[步骤X]：[描述]。 [严重性：高/中/低]]
+- [若无，写“未发现明显逻辑错误”]
 
-三、断裂点定位
-[若存在薄弱或断裂的环节，在此说明；若没有，写“未发现断裂点”]
-
-四、数据与事实核对
-- [数据点1]：A声称[数值]，原始数据为[数值]，[一致/偏差X%]
-- [数据点2]：...
-若存在偏差，说明是否构成方向性误导。
-
-五、策略韧性测试
-- 入场后价格反向波动0.5倍ATR：[能否存活，止损是否被扫]
-- 入场后30分钟内未走出预期方向：[时间损耗影响评估]
-- 对手盘反手操作：[是否有预案]
-
-六、最终审查意见
-审查结论：[通过/存疑/驳回]
-若存疑或驳回，建议修正方案：[具体的修正建议]
+三、关键反证提示
+- [若A选择性忽略了某个关键反向数据，按此格式：在[步骤X]中，[反向数据X]被忽略或低估，该数据暗示[方向]，可能与A的结论构成矛盾。 [严重性：高/中/低]]
 """
 
 
@@ -432,65 +413,56 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=4096,
+                max_tokens=1024,  # 精简输出，加快响应
                 timeout=60
             )
             content = resp.choices[0].message.content or ""
             _log_response(prompt, content)
             if not content.strip():
                 raise ValueError("审查官响应为空")
-            # 解析摘要
-            report = content.strip()
-            result = {"verdict": "通过", "issues": [], "suggestion": "", "full_report": report}
-            # 提取审查结论
-            for line in report.split('\n'):
-                if line.startswith("审查结论："):
-                    verdict_text = line.replace("审查结论：", "").strip()
-                    if "存疑" in verdict_text:
-                        result["verdict"] = "存疑"
-                    elif "驳回" in verdict_text:
-                        result["verdict"] = "驳回"
-                    else:
-                        result["verdict"] = "通过"
-                if line.startswith("若存疑或驳回，建议修正方案："):
-                    result["suggestion"] = line.replace("若存疑或驳回，建议修正方案：", "").strip()
-            # 提取问题
-            for line in report.split('\n'):
-                if "薄弱" in line or "断裂" in line:
-                    result["issues"].append(line.strip())
-            return {"reviewer_B": result}
+            
+            # 解析严重性：提取所有高/中/低标记
+            severity_counts = {"高": 0, "中": 0, "低": 0}
+            for line in content.split('\n'):
+                for level in ["高", "中", "低"]:
+                    if f"严重性：{level}" in line:
+                        severity_counts[level] += 1
+            
+            # 简单判决：存在“高”严重性错误则驳回，无任何错误则通过，其余存疑
+            if severity_counts["高"] > 0:
+                verdict = "驳回"
+            elif severity_counts["中"] > 0 or severity_counts["低"] > 0:
+                verdict = "存疑"
+            else:
+                verdict = "通过"
+                
+            return {"verdict": verdict, "full_report": content, "severity_counts": severity_counts}
         except Exception as e:
             logger.warning(f"审查官B调用失败: {e}")
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
             else:
-                return {"reviewer_B": {"verdict": "通过", "issues": ["审查官调用失败，跳过审查"], "suggestion": ""}}
+                return {"verdict": "通过", "full_report": "审查官调用失败，跳过审查"}
 
 
+# ------------------- 终审法官C：裁决 -------------------
 def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> str:
     return f"""你是一位顶级加密货币交易策略的终审法官。交易员A的策略和审查官B的审查报告已提交给你。请严格按以下决策树进行裁决：
 
 【交易标的】{symbol}
 【原策略】
-方向：{original_strategy.get('direction')}
-仓位：{original_strategy.get('position_size')}
-入场：{original_strategy.get('entry_price_low')} - {original_strategy.get('entry_price_high')}
-止损：{original_strategy.get('stop_loss')}
-止盈：{original_strategy.get('take_profit')}
+{json.dumps(original_strategy, ensure_ascii=False, indent=2)}
 
-【审查官B审查结论】
-{reviewer_report.get('full_report', str(reviewer_report))}
+【审查官B的审查报告】
+{reviewer_report.get('full_report', '无报告')}
 
 【决策树】
-1. 审查结论 = "通过" ➔ 维持原判（A级）。
-2. 审查结论 = "存疑" ➔ 检查问题能否通过调整参数解决？能 ➔ 修正参数（B级）；否 ➔ 降级执行（C级，仓位降一级：heavy→medium→light）。
-3. 审查结论 = "驳回" ➔ 判断问题严重性：数据引用错误/逻辑链断裂/风控硬伤 ➔ 推翻改为观望（E级）；其他 ➔ 降级执行（C级）。
+1. 若审查报告显示存在“高”严重性错误，直接推翻原判，改为观望（E级）。
+2. 若审查报告显示存在“中”或“低”严重性错误，判断该错误能否通过调整参数修正。若能，修正参数（B级）；若不能，降级执行（C级，仓位降一级）。
+3. 若审查报告未发现任何错误，维持原判（A级）。
 
 【例外条款】
-若严格按决策树会导致明显错误，你可以触发例外，但必须：
-1. 显式声明“[例外触发]”并说明原因。
-2. 扮演反方攻击自己的决定，展示驳斥过程。
-3. 确认最终裁决更优。
+若你认为严格按决策树会导致明显错误，可以触发例外，但必须在裁决中显式声明“[例外触发]”并说明理由。
 
 输出JSON（不要代码块）：
 {{
@@ -527,7 +499,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=4096,
+                max_tokens=2048,
                 timeout=60
             )
             content = resp.choices[0].message.content or ""

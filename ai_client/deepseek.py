@@ -413,7 +413,7 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=1024,
+                max_tokens=2048,
                 timeout=60
             )
             content = resp.choices[0].message.content or ""

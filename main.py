@@ -1,7 +1,7 @@
-import os, sys, time
+import os, sys, time, threading
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, call_devils_advocate
+from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, call_reviewer, call_judge, apply_final_verdict
 from notifier.dingtalk import format_strategy_message, send_dingtalk_message
 from data.fetcher import CoinGlassClient, get_current_price
 from utils.logger import logger
@@ -31,7 +31,7 @@ def main():
     # 构建 prompt（跨币种数据传入 eth_data 参数）
     prompt = build_prompt(data, symbol, eth_data=cross_data)
 
-    # 1. 首次AI分析（前六步+第七步裁决）
+    # 1. 交易员A生成策略
     try:
         strategy = call_deepseek(prompt)
     except Exception as e:
@@ -44,29 +44,64 @@ def main():
         logger.error(f"策略校验失败: {msg}")
         return
 
-    # 2. 异议审查官独立质检
-    logger.info("启动异议审查官质检...")
-    strategy = call_devils_advocate(strategy, data, symbol, cross_data)
-
-    # 对审查后的策略再次进行基础校验
-    valid, msg = validate_strategy(strategy, data)
-    if not valid:
-        logger.error(f"审查后策略校验失败: {msg}")
+    # 快速路径：如果置信度已为low或neutral，跳过审查
+    if strategy.get("confidence") == "low" or strategy.get("direction") == "neutral":
+        logger.info("策略置信度低或观望，跳过审查，直接推送")
+        markdown_msg = format_strategy_message(symbol, strategy, data)
+        send_dingtalk_message(markdown_msg, title=f"{symbol} 策略推送")
         return
 
-    # 记录审查结果
-    if strategy.get("_reviewed"):
-        verdict = strategy.get("_review_verdict", "维持原判")
-        logger.info(f"审查完成，判决：{verdict}")
-    else:
-        logger.warning("审查官未能完成审查，使用原策略")
+    # 2. 推送初步信号（异步审查）
+    preliminary_strategy = strategy.copy()
+    preliminary_strategy["_preliminary"] = True
+    prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
+    send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (审查中...)")
 
-    # 格式化推送到钉钉
-    markdown_msg = format_strategy_message(symbol, strategy, data)
-    if send_dingtalk_message(markdown_msg, title=f"{symbol} 策略推送"):
-        logger.info("信号已推送至钉钉")
-    else:
-        logger.error("推送失败")
+    # 3. 审查官B质检（带超时保护）
+    def run_review_and_judge():
+        nonlocal strategy
+        try:
+            reviewer_report = call_reviewer(strategy, data, symbol)
+        except Exception as e:
+            logger.warning(f"审查官B调用失败: {e}")
+            strategy["_reviewed"] = False
+            return
+
+        # 4. 终审法官C裁决
+        try:
+            judge_result = call_judge(strategy, reviewer_report, data, symbol)
+        except Exception as e:
+            logger.warning(f"法官C调用失败: {e}")
+            strategy["_reviewed"] = False
+            return
+
+        # 5. 应用最终判决
+        strategy = apply_final_verdict(strategy, judge_result)
+
+    review_thread = threading.Thread(target=run_review_and_judge)
+    review_thread.start()
+    review_thread.join(timeout=45)  # 等待45秒超时
+
+    if review_thread.is_alive():
+        logger.warning("审查超时，按原策略降级执行")
+        strategy["_reviewed"] = False
+        strategy["_review_timeout"] = True
+        # 超时降级
+        size_map = {"heavy": "medium", "medium": "light", "light": "light"}
+        strategy["position_size"] = size_map.get(strategy.get("position_size", "light"), "light")
+
+    # 最终校验
+    valid, msg = validate_strategy(strategy, data)
+    if not valid:
+        logger.error(f"最终策略校验失败: {msg}")
+        return
+
+    # 推送最终信号
+    final_msg = format_strategy_message(symbol, strategy, data)
+    if strategy.get("_review_timeout"):
+        final_msg = "> ⚠️ **审查超时，按原策略降级执行**\n\n" + final_msg
+    send_dingtalk_message(final_msg, title=f"{symbol} 策略推送 (最终)")
+    logger.info("最终信号已推送至钉钉")
 
 if __name__ == "__main__":
     main()

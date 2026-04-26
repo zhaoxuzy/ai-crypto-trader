@@ -477,8 +477,14 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
 6. 如果你认为A和B的争议点处于不可判定的灰色地带，你可以主动降仓、收紧止损，输出一份比A更保守但比B更积极的方案。
 7. 如果你无法输出比A更稳健的方案，你可以输出观望。但观望必须是最后的选择，而不是默认选项。
 
-【输出要求】
-你必须输出一个完整的交易方案，包含方向、仓位、入场区间、止损位、止盈位、执行指令和裁决理由。
+【强制输出要求】
+你必须在 `reasoning` 中逐条回应 B 的每一项指控。对于每一项指控，你必须明确写出：
+- 是否采纳该指控？
+- 如果采纳，你做出了什么具体的修正（例如：“将止损从 78500 移至 78200，以反映 B 指出的 ATR 约束不足”）？
+- 如果不采纳，你的反驳理由是什么？
+- 最终，你的裁决方案是如何综合这些修正得出的？
+
+你还必须输出一个完整的交易方案，包含方向、仓位、入场区间、止损位、止盈位、执行指令和裁决理由。
 
 输出JSON（不要代码块）：
 {{
@@ -493,12 +499,11 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
     "stop_loss": 0.0,
     "take_profit": 0.0,
     "execution_plan": "一句话指令",
-    "reasoning": "裁决理由——必须说明你如何处理B的每一条质疑，以及为何最终选择此方案",
+    "reasoning": "裁决理由——必须逐条回应B的指控，并说明最终方案是如何得出的",
     "risk_note": "风险说明"
   }}
 }}
 """
-
 
 def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> dict:
     prompt = build_judge_prompt(original_strategy, reviewer_report, data, symbol)

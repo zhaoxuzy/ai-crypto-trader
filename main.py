@@ -47,9 +47,8 @@ def main():
     prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
     send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (审查中...)")
 
-
-     # 3. 审查官B + 法官C 异步执行（独立超时）
-def run_review_and_judge():
+    # 3. 审查官B + 法官C 异步执行（独立超时）
+    def run_review_and_judge():
         nonlocal strategy
         
         # --- 审查官B，独立超时60秒 ---
@@ -83,7 +82,7 @@ def run_review_and_judge():
         size_map = {"heavy": "medium", "medium": "light", "light": "light"}
         strategy["position_size"] = size_map.get(strategy.get("position_size", "light"), "light")
 
-    # 5. 最终校验与推送
+    # 最终校验与推送
     valid, msg = validate_strategy(strategy, data)
     if not valid:
         logger.error(f"最终策略校验失败: {msg}")
@@ -91,7 +90,7 @@ def run_review_and_judge():
 
     final_msg = format_strategy_message(symbol, strategy, data)
     if strategy.get("_review_timeout"):
-        final_msg = "> ⚠️ **审查超时，按原策略降级执行**\n\n" + final_msg
+        final_msg = "> ⚠️ **审查官或法官响应超时，已按原策略降级执行，请人工复核**\n\n" + final_msg
     send_dingtalk_message(final_msg, title=f"{symbol} 策略推送 (最终)")
     logger.info("最终信号已推送至钉钉")
 

@@ -74,7 +74,7 @@ def main():
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()
-    review_thread.join(timeout=180)
+    review_thread.join(timeout=240)
 
     if review_thread.is_alive():
         logger.warning("审查总线程超时，按原策略降级执行")

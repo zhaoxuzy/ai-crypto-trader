@@ -28,28 +28,26 @@ def main():
 
     prompt = build_prompt(data, symbol, eth_data=cross_data)
 
+    # 1. 交易员A生成策略
     try:
         strategy = call_deepseek(prompt)
     except Exception as e:
         logger.error(f"{symbol} 策略生成失败: {e}")
         return
 
+    # 基础校验
     valid, msg = validate_strategy(strategy, data)
     if not valid:
         logger.error(f"策略校验失败: {msg}")
         return
 
-    if strategy.get("confidence") == "low" or strategy.get("direction") == "neutral":
-        logger.info("策略置信度低或观望，跳过审查，直接推送")
-        markdown_msg = format_strategy_message(symbol, strategy, data)
-        send_dingtalk_message(markdown_msg, title=f"{symbol} 策略推送")
-        return
-
+    # 2. 推送初步信号
     preliminary_strategy = strategy.copy()
     preliminary_strategy["_preliminary"] = True
     prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
     send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (审查中...)")
 
+    # 3. 审查官B + 法官C 异步执行
     def run_review_and_judge():
         nonlocal strategy
         try:
@@ -70,8 +68,9 @@ def main():
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()
-    review_thread.join(timeout=60)  # 给予更充裕的时间
+    review_thread.join(timeout=60)
 
+    # 4. 超时保护
     if review_thread.is_alive():
         logger.warning("审查超时，按原策略降级执行")
         strategy["_reviewed"] = False
@@ -79,6 +78,7 @@ def main():
         size_map = {"heavy": "medium", "medium": "light", "light": "light"}
         strategy["position_size"] = size_map.get(strategy.get("position_size", "light"), "light")
 
+    # 5. 最终校验与推送
     valid, msg = validate_strategy(strategy, data)
     if not valid:
         logger.error(f"最终策略校验失败: {msg}")

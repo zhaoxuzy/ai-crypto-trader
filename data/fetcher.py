@@ -7,7 +7,7 @@ from utils.logger import logger
 
 
 class RateLimiter:
-    def __init__(self, min_interval: float = 0.1):   # 极微小间隔，削峰
+    def __init__(self, min_interval: float = 0.1):  # 极微小间隔，削峰，防止并发冲撞
         self.min_interval = min_interval
         self._last_request_time = 0.0
 
@@ -25,7 +25,7 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter(min_interval=3.0)
+        self._rate_limiter = RateLimiter()  # 使用新的默认间隔 0.1s
         self._semaphore = Semaphore(8)
 
     # ---------- 底层请求 ----------

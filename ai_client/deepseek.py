@@ -285,6 +285,7 @@ def round_to_tick(price: float) -> float:
 
 
 def _force_neutral(s: dict, reason: str):
+    old_risk = s.get('risk_note', '')
     s["direction"] = "neutral"
     s["confidence"] = "low"
     s["position_size"] = "none"
@@ -293,8 +294,7 @@ def _force_neutral(s: dict, reason: str):
     s["stop_loss"] = 0
     s["take_profit"] = 0
     s["execution_plan"] = ""
-    if "reasoning" in s:
-        s["reasoning"] += f"\n\n[法官裁决] 原策略被推翻改为观望。原因：{reason}"
+    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[法官裁决] 原策略被推翻改为观望。原因：{reason}").strip()
     s["risk_note"] = f"[法官裁决] 原策略被推翻改为观望。"
 
 
@@ -553,7 +553,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 return {"judge_C": {"final_verdict": "维持原判", "verdict_level": "A"}}
 
 
-def apply_final_verdict(original_strategy: dict, judge_result: dict) -> dict:
+def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_report: dict = None) -> dict:
     verdict = judge_result.get("judge_C", {}).get("final_verdict", "维持原判")
     final = judge_result.get("judge_C", {})
 
@@ -562,11 +562,18 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict) -> dict:
     original_strategy["_reviewed"] = True
     original_strategy["_original_direction"] = original_strategy.get("direction")
     original_strategy["_review_verdict"] = verdict
+    original_strategy["_judge_reasoning"] = final.get("reasoning", "")
+    original_strategy["_judge_verdict"] = verdict
+    # 将法官C的完整裁决信息注入到策略中
+    original_strategy["_judge_data"] = final
 
     if verdict == "维持原判":
         return original_strategy
 
     elif verdict == "修正参数":
+        original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
+        original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
+        original_strategy["position_size"] = final.get("final_position_size", original_strategy.get("position_size"))
         original_strategy["entry_price_low"] = final.get("entry_price_low", original_strategy["entry_price_low"])
         original_strategy["entry_price_high"] = final.get("entry_price_high", original_strategy["entry_price_high"])
         original_strategy["stop_loss"] = final.get("stop_loss", original_strategy["stop_loss"])
@@ -574,8 +581,18 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict) -> dict:
         return original_strategy
 
     elif verdict == "降级执行":
-        size_map = {"heavy": "medium", "medium": "light", "light": "light"}
-        original_strategy["position_size"] = size_map.get(original_strategy.get("position_size", "light"), "light")
+        # 应用法官C修正的方向、置信度和参数，并将仓位降一级
+        original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
+        original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
+        original_strategy["stop_loss"] = final.get("stop_loss", original_strategy["stop_loss"])
+        original_strategy["take_profit"] = final.get("take_profit", original_strategy["take_profit"])
+        # 法官C指定的仓位，或原仓位降一级
+        final_size = final.get("final_position_size", "")
+        if final_size:
+            original_strategy["position_size"] = final_size
+        else:
+            size_map = {"heavy": "medium", "medium": "light", "light": "light"}
+            original_strategy["position_size"] = size_map.get(original_strategy.get("position_size", "light"), "light")
         return original_strategy
 
     elif verdict == "推翻改为观望":

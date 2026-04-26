@@ -29,21 +29,21 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
             cross_symbol = "ETH"
 
     # ===== 触发距与远边界距 =====
-    above_trigger = "N/A"          # 空头池：到最近边（下沿）的距离
-    above_far_boundary = "N/A"     # 空头池：到最远边（上沿）的距离
-    below_trigger = "N/A"          # 多头池：到最近边（上沿）的距离
-    below_far_boundary = "N/A"     # 多头池：到最远边（下沿）的距离
+    above_trigger = "N/A"
+    above_far_boundary = "N/A"
+    below_trigger = "N/A"
+    below_far_boundary = "N/A"
 
     if above_cluster != 'N/A' and '-' in above_cluster:
         parts = above_cluster.split('-')
-        above_low = float(parts[0])   # 下沿（近边）
-        above_high = float(parts[1])  # 上沿（远边）
+        above_low = float(parts[0])
+        above_high = float(parts[1])
         above_trigger = f"+{above_low - current:.0f}"
         above_far_boundary = f"+{above_high - current:.0f}"
     if below_cluster != 'N/A' and '-' in below_cluster:
         parts = below_cluster.split('-')
-        below_low = float(parts[0])   # 下沿（远边）
-        below_high = float(parts[1])  # 上沿（近边）
+        below_low = float(parts[0])
+        below_high = float(parts[1])
         below_trigger = f"-{current - below_high:.0f}"
         below_far_boundary = f"-{current - below_low:.0f}"
 
@@ -88,9 +88,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
             cross_funding_pct = eth_data.get('funding_percentile', 50)
             cross_tls_pct = eth_data.get('top_ls_percentile', 50)
             cross_cvd = eth_data.get('cvd_slope', 0)
-
             cross_cvd_dir = "正（买盘）" if cross_cvd > 0 else "负（卖盘）"
-
             cross_context = f"""
 【跨币种辅助验证数据（{cross_symbol}）】
 现价：{cross_current:.2f}
@@ -110,6 +108,21 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
 自我质疑：
 最终结论：
 【跨币种反馈】基于以上对比，我的（{symbol}/{cross_symbol}）单币种结论被如何修正？有无新增风险点？如果有，我必须回到第三步或第五步的自我质疑中重新审视。
+"""
+
+    # 时间维度与假突破机制的新增指令
+    dynamic_instructions = f"""
+【时间维度动态分析】
+CAUTION: CVD斜率仅代表过去，你必须结合加速度判断趋势的“续航力”。
+- CVD加速度：{data.get('cvd_acceleration', 0):.3f}（正值=卖盘加速增强，负值=卖盘减弱）
+- OI加速度：{data.get('oi_acceleration', 0):.3f}（正值=持仓下降加速，负值=下降减速）
+- 资金费率动量：{data.get('funding_momentum', 0):.6f}
+在第四步“资金流验证”的最终结论中，必须明确当前趋势属于：加速、衰竭，还是稳定。
+
+【假突破陷阱识别】
+诱导风险系数：{data.get('lure_risk_factor', 0):.2f} (>0.5 表示存在显著诱盘风险)
+在第二步“猎物定位”的最终结论中，必须回答：“这个猎物是否可能是诱饵？”
+若风险系数>0.5，必须在第七步“假突破预设”中给出明确的应激方案。
 """
 
     prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易。请完全沉浸在这个角色中，使用第一人称（我）进行所有思考。
@@ -135,6 +148,7 @@ OI：{data['oi']/1e9:.2f}B (约{data['oi']/1e7:.0f}亿美元) (分位{data['oi_p
 资金流：CVD斜率{data['cvd_slope']:.4f} | 期货24h净流{data['netflow']/1e6:.1f}M | 交易所BTC 24h变化{data['exchange_btc_change_24h']:+.0f} BTC
 ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位数{eth_btc_percentile:.0f}%（数值越高代表ETH相对BTC越强势）
 数据缺失：{missing_str}
+{dynamic_instructions}
 {cross_context}
 ---
 【硬性约束】
@@ -150,17 +164,15 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 
 第二步：猎物定位
 分析数据：上下方清算池距离/强度、比值、订单簿买卖盘量、失衡率。
-【猎物定位规则】“猎物距离”必须使用触发距，而非远边界距。价格触碰清算区上沿（多头池）或下沿（空头池）即可开始触发清算。你在预估第一段运动幅度时，必须以触发距为基准进行浮动估计。
-【幅度预估规则】你必须以下列三步推演来估算第一段运动的潜在幅度，不得跳过任何一步：
-1.基准触发距：[ ]点。这是清算引擎启动的最小距离。
-2.惯性穿透力评估：当前抛压/买盘是否足以让价格击穿清算区边缘后继续深入？
-   - 请依据 订单簿失衡率 和 CVD斜率真实强度 回答：“强”、“中等”或“弱”。
-   - 若为“强”，价格大概率会穿透至清算区内部，你的预估幅度应覆盖更深的区域；
-   - 若为“弱”，价格可能仅触发边缘后便停滞或反弹，你的预估幅度应较浅。
-3.幅度预估：基于以上推演，你预估的第一段运动幅度为 [ ] 点。简述这个数值的战术依据。
+定位规则：“猎物距离”必须是触发距，即价格到清算区最近边界的距离。价格仅需触碰该边界，即可引爆该侧流动性。
+推演要求：你需要基于上述规则，独立完成对第一段运动方向和幅度的战术推演。推演应围绕以下维度展开，最终自然得出你的判断：
+- 攻击成本：基于触发距，哪个方向的猎物是阻力最小的路径？
+- 盘口阻力：订单簿失衡率和CVD斜率是在助推还是阻挠该方向？如果两者矛盾，你需要做出裁决并说明依据。
+- 反向张力：对立侧清算池的规模和比值是否构成反向威胁？在什么情况下它会改变你的方向判断？
+- 诱饵审视：这个猎物是否可能是做市商设置的陷阱？如果触发距极近但盘口未显示同向动能，或清算池比值极端而价格反复在池边摩擦，需警惕诱饵风险，并给出相应的反制策略。
 第一反应：
 自我质疑：
-最终结论：
+最终结论： (必须包含“猎物是否为诱饵”的假突破风险判断)
 
 第三步：对手盘解剖
 分析数据：OI分位数及变化、全市场OI变化、资金费率分位数、顶级多空比分位数、恐慌贪婪及趋势。
@@ -170,6 +182,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 
 第四步：资金流验证
 分析数据：CVD斜率方向/量级、期货24h净流、交易所BTC余额变化。
+【趋势动能研判】在最终结论中必须明确当前趋势是加速、衰竭还是稳定。
 第一反应：
 自我质疑：
 最终结论：
@@ -200,12 +213,10 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
    - 声明：仅有价格穿刺而无资金流确认的突破，将被我视为陷阱。两者必须共同触发，我的核心假设才被推翻，我将无条件执行撤离。
 
 第八步：交易执行计划【基于第七步的最后裁决结果，制定可直接执行的具体计划】
-价格路径推演：
-   - 利用流动性猎杀+行为金融+博弈论进行价格推演，描述当前价格的走势，最可能如何测试并触发关键流动性区域，说明理由。
-合约策略：
-   入场区间（说明依据）
-   止损位（说明依据）
-   止盈位（说明依据）
+
+价格路径推演：必须综合运用流动性猎杀理论（清算池位置/强度）、行为金融学（对手盘心理、恐慌/贪婪、顶级多空比极端值）以及博弈论（做市商与散户的短期博弈策略）进行推演，价格最可能如何测试并触发关键流动性区域？触发后会产生何种连锁强平或踩踏？
+
+合约策略：入场区间+止损位+止盈位，说明具体的依据。
 主动证伪信号：
 微观盘口确认：
 
@@ -240,6 +251,9 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 }}
 """
     return prompt
+
+# 其余函数（_log_response, extract_json, call_deepseek, round_to_tick, _force_neutral, validate_strategy）保持不变。
+# 此处省略，请直接使用您最新版文件中对应部分。
 
 def _log_response(prompt: str, content: str, reasoning: str = None):
     try:

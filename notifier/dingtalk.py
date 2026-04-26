@@ -187,13 +187,25 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
 def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
-    
+
     direction = strategy.get("direction", "neutral")
     verdict = strategy.get("_review_verdict", "维持原判")
     judge_reasoning = strategy.get("_judge_reasoning", "")
-    
+    exec_plan = strategy.get("execution_plan", "")
+    original_direction = strategy.get("_original_direction", "")
+
+    # 判决级别映射
+    verdict_emoji_map = {
+        "维持原判": "✅",
+        "修正参数": "🔧",
+        "降级执行": "⬇️",
+        "推翻改为观望": "⚠️"
+    }
+    verdict_emoji = verdict_emoji_map.get(verdict, "•")
+
+    # ----- 标题 -----
     if direction == "neutral":
-        title = f"## ⚪ 最终裁决 {symbol} · 观望 · {now}"
+        title = f"## ⚪ 最终裁决 {symbol} · 观望 · {now} · {verdict_emoji}{verdict}"
     else:
         emoji = "🟢" if direction == "long" else "🔴"
         text = "做多" if direction == "long" else "做空"
@@ -206,21 +218,16 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
             parts.append(size_cn)
         parts.append(conf_cn)
         parts.append(now)
+        parts.append(f"{verdict_emoji}{verdict}")
         title = "## " + " · ".join(parts)
-    
-    if verdict == "维持原判":
-        title += " · ✅维持原判"
-    elif verdict in ("修正参数", "降级执行"):
-        title += " · 🔧修正执行"
-    elif verdict == "推翻改为观望":
-        title += " · ⚠️推翻观望"
-    
+
+    # ----- 参数卡片 -----
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
     tp = strategy.get("take_profit", 0)
     current = data.get("mark_price", 0)
-    
+
     if direction == "neutral":
         param = f"> 现价{current:.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
     else:
@@ -230,20 +237,52 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
         rr = reward / risk if risk > 0 else 0
         rr_str = f"{rr:.2f}" if rr else "N/A"
         param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
-    
+
+    # ----- 判决摘要（完整版） -----
+    # 检测是否推翻方向
+    reversed_direction = False
+    if original_direction and original_direction != direction:
+        reversed_direction = True
+
+    verdict_summary = {
+        "维持原判": "C认为A的策略无明显瑕疵，予以维持。",
+        "修正参数": "C认为A的方向正确，但对参数进行了优化修正。",
+        "降级执行": "C认为A的逻辑有瑕疵，降仓后仍可执行。",
+        "推翻改为观望": "C认为A的方向存在致命问题，改为观望。"
+    }
+    summary_text = verdict_summary.get(verdict, "")
+
+    if reversed_direction and verdict not in verdict_summary:
+        # 如果判决不在标准列表且方向被翻转，生成特定描述
+        summary_text = f"C认为A的{original_direction}方向存在致命问题，改为完全相反的{direction}方向。"
+
+    summary_block = f"> **📌 判决：{verdict}**\n> {summary_text}\n" if summary_text else ""
+
+    # ----- 裁决理由（格式化列表）-----
     reasoning_block = ""
     if judge_reasoning:
-        reasoning_block = "> ### 📋 法官裁决理由\n"
         lines = judge_reasoning.split('\n')
-        for line in lines[:20]:
-            line = line.strip()
-            if line:
-                reasoning_block += f"> {line}\n"
-    
+        reasoning_block = "> ### 📋 裁决理由\n"
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                reasoning_block += "> \n"
+                continue
+            if re.match(r'^\s*[\d]+[\.、\)]|^\s*[-•]', stripped):
+                reasoning_block += f"> {stripped}\n"
+            else:
+                reasoning_block += f"> {stripped}\n"
+
+    # ----- 执行指令 -----
+    if exec_plan and direction != "neutral":
+        reasoning_block += f"\n> ### 🎯 执行指令\n> {exec_plan}\n"
+
+    # ----- 风险说明 -----
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
     if not risk_lines:
         risk_lines = ["> 请严格设置止损"]
-    risk_block = "> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
-    
-    return f"{title}\n\n{param}\n\n{reasoning_block}\n\n{risk_block}"
+    risk_block = "> ---\n> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
+
+    # 拼接最终消息
+    return f"{title}\n\n{param}\n\n{summary_block}\n{reasoning_block}\n{risk_block}"

@@ -2,20 +2,18 @@ import os
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Semaphore
+from threading import Semaphore, Lock
 from utils.logger import logger
 
-
-from threading import Lock
 
 class RateLimiter:
     def __init__(self, min_interval: float = 0.1):
         self.min_interval = min_interval
         self._last_request_time = 0.0
-        self._lock = Lock()                       # 新增线程锁
+        self._lock = Lock()
 
     def wait(self):
-        with self._lock:                          # 加锁，确保串行
+        with self._lock:
             now = time.time()
             elapsed = now - self._last_request_time
             if elapsed < self.min_interval:
@@ -29,7 +27,7 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter()  # 使用新的默认间隔 0.1s
+        self._rate_limiter = RateLimiter()
         self._semaphore = Semaphore(8)
 
     # ---------- 底层请求 ----------
@@ -147,7 +145,6 @@ class CoinGlassClient:
 
     @staticmethod
     def _calc_momentum(series: list, window: int = 6) -> float:
-        """计算最近window根K线的斜率，用于衡量动量"""
         if len(series) < window:
             return 0.0
         recent = series[-window:]
@@ -160,7 +157,6 @@ class CoinGlassClient:
 
     @staticmethod
     def _calc_liquidity_bias(above_liq, below_liq, above_trigger, below_trigger, orderbook_imbalance):
-        """计算清算池综合吸引力偏向"""
         try:
             at = float(above_trigger) if above_trigger != 'N/A' else 0
             bt = float(below_trigger) if below_trigger != 'N/A' else 0
@@ -178,7 +174,7 @@ class CoinGlassClient:
     def _get_symbol(self, base: str) -> str:
         return f"{base}-USDT-SWAP"
 
-    # ---------- 各个API接口 ----------
+    # ---------- 各数据获取接口 ----------
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
@@ -227,15 +223,12 @@ class CoinGlassClient:
     def get_netflow(self, symbol: str = "BTC") -> float:
         params = {"symbol": symbol.upper()}
         data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True)
-        logger.info(f"[Netflow原始数据] 返回内容: {data}")
         if isinstance(data, dict):
             for field in ["net_flow_usd_24h", "netflow_24h", "netflow", "netFlow", "flow"]:
                 if field in data:
                     val = data.get(field)
                     if val is not None:
-                        logger.info(f"✅ 期货资金净流获取成功: {val} (字段: {field})")
                         return float(val)
-            return 0.0
         elif isinstance(data, list) and len(data) > 0:
             latest = data[0]
             if isinstance(latest, dict):
@@ -357,7 +350,6 @@ class CoinGlassClient:
         atr_1h_val = atr_4h * 0.5
         atr_1h_ratio = (atr_1h_val / mark_price) * 100 if mark_price > 0 else 0.0
 
-        # 清算数据
         above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
         if heatmap_raw:
             y_axis = heatmap_raw.get("y_axis", [])
@@ -383,7 +375,6 @@ class CoinGlassClient:
                     max_below = max(below_prices, key=lambda p: pain_map[p])
                     below_cluster = f"{max_below*0.99:.0f}-{max_below*1.01:.0f}"
 
-        # 触发距计算
         above_trigger = "N/A"
         below_trigger = "N/A"
         if above_cluster != 'N/A' and '-' in above_cluster:
@@ -393,7 +384,6 @@ class CoinGlassClient:
             below_high = float(below_cluster.split('-')[1])
             below_trigger = f"-{mark_price - below_high:.0f}"
 
-        # OI相关
         oi_current = self._get_close_from_candle(oi_data[-1]) if oi_data else 0.0
         oi_percentile = self._calc_percentile(oi_data, oi_current)
         oi_change_24h = 0.0
@@ -429,11 +419,9 @@ class CoinGlassClient:
         funding_series = [self._get_close_from_candle(c) for c in funding_data] if funding_data else []
         funding_momentum = self._calc_momentum(funding_series[-30:]) if len(funding_series) >= 30 else 0.0
 
-        # 流动性偏向
         liquidity_bias = self._calc_liquidity_bias(above_liq, below_liq, above_trigger, below_trigger,
                                                    orderbook.get("imbalance", 0.0))
 
-        # 诱饵风险因子（简单版：失衡率方向与触发距对立的程度）
         lure_risk_factor = 0.0
         try:
             if orderbook.get("imbalance", 0) < -0.1 and float(below_trigger.replace('-', '')) < float(above_trigger.replace('+', '')):
@@ -490,15 +478,14 @@ class CoinGlassClient:
             "lure_risk_factor": lure_risk_factor,
         }
 
-        def get_cross_asset_data(self, cross_symbol: str) -> dict:
+    def get_cross_asset_data(self, cross_symbol: str) -> dict:
         """获取跨币种验证所需的精简数据"""
         logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
         data = {}
         try:
-            # 1. 清算池热力图（不再单独请求K线，后续用OKX实时价格计算）
+            # 1. 清算池热力图（用OKX实时价格代替K线请求）
             heatmap = self.get_liquidation_heatmap(cross_symbol)
             if heatmap:
-                # 先获取OKX实时价格
                 mark_price = 0
                 try:
                     real_price = get_current_price(f"{cross_symbol}-USDT-SWAP")
@@ -586,7 +573,7 @@ class CoinGlassClient:
             logger.error(f"获取跨币种数据失败 {cross_symbol}: {e}")
             return {"_complete": False}
 
-# ---------- OKX 实时价格 ----------
+
 def get_current_price(inst_id: str) -> float:
     try:
         resp = requests.get(f"https://www.okx.com/api/v5/market/ticker?instId={inst_id}", timeout=10)

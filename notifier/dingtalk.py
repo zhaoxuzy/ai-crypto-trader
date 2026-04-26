@@ -16,6 +16,10 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     if not webhook:
         logger.error("未配置钉钉 Webhook")
         return False
+    
+    # 在内容开头自动追加一个安全关键词，防止机器人关键词过滤
+    content = "策略信号 " + content
+    
     ts = str(round(time.time() * 1000))
     if secret and secret.lower() != "none":
         sign_str = f"{ts}\n{secret}"

@@ -129,26 +129,35 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
             rr_str = f"{rr:.2f}" if rr else "N/A"
             param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
+        # 法官C裁决数据
+        judge_data = strategy.get("_judge_data", {})
+        judge_reasoning = strategy.get("_judge_reasoning", "")
+        
         # 法庭判决块
         review_block = "> ### 🔍 法庭最终判决\n"
-        review_block += f"> 判决结果：{verdict}\n"
-        if verdict == "修正参数":
-            review_block += f"> 修正后入场：{entry_low:.0f}-{entry_high:.0f}\n"
-            review_block += f"> 修正后止损：{stop:.0f}\n"
-            review_block += f"> 修正后止盈：{tp:.0f}\n"
-        elif verdict == "降级执行":
-            review_block += f"> 原仓位已降级为：{size_cn}\n"
-        elif verdict == "推翻改为观望":
-            review_block += f"> 原方向：{strategy.get('_original_direction', '')} 已被推翻\n"
-
-        # C的裁决理由
-        reasoning_raw = strategy.get("reasoning", "")
-        # 提取法官裁决部分
-        judge_section = ""
-        if "[法官裁决]" in reasoning_raw:
-            judge_section = reasoning_raw[reasoning_raw.find("[法官裁决]"):]
-        if judge_section:
-            review_block += f"> \n> {judge_section.strip()}\n"
+        review_block += f"> **法官C裁决：{verdict}**\n"
+        
+        if verdict == "降级执行":
+            original_size = strategy.get("_original_size", "")
+            review_block += f"> 仓位降级为：{size_cn}\n"
+        
+        # 法官C的裁决理由
+        if judge_reasoning:
+            reasoning_lines = judge_reasoning.split('\n')
+            for line in reasoning_lines[:15]:  # 最多显示15行
+                line = line.strip()
+                if line:
+                    review_block += f"> {line}\n"
+        
+        # B的错误报告
+        review_report = strategy.get("_review_report", "")
+        if review_report:
+            review_block += "> \n> ### 📋 审查官B错误报告\n"
+            report_lines = review_report.split('\n')
+            for line in report_lines[:10]:  # 最多显示10行
+                line = line.strip()
+                if line and (line.startswith('-') or line.startswith('【') or line.startswith('一') or line.startswith('二') or line.startswith('三')):
+                    review_block += f"> {line}\n"
 
         # 风险说明
         risk_raw = strategy.get("risk_note", "请严格设置止损")

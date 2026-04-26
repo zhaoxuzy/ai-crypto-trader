@@ -524,7 +524,7 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
 输出JSON（不要代码块）：
 {{
   "judge_C": {{
-    "final_verdict": "维持原判/修正参数/降级执行/推翻改为观望",
+    "final_verdict": "维持原判/修正参数/降级执行/推翻改为观望/推翻改为反向操作",
     "verdict_level": "A/B/C/E",
     "final_direction": "long/short/neutral",
     "final_confidence": "high/medium/low",

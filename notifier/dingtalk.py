@@ -84,7 +84,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     now = datetime.now(tz).strftime("%m-%d %H:%M")
     direction = strategy.get("direction", "neutral")
 
-    # 标题行
     if direction == "neutral":
         title = f"## ⚪ 观望 {symbol} · 🔴低 · {now}"
         param = f"> 现价{data.get('mark_price', 0):.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
@@ -182,7 +181,7 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
         size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
         conf = strategy.get("confidence", "medium")
         conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
-        parts = [f"{emoji} 最终裁决 {symbol}"]
+        parts = [f"{emoji} {text} 最终裁决 {symbol}"]
         if size_cn:
             parts.append(size_cn)
         parts.append(conf_cn)
@@ -221,10 +220,17 @@ def format_judge_message(symbol: str, strategy: dict, data: dict) -> str:
             if line:
                 reasoning_block += f"> {line}\n"
     
+    # 最终执行方案（单独一行醒目展示）
+    if direction != "neutral":
+        execution_block = "> \n> ### 🎯 最终执行方案\n"
+        execution_block += f"> **{text} {symbol}** | 仓位: {size_cn} | 入场: {entry_low:.0f}-{entry_high:.0f} | 止损: {stop:.0f} | 止盈: {tp:.0f} | 盈亏比: {rr_str}\n"
+    else:
+        execution_block = ""
+    
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
     if not risk_lines:
         risk_lines = ["> 请严格设置止损"]
     risk_block = "> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
     
-    return f"{title}\n\n{param}\n\n{reasoning_block}\n\n{risk_block}"
+    return f"{title}\n\n{param}\n\n{reasoning_block}{execution_block}\n\n{risk_block}"

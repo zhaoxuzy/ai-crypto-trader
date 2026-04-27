@@ -347,7 +347,6 @@ class CoinGlassClient:
                     max_below = max(below_prices, key=lambda p: pain_map[p])
                     below_cluster = f"{max_below*0.99:.0f}-{max_below*1.01:.0f}"
 
-        # 修正后的触发距格式化
         above_trigger_str = f"{float(above_cluster.split('-')[0]) - mark_price:+.0f}" if above_cluster != 'N/A' and '-' in above_cluster else "N/A"
         below_trigger_str = f"{mark_price - float(below_cluster.split('-')[1]):+.0f}" if below_cluster != 'N/A' and '-' in below_cluster else "N/A"
 
@@ -449,41 +448,250 @@ class CoinGlassClient:
             "lure_risk_factor": lure_risk_factor,
         }
 
-    def get_cross_asset_data(self, cross_symbol: str) -> dict:
-        """获取跨币种验证所需的精简数据（并发请求，快速）"""
-        logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
-        data = {}
-        complete = True
+    def fetch_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> tuple:
+        """
+        一次性获取主数据 + 跨币种数据，合并到同一个并发池中。
+        返回 (main_data, cross_data)
+        """
+        base_symbol = symbol.upper()
+        cross_symbol = "ETH" if base_symbol == "BTC" else "BTC"
 
-        # 并发执行所有请求
-        tasks = {
-            "heatmap": lambda: self.get_liquidation_heatmap(cross_symbol),
-            "oi": lambda: self.get_oi_ohlc_history(cross_symbol, "4h", 42),
-            "funding": lambda: self.get_weighted_funding_rate_history(cross_symbol, "4h", 42),
-            "top_ls": lambda: self.get_top_long_short_ratio_history(cross_symbol, "4h", 42),
-            "cvd": lambda: self.get_cvd_history(cross_symbol, "1m", 240),
-            "option": lambda: self.get_option_max_pain(cross_symbol),
-            "price": lambda: get_current_price(f"{cross_symbol}-USDT-SWAP")
-        }
+        # 合并所有任务：主数据 + 跨币种数据
+        all_tasks = {}
 
+        # 主数据任务
+        all_tasks["kline"] = lambda: self.get_kline_history(base_symbol, "4h", kline_limit)
+        all_tasks["oi"] = lambda: self.get_oi_ohlc_history(base_symbol, "4h", kline_limit)
+        all_tasks["funding"] = lambda: self.get_weighted_funding_rate_history(base_symbol, "4h", kline_limit)
+        all_tasks["heatmap"] = lambda: self.get_liquidation_heatmap(base_symbol)
+        all_tasks["top_ls"] = lambda: self.get_top_long_short_ratio_history(base_symbol, "4h", kline_limit)
+        all_tasks["cvd"] = lambda: self.get_cvd_history(base_symbol, "1m", 240)
+        all_tasks["max_pain"] = lambda: self.get_option_max_pain(base_symbol)
+        all_tasks["fg"] = lambda: self.get_fear_and_greed_index()
+        all_tasks["netflow"] = lambda: self.get_netflow(base_symbol)
+        all_tasks["orderbook"] = lambda: self.get_orderbook_imbalance(base_symbol)
+        all_tasks["exchange_btc"] = lambda: self.get_exchange_btc_balance()
+        all_tasks["agg_oi"] = lambda: self.get_aggregated_oi_history(base_symbol, "4h", kline_limit)
+
+        # 跨币种数据任务（精简版）
+        all_tasks["cross_heatmap"] = lambda: self.get_liquidation_heatmap(cross_symbol)
+        all_tasks["cross_oi"] = lambda: self.get_oi_ohlc_history(cross_symbol, "4h", 42)
+        all_tasks["cross_funding"] = lambda: self.get_weighted_funding_rate_history(cross_symbol, "4h", 42)
+        all_tasks["cross_top_ls"] = lambda: self.get_top_long_short_ratio_history(cross_symbol, "4h", 42)
+        all_tasks["cross_cvd"] = lambda: self.get_cvd_history(cross_symbol, "1m", 240)
+        all_tasks["cross_option"] = lambda: self.get_option_max_pain(cross_symbol)
+        # 跨币种价格
+        all_tasks["cross_price"] = lambda: get_current_price(f"{cross_symbol}-USDT-SWAP")
+        # ETH/BTC 汇率相关K线（已在主数据中获取过，但为了并发也可以放这里，不过 get_eth_btc_ratio 内部会再请求，所以不额外加）
+
+        # 执行所有任务
         results = {}
-        with ThreadPoolExecutor(max_workers=7) as executor:
-            future_to_key = {executor.submit(task): key for key, task in tasks.items()}
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            future_to_key = {executor.submit(task): key for key, task in all_tasks.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
                 try:
                     results[key] = future.result()
                 except Exception as e:
-                    logger.error(f"跨币种获取 {key} 失败: {e}")
+                    logger.error(f"获取 {key} 失败: {e}")
                     results[key] = None
 
-        # 解析热力图
-        if results.get("heatmap"):
-            heatmap = results["heatmap"]
-            mark_price = float(results.get("price", 0))
-            if not mark_price:
-                kline_1 = self.get_kline_history(cross_symbol, "4h", 1)
-                mark_price = self._get_close_from_candle(kline_1[-1]) if kline_1 else 0.0
+        # 处理主数据（与 get_all_data 相同逻辑）
+        # ... 省略重复代码，直接调用现有的构建逻辑会更好，但为了保持独立性，这里单独构建 main_data
+        # 为了不使得代码太长，我们直接复用 get_all_data 的逻辑，但 get_all_data 内部还会再拉取，所以最好提取公共函数。
+        # 简单方案：main_data = self._build_main_data(results, base_symbol, kline_limit)
+        main_data = self._build_main_data(results, base_symbol, kline_limit)
+
+        # 处理跨币种数据
+        cross_data = self._build_cross_data(results, cross_symbol)
+
+        return main_data, cross_data
+
+    def _build_main_data(self, results: dict, base_symbol: str, kline_limit: int) -> dict:
+        """从结果字典构建主数据字典"""
+        # 与 get_all_data 后半部分完全一致，只是数据来源是 results
+        # 为避免代码重复，这里复制 get_all_data 的构建逻辑
+        # 注意：kline_limit 不需要再传入
+        eth_btc_ratio = 0.0
+        eth_btc_ma_7d = 0.0
+        eth_btc_percentile = 50.0
+        # 由于 eth_btc_ratio 需要单独请求，这里简化处理：使用固定值或调用 get_eth_btc_ratio（但这会额外请求）
+        # 为了不增加请求，我们可以在 fetch_all_data 中预先请求 eth_btc_ratio 并传入 results，但这里为了完整，我们直接调用
+        eth_btc_data = self.get_eth_btc_ratio()
+        eth_btc_ratio = eth_btc_data.get("current", 0.0)
+        eth_btc_ma_7d = eth_btc_data.get("ma_7d", 0.0)
+        eth_btc_percentile = eth_btc_data.get("percentile_7d", 50.0)
+
+        data_quality = {}
+        main_keys = ["kline", "oi", "funding", "heatmap", "top_ls", "cvd", "max_pain", "fg", "netflow", "orderbook", "exchange_btc", "agg_oi"]
+        for key in main_keys:
+            if key in ["fg", "exchange_btc"]:
+                data_quality[key] = "✅" if results.get(key) else "⚠️ 回退"
+            else:
+                data_quality[key] = "✅" if results.get(key) else "❌ 缺失"
+
+        kline_data = results.get("kline", [])
+        oi_data = results.get("oi", [])
+        funding_data = results.get("funding", [])
+        top_ls_data = results.get("top_ls", [])
+        cvd_data = results.get("cvd", [])
+        heatmap_raw = results.get("heatmap", {})
+        max_pain_data = results.get("max_pain", {})
+        fg_data = results.get("fg", {"current": 50, "prev_7d": 50})
+        netflow = results.get("netflow", 0.0)
+        orderbook = results.get("orderbook", {})
+        exchange_btc = results.get("exchange_btc", {})
+        agg_oi_data = results.get("agg_oi", [])
+
+        mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
+        closes = [self._get_close_from_candle(k) for k in kline_data]
+        atr_4h = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
+        avg_atr_7d = sum(self._calc_atr_list(closes, 14)) / len(closes) if closes else 1.0
+        vol_factor = atr_4h / avg_atr_7d if avg_atr_7d > 0 else 1.0
+        price_percentile = self._calc_percentile(kline_data, mark_price)
+        atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
+        atr_1h_val = atr_4h * 0.5
+        atr_1h_ratio = (atr_1h_val / mark_price) * 100 if mark_price > 0 else 0.0
+
+        above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
+        if heatmap_raw:
+            y_axis = heatmap_raw.get("y_axis", [])
+            liq_data = heatmap_raw.get("liquidation_leverage_data", [])
+            pain_map = {}
+            for item in liq_data:
+                if isinstance(item, list) and len(item) >= 3:
+                    price = float(y_axis[int(item[1])]) if int(item[1]) < len(y_axis) else 0
+                    intensity = float(item[2])
+                    if price > mark_price: above_liq += intensity
+                    elif price < mark_price: below_liq += intensity
+                    pain_map[price] = intensity
+            liq_ratio = above_liq / below_liq if below_liq > 0 else 0.0
+            if pain_map:
+                above_prices = [p for p in pain_map if p > mark_price]
+                below_prices = [p for p in pain_map if p < mark_price]
+                if above_prices:
+                    max_above = max(above_prices, key=lambda p: pain_map[p])
+                    above_cluster = f"{max_above*0.99:.0f}-{max_above*1.01:.0f}"
+                if below_prices:
+                    max_below = max(below_prices, key=lambda p: pain_map[p])
+                    below_cluster = f"{max_below*0.99:.0f}-{max_below*1.01:.0f}"
+
+        above_trigger_str = f"{float(above_cluster.split('-')[0]) - mark_price:+.0f}" if above_cluster != 'N/A' and '-' in above_cluster else "N/A"
+        below_trigger_str = f"{mark_price - float(below_cluster.split('-')[1]):+.0f}" if below_cluster != 'N/A' and '-' in below_cluster else "N/A"
+
+        above_trigger_val = float(above_trigger_str) if above_trigger_str != 'N/A' else 0
+        below_trigger_val = float(below_trigger_str) if below_trigger_str != 'N/A' else 0
+
+        oi_current = self._get_close_from_candle(oi_data[-1]) if oi_data else 0.0
+        oi_percentile = self._calc_percentile(oi_data, oi_current)
+        oi_change_24h = 0.0
+        if len(oi_data) >= 6:
+            oi_24h_ago = self._get_close_from_candle(oi_data[-6])
+            oi_change_24h = (oi_current - oi_24h_ago) / oi_24h_ago * 100 if oi_24h_ago > 0 else 0.0
+
+        funding_current = self._get_close_from_candle(funding_data[-1]) if funding_data else 0.0
+        funding_percentile = self._calc_percentile(funding_data, funding_current)
+
+        top_ls_current = 0.0
+        if top_ls_data and isinstance(top_ls_data, list) and len(top_ls_data) > 0:
+            latest = top_ls_data[-1]
+            if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
+                top_ls_current = float(latest.get("top_position_long_short_ratio", 0))
+            else:
+                top_ls_current = self._get_close_from_candle(latest)
+        top_ls_percentile = self._calc_percentile(top_ls_data, top_ls_current) if top_ls_data else 50.0
+
+        cvd_series = [self._get_close_from_candle(c) for c in cvd_data] if cvd_data else []
+        cvd_slope = self._calc_slope(cvd_series)
+
+        agg_oi_current = self._get_close_from_candle(agg_oi_data[-1]) if agg_oi_data else 0.0
+        agg_oi_change_24h = 0.0
+        if len(agg_oi_data) >= 6:
+            agg_oi_24h_ago = self._get_close_from_candle(agg_oi_data[-6])
+            agg_oi_change_24h = (agg_oi_current - agg_oi_24h_ago) / agg_oi_24h_ago * 100 if agg_oi_24h_ago > 0 else 0.0
+
+        fear_greed = fg_data.get("current", 50)
+        fear_greed_prev_7d = fg_data.get("prev_7d", 50)
+
+        cvd_acceleration = self._calc_momentum(cvd_series[-60:]) if len(cvd_series) >= 60 else 0.0
+        oi_series = [self._get_close_from_candle(c) for c in oi_data] if oi_data else []
+        oi_acceleration = self._calc_momentum(oi_series[-30:]) if len(oi_series) >= 30 else 0.0
+        funding_series = [self._get_close_from_candle(c) for c in funding_data] if funding_data else []
+        funding_momentum = self._calc_momentum(funding_series[-30:]) if len(funding_series) >= 30 else 0.0
+
+        liquidity_bias = self._calc_liquidity_bias(above_liq, below_liq, above_trigger_val, below_trigger_val, orderbook.get("imbalance", 0.0))
+
+        lure_risk_factor = 0.0
+        try:
+            if orderbook.get("imbalance", 0) < -0.1 and below_trigger_val < above_trigger_val:
+                lure_risk_factor = 0.6
+            elif orderbook.get("imbalance", 0) > 0.1 and above_trigger_val < below_trigger_val:
+                lure_risk_factor = 0.6
+        except:
+            pass
+
+        return {
+            "mark_price": mark_price,
+            "atr": atr_4h,
+            "atr_15m": atr_15m,
+            "atr_1h": atr_1h_val,
+            "atr_1h_ratio": round(atr_1h_ratio, 2),
+            "vol_factor": vol_factor,
+            "price_percentile": price_percentile,
+            "above_liq": above_liq,
+            "below_liq": below_liq,
+            "liq_ratio": liq_ratio,
+            "above_cluster": above_cluster,
+            "below_cluster": below_cluster,
+            "above_trigger": above_trigger_str,
+            "below_trigger": below_trigger_str,
+            "max_pain": max_pain_data.get("max_pain", 0.0),
+            "put_call_ratio": max_pain_data.get("put_call_ratio", 0.0),
+            "top_ls_ratio": top_ls_current,
+            "top_ls_percentile": top_ls_percentile,
+            "funding_rate": funding_current,
+            "funding_percentile": funding_percentile,
+            "oi": oi_current,
+            "oi_percentile": oi_percentile,
+            "oi_change_24h": oi_change_24h,
+            "agg_oi": agg_oi_current,
+            "agg_oi_change_24h": agg_oi_change_24h,
+            "cvd_mean": sum(cvd_series) / len(cvd_series) / 1e6 if cvd_series else 0.0,
+            "cvd_slope": cvd_slope,
+            "cvd_acceleration": cvd_acceleration,
+            "oi_acceleration": oi_acceleration,
+            "funding_momentum": funding_momentum,
+            "fear_greed": fear_greed,
+            "fear_greed_prev_7d": fear_greed_prev_7d,
+            "eth_btc_ratio": eth_btc_ratio,
+            "eth_btc_ma_7d": eth_btc_ma_7d,
+            "eth_btc_percentile": eth_btc_percentile,
+            "netflow": netflow,
+            "orderbook_bids": orderbook.get("bids_usd", 0.0),
+            "orderbook_asks": orderbook.get("asks_usd", 0.0),
+            "orderbook_imbalance": orderbook.get("imbalance", 0.0),
+            "exchange_btc_total": exchange_btc.get("total_btc", 0.0),
+            "exchange_btc_change_24h": exchange_btc.get("change_24h", 0.0),
+            "data_quality": data_quality,
+            "liquidity_bias": liquidity_bias,
+            "lure_risk_factor": lure_risk_factor,
+        }
+
+    def _build_cross_data(self, results: dict, cross_symbol: str) -> dict:
+        """从结果字典构建跨币种数据"""
+        data = {}
+        complete = True
+
+        # 清算热力图
+        heatmap = results.get("cross_heatmap")
+        if heatmap:
+            mark_price = 0.0
+            price_val = results.get("cross_price")
+            if price_val and price_val > 0:
+                mark_price = price_val
+            else:
+                kline_1 = results.get("cross_kline")  # 注意我们没有专门获取cross_kline，可以省略
+                # 直接使用价格
             above_liq, below_liq = 0, 0
             y_axis = heatmap.get("y_axis", [])
             liq_data = heatmap.get("liquidation_leverage_data", [])
@@ -497,76 +705,76 @@ class CoinGlassClient:
             data["below_liq"] = below_liq
             data["liq_ratio"] = above_liq / below_liq if below_liq > 0 else 0.0
         else:
-            complete = False
             data["above_liq"] = 0
             data["below_liq"] = 0
             data["liq_ratio"] = 0.0
+            complete = False
 
-        # 解析OI
-        if results.get("oi"):
-            oi_data = results["oi"]
-            oi_current = self._get_close_from_candle(oi_data[-1])
-            data["oi_percentile"] = self._calc_percentile(oi_data, oi_current)
+        # OI
+        oi = results.get("cross_oi")
+        if oi:
+            oi_current = self._get_close_from_candle(oi[-1])
+            data["oi_percentile"] = self._calc_percentile(oi, oi_current)
             oi_change = 0.0
-            if len(oi_data) >= 6:
-                prev = self._get_close_from_candle(oi_data[-6])
+            if len(oi) >= 6:
+                prev = self._get_close_from_candle(oi[-6])
                 oi_change = (oi_current - prev) / prev * 100 if prev > 0 else 0.0
             data["oi_change_24h"] = oi_change
         else:
-            complete = False
             data["oi_percentile"] = 50.0
             data["oi_change_24h"] = 0.0
-
-        # 解析资金费率
-        if results.get("funding"):
-            fund_data = results["funding"]
-            current = self._get_close_from_candle(fund_data[-1])
-            data["funding_rate"] = current
-            data["funding_percentile"] = self._calc_percentile(fund_data, current)
-        else:
             complete = False
+
+        # 资金费率
+        funding = results.get("cross_funding")
+        if funding:
+            current = self._get_close_from_candle(funding[-1])
+            data["funding_rate"] = current
+            data["funding_percentile"] = self._calc_percentile(funding, current)
+        else:
             data["funding_rate"] = 0.0
             data["funding_percentile"] = 50.0
+            complete = False
 
-        # 解析多空比
-        if results.get("top_ls"):
-            tls_data = results["top_ls"]
-            latest = tls_data[-1]
+        # 顶级多空比
+        top_ls = results.get("cross_top_ls")
+        if top_ls:
+            latest = top_ls[-1]
             if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
                 current = float(latest.get("top_position_long_short_ratio", 0))
             else:
                 current = self._get_close_from_candle(latest)
             data["top_ls_ratio"] = current
-            data["top_ls_percentile"] = self._calc_percentile(tls_data, current)
+            data["top_ls_percentile"] = self._calc_percentile(top_ls, current)
         else:
-            complete = False
             data["top_ls_ratio"] = 0.0
             data["top_ls_percentile"] = 50.0
+            complete = False
 
-        # 解析CVD
-        if results.get("cvd"):
-            cvd_data = results["cvd"]
-            series = [self._get_close_from_candle(c) for c in cvd_data]
+        # CVD
+        cvd = results.get("cross_cvd")
+        if cvd:
+            series = [self._get_close_from_candle(c) for c in cvd]
             data["cvd_slope"] = self._calc_slope(series)
         else:
-            complete = False
             data["cvd_slope"] = 0.0
-
-        # 解析期权
-        if results.get("option"):
-            opt = results["option"]
-            data["put_call_ratio"] = opt.get("put_call_ratio", 0.0)
-            data["max_pain"] = opt.get("max_pain", 0.0)
-
-        # 解析价格
-        if results.get("price") and results["price"] > 0:
-            data["mark_price"] = results["price"]
-        else:
             complete = False
+
+        # 期权
+        option = results.get("cross_option")
+        if option:
+            data["put_call_ratio"] = option.get("put_call_ratio", 0.0)
+            data["max_pain"] = option.get("max_pain", 0.0)
+
+        # 价格
+        price = results.get("cross_price")
+        if price is not None and price > 0:
+            data["mark_price"] = price
+        else:
             data["mark_price"] = 0.0
+            complete = False
 
         data["_complete"] = complete
-        logger.info(f"跨币种数据获取完成 {cross_symbol}，完整性: {complete}")
         return data
 
     @staticmethod

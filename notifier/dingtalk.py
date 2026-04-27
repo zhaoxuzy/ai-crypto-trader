@@ -35,6 +35,7 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 def format_reasoning(text: str) -> str:
+    """首席交易员推理文本格式化（仅用于初步信号）"""
     if not text:
         return "> 无推理过程"
     text = text.replace('\r\n', '\n').replace('\r', '\n')
@@ -90,7 +91,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
-        # 1. 标题：完全基于字典中的最终方向构建
+        # 1. 标题
         if direction == "neutral":
             status_text = "⚠️审查推翻" if verdict == "推翻改为观望" else "⚠️风控驳回"
             title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · {status_text}"
@@ -112,25 +113,30 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 2. 执行指令：直接使用C修正后的版本
+        # 2. 执行指令
         exec_plan = strategy.get("execution_plan", "无具体指令")
         execution_block = f"🎯 执行指令\n{exec_plan}"
 
-        # 3. 裁决理由：直接取自字典中已清洗的 `_judge_reasoning`
+        # 3. 裁决理由：从存储的 `_judge_reasoning` 中提取，并清除可能混入的风险说明
         reasoning_text = strategy.get("_judge_reasoning", "")
-        # 如果因为某种原因仍含有旧标题，做最后一次极简清理
-        reasoning_text = re.sub(r'📋\s*裁决理由[：:]?', '', reasoning_text).strip()
-        reasoning_block = f"📋 裁决理由：\n{reasoning_text}" if reasoning_text else "📋 裁决理由：\n无"
+        # 强力清除任何形式的风险说明（中英文、带标题等）
+        reasoning_text = re.sub(r'⚠️\s*风险说明.*', '', reasoning_text, flags=re.DOTALL)
+        reasoning_text = re.sub(r'###\s*⚠️\s*风险说明.*', '', reasoning_text, flags=re.DOTALL)
+        reasoning_text = re.sub(r'风险说明.*', '', reasoning_text, flags=re.DOTALL)
+        # 移除开头的多余符号（如：、:等）
+        reasoning_text = re.sub(r'^[：:]\s*', '', reasoning_text.strip())
+        reasoning_block = f"📋 裁决理由：\n{reasoning_text.strip()}" if reasoning_text.strip() else "📋 裁决理由：\n无"
 
-        # 4. 风险说明：直接使用C覆盖后的版本，并清理掉可能的多余标题
+        # 4. 风险说明：使用C覆盖后的版本，去除可能重复的标题
         risk_note = strategy.get("risk_note", "请严格设置止损")
-        # 移除可能的旧标题
-        risk_note = re.sub(r'⚠️\s*风险说明\s*', '', risk_note).strip()
-        risk_note = re.sub(r'###\s*⚠️\s*风险说明\s*', '', risk_note).strip()
+        # 如果风险说明中已自带“⚠️ 风险说明”标题，直接使用，否则添加
+        if '⚠️ 风险说明' not in risk_note and '⚠️ 风险说明' not in risk_note:
+            risk_block = f"⚠️ 风险说明\n{risk_note}"
+        else:
+            risk_block = risk_note
         # 根据verdict追加决议声明
         if verdict in ["推翻改为观望", "推翻改为反向操作"]:
-            risk_note += f"\n\n交易委员会决议: {verdict}"
-        risk_block = f"⚠️ 风险说明\n{risk_note}"
+            risk_block += f"\n\n交易委员会决议: {verdict}"
 
         # 5. 拼接最终消息
         parts = [title, "", execution_block, "", reasoning_block, "", risk_block]

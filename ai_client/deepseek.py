@@ -294,7 +294,7 @@ def _force_neutral(s: dict, reason: str):
     s["stop_loss"] = 0
     s["take_profit"] = 0
     s["execution_plan"] = ""
-    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[原始信号因校验规则被强制改为观望，原因：{reasoning}").strip()
+    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[原始信号因校验规则被强制改为观望，原因：{reason}").strip()
     s["risk_note"] = f"观望。{reason}"
 
 
@@ -374,7 +374,7 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
     bias_map = {'long': '偏向上方', 'short': '偏向下止', 'neutral': '无明确偏向'}
     bias_text = bias_map.get(liquidity_bias, '无数据')
 
-    return f"""你是我们加密货币交易团队的**风控审计官**。你的唯一任务是精准、快速、专业的找出首席交易员策略中的错误，记住：你只找错误。
+    return f"""你是我们加密货币交易团队的**风控审计官**。你的唯一任务是精准、快速找出首席交易员策略中的错误。你只找错误，不做裁决，不写建议。
 
 【交易标的】{symbol}
 【代码层客观锚点】清算池综合吸引力评分：{bias_text}（基于规模/触发距/订单簿计算，数学模型得出）
@@ -502,6 +502,7 @@ STEP 3 – 按照标准模板输出最终策略
            反证风险评估：xx
    -核心逻辑：简述执行指令中策略的制定逻辑，为什么要这么制定？
 ⚠️ 风险说明：[列出关键风险及应对措施]
+
 """
     return prompt
 
@@ -604,6 +605,23 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 entry_low, entry_high, stop_loss, take_profit = 0, 0, 0, 0
                 position_size = "none"
 
+            # ---------- 新增：提取原始区块供钉钉展示 ----------
+            # 提取标题行（📌最终判决那一整行）
+            title_line = verdict_match.group(0).strip() if verdict_match else "📌 最终判决：维持原判"
+            # 提取执行指令块（🎯到📋之前）
+            exec_block = ""
+            if exec_section:
+                exec_block = exec_section.group(0).strip()
+            # 提取裁决理由块（📋到⚠️之前）
+            reasoning_block = ""
+            reason_section = re.search(r'📋\s*裁决理由[：:]?\s*(.*?)(?=⚠️|$)', content, re.DOTALL)
+            if reason_section:
+                reasoning_block = reason_section.group(0).strip()
+            # 提取风险说明块
+            risk_block = ""
+            if risk_match:
+                risk_block = risk_match.group(0).strip()
+
             # 包装成与之前代码兼容的结构
             judge_result = {
                 "judge_C": {
@@ -618,7 +636,12 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     "take_profit": take_profit,
                     "execution_plan": execution_plan,
                     "reasoning": content,
-                    "risk_note": risk_note
+                    "risk_note": risk_note,
+                    # 新增原始块
+                    "title_line": title_line,
+                    "exec_block": exec_block,
+                    "reasoning_block": reasoning_block,
+                    "risk_block": risk_block
                 }
             }
 
@@ -655,14 +678,18 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
     original_strategy["_review_verdict"] = verdict
     original_strategy["_judge_data"] = final
 
+    # 保存原始区块到 strategy，供推送使用
+    original_strategy["_title_line"] = final.get("title_line", "")
+    original_strategy["_exec_block_raw"] = final.get("exec_block", "")
+    original_strategy["_reasoning_block_raw"] = final.get("reasoning_block", "")
+    original_strategy["_risk_block_raw"] = final.get("risk_block", "")
+
     # 清洗裁决理由的辅助函数
     def _clean_reasoning(raw):
         if not raw:
             return ""
-        # 定位“审计指控”关键词
         if "审计指控" in raw:
             return raw[raw.find("审计指控"):].strip()
-        # 如果没有审计指控，尝试定位“📋 裁决理由”
         if "📋 裁决理由" in raw:
             return raw[raw.find("📋 裁决理由") + len("📋 裁决理由"):].strip()
         return raw.strip()

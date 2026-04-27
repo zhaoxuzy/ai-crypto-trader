@@ -19,7 +19,6 @@ def main():
         data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
-    # 获取跨币种验证数据（使用并发精简拉取）
     cross_symbol = "ETH" if symbol == "BTC" else "BTC"
     cross_data = None
     try:
@@ -52,6 +51,8 @@ def main():
         nonlocal strategy
         try:
             reviewer_report = call_reviewer(strategy, data, symbol)
+            # ---- 关键修改：将审查报告存入策略字典，供钉钉推送使用 ----
+            strategy["_reviewer_report"] = reviewer_report.get("full_report", "")
         except Exception as e:
             logger.warning(f"审查官B调用失败: {e}")
             strategy["_reviewed"] = False

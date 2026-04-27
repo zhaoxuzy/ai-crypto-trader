@@ -294,8 +294,8 @@ def _force_neutral(s: dict, reason: str):
     s["stop_loss"] = 0
     s["take_profit"] = 0
     s["execution_plan"] = ""
-    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[系统自动干预] 原始信号因校验规则被强制改为观望。原因：{reason}").strip()
-    s["risk_note"] = f"[系统干预] 强制观望。{reason}"
+    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[原始信号因校验规则被强制改为观望，原因：{reason}").strip()
+    s["risk_note"] = f"观望。{reason}"
 
 
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
@@ -374,7 +374,7 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
     bias_map = {'long': '偏向上方', 'short': '偏向下止', 'neutral': '无明确偏向'}
     bias_text = bias_map.get(liquidity_bias, '无数据')
 
-    return f"""你是我们加密货币交易团队的**风控审计官**。你的唯一任务是快速找出首席交易员策略中的错误。你只找错误，不做裁决，不写建议。
+    return f"""你是我们加密货币交易团队的**风控审计官**。你的唯一任务是精准、快速找出首席交易员策略中的错误。你只找错误，不做裁决，不写建议。
 
 【交易标的】{symbol}
 【代码层客观锚点】清算池综合吸引力评分：{bias_text}（基于规模/触发距/订单簿计算，数学模型得出）
@@ -459,7 +459,7 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
     report = reviewer_report.get('full_report', '无审计报告')
     market_data_str = json.dumps(data, ensure_ascii=False)
 
-    prompt = f"""你是最终决策的【交易委员会】。你的团队已准备了首席交易员的策略和风控审计报告。你必须基于事实与逻辑，输出一份可立即执行的交易方案。
+    prompt = f"""你是最终决策的交易委员会主席，拥有二十年加密货币短线合约交易经验。你的团队已准备了首席交易员的策略和风控审计报告。你必须基于事实与逻辑，输出一份可立即执行的交易方案。
 
 【交易标的】{symbol}
 【原策略】方向：{orig_dir}，入场：{entry_l}-{entry_h}，止损：{stop_l}，止盈：{tp_l}
@@ -491,9 +491,9 @@ STEP 2 – 制定最终策略
 🎯 执行指令：
    - 方向：[long / short / neutral]
    - 仓位：[light / medium / heavy / none]
-   - 入场区间：[价格下限-价格上限]（若观望则写“无”）
-   - 止损：[价格]（若观望则写“无”）
-   - 止盈：[价格]（若观望则写“无”）
+   - 入场区间：[价格下限-价格上限]（说明依据，若观望则写“无”）
+   - 止损：[价格]（说明依据，若观望则写“无”）
+   - 止盈：[价格]（说明依据，若观望则写“无”）
    - 说明：[一句话指令，或观望时的触发条件]
 
 📋 裁决理由：

@@ -519,24 +519,22 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=8192,
-                timeout=180
+                max_tokens=4096,
+                timeout=120
             )
             content = resp.choices[0].message.content or ""
             _log_response(prompt, content)
             if not content.strip():
-                raise ValueError("委员会响应为空")
-            
+                raise ValueError("交易委员会响应为空")
             json_str = extract_json(content)
-            logger.info(f"交易委员会原始输出: {json_str[:500]}")
-            
+            logger.info(f"法官C原始输出: {json_str[:500]}")
             judge_result = json.loads(json_str)
             
+            # 兼容扁平结构：如果没有 judge_C 包装，则创建一个包装
             if "judge_C" not in judge_result:
-                logger.error(f"交易委员会输出缺少judge_C字段: {judge_result}")
-                raise ValueError("交易委员会输出缺少judge_C字段")
+                judge_result = {"judge_C": judge_result}
             
-            logger.info(f"交易委员会决议: {judge_result.get('judge_C', {}).get('final_verdict')}")
+            logger.info(f"法官C裁决: {judge_result.get('judge_C', {}).get('final_verdict')}")
             return judge_result
             
         except Exception as e:

@@ -220,7 +220,7 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     report = reviewer_report.get("full_report", "无审查报告")
     severity = reviewer_report.get("severity_counts", {})
     summary = f"🔍 审计发现：严重问题{severity.get('高', 0)}个，中等问题{severity.get('中', 0)}个，轻微问题{severity.get('低', 0)}个"
-    return f"{title}\n\n{summary}\n\n📋 审计详情\n> {report.strip()}"
+    return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n> {report.strip()}"
 
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:

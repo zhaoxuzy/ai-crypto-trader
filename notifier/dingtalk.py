@@ -195,3 +195,73 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
     return format_strategy_message(symbol, strategy, data)
+
+
+# ===== 新增：委员会最终裁决推送模板（无乱码） =====
+def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None) -> str:
+    """委员会最终裁决推送，杜绝乱码和方向错误"""
+    tz = timezone(timedelta(hours=8))
+    now = datetime.now(tz).strftime("%m-%d %H:%M")
+
+    direction = strategy.get("direction", "neutral")
+    size = strategy.get("position_size", "none")
+    conf = strategy.get("confidence", "medium")
+    verdict = strategy.get("_review_verdict", "")
+
+    size_map = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}
+    conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
+    status_tag_map = {
+        "维持原判": "✅审查确认",
+        "修正参数": "🔧审查修正",
+        "降级执行": "⚠️降级执行",
+        "推翻改为观望": "🔄推翻→观望",
+        "推翻改为反向操作": "🔄推翻→反向操作"
+    }
+
+    if direction == "long":
+        dir_icon, dir_text = "🟢", "做多"
+    elif direction == "short":
+        dir_icon, dir_text = "🔴", "做空"
+    else:
+        dir_icon, dir_text = "⚪", "观望"
+
+    status_tag = status_tag_map.get(verdict, "")
+    title = f"策略信号：{symbol}｜📋 交易委员会：{dir_icon} {dir_text} · {size_map.get(size, '')} · {conf_map.get(conf, '')} · {now} {status_tag}"
+
+    # 执行指令（从已修正的strategy取数）
+    entry_low = strategy.get("entry_price_low", 0)
+    entry_high = strategy.get("entry_price_high", 0)
+    stop_loss = strategy.get("stop_loss", 0)
+    take_profit = strategy.get("take_profit", 0)
+    exec_plan = strategy.get("execution_plan", "无")
+
+    if direction != "neutral" and entry_low > 0:
+        exec_block = (
+            f"> 入场区间：{entry_low:.1f} - {entry_high:.1f}\n"
+            f"> 止损：{stop_loss:.1f}\n"
+            f"> 止盈：{take_profit:.1f}\n"
+            f"> 执行说明：{exec_plan}"
+        )
+    else:
+        exec_block = "> 当前无操作（观望）"
+
+    # 裁决摘要（仅取裁决理由的前几行，避免长篇乱码）
+    reasoning = strategy.get("_judge_reasoning", "")
+    if reasoning:
+        # 去除可能的代码块标记，转义特殊字符
+        reasoning = reasoning.replace("`", "").replace("_", "\\_").replace("*", "\\*")
+        lines = [l.strip() for l in reasoning.split('\n') if l.strip()]
+        # 只保留最多8行摘要
+        summary = '\n> '.join(lines[:8])
+        if len(lines) > 8:
+            summary += "\n> ...（完整推演见日志）"
+        reason_block = f"> 📋 裁决摘要\n> {summary}"
+    else:
+        reason_block = "> 📋 无详细裁决理由"
+
+    # 风险说明
+    risk = strategy.get("risk_note", "请严格设置止损")
+    risk = risk.replace("`", "").replace("_", "\\_").replace("*", "\\*")
+    risk_block = f"> ⚠️ 风险说明\n> {risk}"
+
+    return f"{title}\n\n> 🎯 执行指令\n{exec_block}\n\n{reason_block}\n\n{risk_block}"

@@ -35,7 +35,6 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 def format_reasoning(text: str) -> str:
-    """首席交易员推理文本格式化（仅用于初步信号）"""
     if not text:
         return "> 无推理过程"
     text = text.replace('\r\n', '\n').replace('\r', '\n')
@@ -91,14 +90,10 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
-        # 1. 构建简洁的标题和交易指令
-        exec_plan = strategy.get("execution_plan", "")
+        # 1. 标题：完全基于字典中的最终方向构建
         if direction == "neutral":
             status_text = "⚠️审查推翻" if verdict == "推翻改为观望" else "⚠️风控驳回"
             title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · {status_text}"
-            # 确保观望时有明确的指令，而不是留空
-            if not exec_plan:
-                exec_plan = "原策略逻辑已被证伪，进入观望状态。等待新的入场信号。"
         else:
             emoji = "🟢" if direction == "long" else "🔴"
             text = "做多" if direction == "long" else "做空"
@@ -117,26 +112,22 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 2. 执行指令
+        # 2. 执行指令：直接使用C修正后的版本
+        exec_plan = strategy.get("execution_plan", "无具体指令")
         execution_block = f"🎯 执行指令\n{exec_plan}"
 
-        # 3. 裁决理由：只保留“审计指控”开始的核心内容
+        # 3. 裁决理由：直接取自字典中已清洗的 `_judge_reasoning`
         reasoning_text = strategy.get("_judge_reasoning", "")
-        if "审计指控" in reasoning_text:
-            reasoning_text = reasoning_text[reasoning_text.find("审计指控"):]
-        if "风控审计官 - 审计报告" in reasoning_text:
-            reasoning_text = reasoning_text.split("风控审计官 - 审计报告")[0].strip()
-        reasoning_text = reasoning_text.strip()
+        # 如果因为某种原因仍含有旧标题，做最后一次极简清理
+        reasoning_text = re.sub(r'📋\s*裁决理由[：:]?', '', reasoning_text).strip()
         reasoning_block = f"📋 裁决理由：\n{reasoning_text}" if reasoning_text else "📋 裁决理由：\n无"
 
-        # 4. 风险说明：深度净化，确保只显示委员会C的版本
+        # 4. 风险说明：直接使用C覆盖后的版本，并清理掉可能的多余标题
         risk_note = strategy.get("risk_note", "请严格设置止损")
-        # 移除所有可能出现的旧标题
+        # 移除可能的旧标题
         risk_note = re.sub(r'⚠️\s*风险说明\s*', '', risk_note).strip()
         risk_note = re.sub(r'###\s*⚠️\s*风险说明\s*', '', risk_note).strip()
-        # 移除末尾可能重复的决议声明或无关词语
-        risk_note = re.sub(r'\n*交易委员会决议.*', '', risk_note).strip()
-        risk_note = re.sub(r'\n*⚠️\s*风险说明\s*观望.*', '', risk_note).strip()
+        # 根据verdict追加决议声明
         if verdict in ["推翻改为观望", "推翻改为反向操作"]:
             risk_note += f"\n\n交易委员会决议: {verdict}"
         risk_block = f"⚠️ 风险说明\n{risk_note}"
@@ -190,7 +181,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
 
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
-    """格式化风控审计官的审查报告"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
     title = f"策略信号：{symbol}｜⚡ 风控审计 · {now}"
@@ -198,10 +188,8 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     severity = reviewer_report.get("severity_counts", {})
     summary = f"🔍 审计发现：严重问题{severity.get('高', 0)}个，中等问题{severity.get('中', 0)}个，轻微问题{severity.get('低', 0)}个"
     report = report.replace('【风控审计官 - 审计报告】', '').strip()
-    report = re.sub(r'#+\s*风控审计官.*\n', '', report).strip()
     return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n> {report}"
 
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
-    """格式化交易委员会的最终裁决，直接复用最终信号的格式"""
     return format_strategy_message(symbol, strategy, data)

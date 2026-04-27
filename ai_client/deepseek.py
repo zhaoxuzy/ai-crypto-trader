@@ -337,7 +337,10 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     take_profit = float(s["take_profit"])
 
     if entry_low > entry_high:
-        return False, "入场区间下限大于上限"
+        logger.warning(f"入场区间下限({entry_low})大于上限({entry_high})，已自动交换并将仓位降为light")
+        s["entry_price_low"], s["entry_price_high"] = entry_high, entry_low
+        s["position_size"] = "light"
+        # 继续校验，不返回False
 
     if direction == "long" and stop_loss >= entry_low:
         s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间下方，请人工确认。"

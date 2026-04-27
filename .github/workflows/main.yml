@@ -34,6 +34,7 @@ jobs:
           python-version: '3.11'
 
       - name: Cache virtual environment
+        id: cache-venv
         uses: actions/cache@v4
         with:
           path: .venv
@@ -41,12 +42,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-venv-
 
-      - name: Install dependencies (if cache missed)
+      - name: Install dependencies (if cache miss)
+        if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
-          if [ ! -d .venv ]; then
-            python -m venv .venv
-          fi
-          .venv/bin/pip install --upgrade pip
+          python -m venv .venv
           .venv/bin/pip install -r requirements.txt
 
       - name: Run strategy analysis

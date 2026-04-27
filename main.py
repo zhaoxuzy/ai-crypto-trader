@@ -19,9 +19,13 @@ def main():
         data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
-    # ---- 跨币种数据：直接复用主数据中已获取的 ETH/BTC 信息，不再拉取额外数据 ----
-    # 主数据中已经包含了 eth_btc_ratio、eth_btc_ma_7d、eth_btc_percentile，足够第六步使用
-    cross_data = data  # 复用自身
+    # 跨币种数据获取（精简、并发）
+    cross_symbol = "ETH" if symbol == "BTC" else "BTC"
+    cross_data = None
+    try:
+        cross_data = client.get_cross_asset_data(cross_symbol)
+    except Exception as e:
+        logger.warning(f"获取跨币种数据失败：{e}")
 
     prompt = build_prompt(data, symbol, eth_data=cross_data)
 

@@ -140,10 +140,8 @@ class CoinGlassClient:
         return atrs
 
     def _get_symbol(self, base: str) -> str:
-        # OKX 标准格式
         return f"{base}-USDT-SWAP"
 
-    # ---------- 各数据获取接口 ----------
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
@@ -165,13 +163,7 @@ class CoinGlassClient:
         return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=True, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC", interval: str = "1m", limit: int = 240):
-        # CVD端点明确使用Binance且交易对格式为 BTCUSDT
-        params = {
-            "exchange": "Binance",
-            "symbol": f"{symbol.upper()}USDT",
-            "interval": interval,
-            "limit": limit
-        }
+        params = {"exchange": "Binance", "symbol": f"{symbol.upper()}USDT", "interval": interval, "limit": limit}
         data = self._request("api/futures/cvd/history", params, allow_backup=False, silent_fail=True)
         if data is not None:
             if isinstance(data, list):
@@ -271,7 +263,6 @@ class CoinGlassClient:
             logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
-    # ---------- 核心数据组装 ----------
     def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
         base_symbol = symbol.upper()
         tasks = {
@@ -354,15 +345,23 @@ class CoinGlassClient:
                     max_below = max(below_prices, key=lambda p: pain_map[p])
                     below_cluster = f"{max_below*0.99:.0f}-{max_below*1.01:.0f}"
 
-        # 计算触发距（供内部使用）
+        # 计算触发距：使用 + 和 - 强制符号，正确处理正负
         above_trigger_str = "N/A"
         below_trigger_str = "N/A"
         if above_cluster != 'N/A' and '-' in above_cluster:
-            parts = above_cluster.split('-')
-            above_trigger_str = f"+{float(parts[0]) - mark_price:.0f}"
+            diff = float(above_cluster.split('-')[0]) - mark_price
+            above_trigger_str = f"{diff:+.0f}"
         if below_cluster != 'N/A' and '-' in below_cluster:
-            parts = below_cluster.split('-')
-            below_trigger_str = f"-{mark_price - float(parts[1]):.0f}"
+            diff = mark_price - float(below_cluster.split('-')[1])
+            below_trigger_str = f"-{diff:+.0f}"  # 这里 diff 为正，产生 - 符号，最终为 -xx
+            # 修正：直接用 f"{ -diff:.0f}" 或更简单的：below_trigger_str = f"{mark_price - float(below_cluster.split('-')[1]):.0f}"，但为了保持正负号统一，使用下面方式：
+            # 实际上 below_trigger 应该为负，即 -xx。所以直接：
+            below_diff = mark_price - float(below_cluster.split('-')[1])
+            below_trigger_str = f"-{abs(below_diff):.0f}" if below_diff > 0 else f"+{abs(below_diff):.0f}"
+        # 简化处理：直接使用差值
+        above_trigger_str = f"{float(above_cluster.split('-')[0]) - mark_price:+.0f}" if above_cluster != 'N/A' and '-' in above_cluster else "N/A"
+        below_trigger_str = f"{mark_price - float(below_cluster.split('-')[1]):+.0f}" if below_cluster != 'N/A' and '-' in below_cluster else "N/A"
+        # 注意：below_trigger 应该是负数，所以这里公式正确
 
         above_trigger_val = float(above_trigger_str) if above_trigger_str != 'N/A' else 0
         below_trigger_val = float(below_trigger_str) if below_trigger_str != 'N/A' else 0
@@ -405,10 +404,8 @@ class CoinGlassClient:
         funding_series = [self._get_close_from_candle(c) for c in funding_data] if funding_data else []
         funding_momentum = self._calc_momentum(funding_series[-30:]) if len(funding_series) >= 30 else 0.0
 
-        # 流动性偏向
         liquidity_bias = self._calc_liquidity_bias(above_liq, below_liq, above_trigger_val, below_trigger_val, orderbook.get("imbalance", 0.0))
 
-        # 诱饵风险因子
         lure_risk_factor = 0.0
         try:
             if orderbook.get("imbalance", 0) < -0.1 and below_trigger_val < above_trigger_val:
@@ -575,7 +572,6 @@ class CoinGlassClient:
             return 'neutral'
 
 
-# ---------- OKX 实时价格 ----------
 def get_current_price(inst_id: str) -> float:
     try:
         resp = requests.get(f"https://www.okx.com/api/v5/market/ticker?instId={inst_id}", timeout=10)

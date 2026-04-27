@@ -197,9 +197,9 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
     return format_strategy_message(symbol, strategy, data)
 
 
-# ===== 新增：委员会最终裁决推送模板（无乱码） =====
+# ===== 新增：委员会最终裁决推送模板（按原始块展示，关键字加粗） =====
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None) -> str:
-    """委员会最终裁决推送，杜绝乱码和方向错误"""
+    """委员会最终裁决推送，直接展示法官C原始区块，并对裁决理由中的关键字加粗"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -228,40 +228,49 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     status_tag = status_tag_map.get(verdict, "")
     title = f"策略信号：{symbol}｜📋 交易委员会：{dir_icon} {dir_text} · {size_map.get(size, '')} · {conf_map.get(conf, '')} · {now} {status_tag}"
 
-    # 执行指令（从已修正的strategy取数）
-    entry_low = strategy.get("entry_price_low", 0)
-    entry_high = strategy.get("entry_price_high", 0)
-    stop_loss = strategy.get("stop_loss", 0)
-    take_profit = strategy.get("take_profit", 0)
-    exec_plan = strategy.get("execution_plan", "无")
+    # 获取原始块
+    title_line = strategy.get("_title_line", "")
+    exec_block = strategy.get("_exec_block_raw", "")
+    reasoning_block = strategy.get("_reasoning_block_raw", "")
+    risk_block = strategy.get("_risk_block_raw", "")
 
-    if direction != "neutral" and entry_low > 0:
-        exec_block = (
-            f"> 入场区间：{entry_low:.1f} - {entry_high:.1f}\n"
-            f"> 止损：{stop_loss:.1f}\n"
-            f"> 止盈：{take_profit:.1f}\n"
-            f"> 执行说明：{exec_plan}"
+    # 处理裁决理由：转义特殊字符（除了我们手动加粗的部分），并对关键字加粗
+    # 先转义星号和下划线，避免意外解析
+    def escape_non_bold(text: str) -> str:
+        # 保护已有的加粗标记（**...**）
+        # 简单做法：先替换掉所有 * 为 \*，然后再将 \*\* 还原为 **
+        text = text.replace('*', r'\*')
+        text = text.replace(r'\*\*', '**')  # 恢复手动加粗
+        text = text.replace('_', r'\_')
+        return text
+
+    # 关键字列表
+    keywords = ["指控内容", "裁决结论", "核验依据", "反证风险评估", "核心逻辑"]
+    for kw in keywords:
+        # 使用正则忽略已经加粗的情况
+        reasoning_block = re.sub(
+            r'(?<!\*)(' + re.escape(kw) + r')(?!\*)',
+            r'**\1**',
+            reasoning_block
         )
-    else:
-        exec_block = "> 当前无操作（观望）"
 
-    # 裁决摘要（仅取裁决理由的前几行，避免长篇乱码）
-    reasoning = strategy.get("_judge_reasoning", "")
-    if reasoning:
-        # 去除可能的代码块标记，转义特殊字符
-        reasoning = reasoning.replace("`", "").replace("_", "\\_").replace("*", "\\*")
-        lines = [l.strip() for l in reasoning.split('\n') if l.strip()]
-        # 只保留最多8行摘要
-        summary = '\n> '.join(lines[:8])
-        if len(lines) > 8:
-            summary += "\n> ...（完整推演见日志）"
-        reason_block = f"> 📋 裁决摘要\n> {summary}"
-    else:
-        reason_block = "> 📋 无详细裁决理由"
+    # 转义除关键字外的特殊字符
+    reasoning_block = escape_non_bold(reasoning_block)
 
-    # 风险说明
-    risk = strategy.get("risk_note", "请严格设置止损")
-    risk = risk.replace("`", "").replace("_", "\\_").replace("*", "\\*")
-    risk_block = f"> ⚠️ 风险说明\n> {risk}"
+    # 执行指令和风险说明简单转义
+    exec_block = exec_block.replace('*', r'\*').replace('_', r'\_')
+    risk_block = risk_block.replace('*', r'\*').replace('_', r'\_')
+    title_line = title_line.replace('*', r'\*').replace('_', r'\_')
 
-    return f"{title}\n\n> 🎯 执行指令\n{exec_block}\n\n{reason_block}\n\n{risk_block}"
+    # 拼装最终消息
+    parts = [title]
+    if title_line:
+        parts.append(title_line)
+    if exec_block:
+        parts.append(exec_block)
+    if reasoning_block:
+        parts.append(reasoning_block)
+    if risk_block:
+        parts.append(risk_block)
+
+    return '\n\n'.join(parts)

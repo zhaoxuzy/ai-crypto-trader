@@ -224,7 +224,7 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
 
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
-    """格式化交易委员会的最终裁决，只展示关键决策，不重复原始报告和格式标签"""
+    """格式化交易委员会的最终裁决，只展示关键决策，消除重复和格式标签"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
     
@@ -232,7 +232,7 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
     verdict = strategy.get("_review_verdict", "维持原判")
     reasoning = strategy.get("_judge_reasoning", "")
     
-    # 标题行
+    # ========== 标题行 ==========
     if direction == "neutral":
         title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · ⚠️审查推翻"
     else:
@@ -250,9 +250,9 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
         elif verdict == "降级执行":
             title += " · ⚠️降级执行"
         elif verdict == "推翻改为反向操作":
-            title += " · 🔄推翻改为反向"
+            title += " · 🔄推翻"
 
-    # 参数卡片
+    # ========== 参数卡片 ==========
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
@@ -260,34 +260,45 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
     current = data.get("mark_price", 0)
     param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f}"
 
-    # 裁决摘要
+    # ========== 裁决摘要 ==========
     summary = f"📌 最终裁决：{verdict}"
 
-    # 执行指令（来自 strategy，已被 C 覆盖）
+    # ========== 执行指令（来自 strategy，已被 C 覆盖）==========
     exec_plan = strategy.get("execution_plan", "")
     execution = f"🎯 执行指令\n> {exec_plan}" if exec_plan else ""
 
-    # 裁决理由：清理掉 AI 原文中的格式标签和可能的审计报告残留
+    # ========== 裁决理由：深度清理，只保留审计指控的裁决内容 ==========
     clean_reasoning = reasoning
-    # 移除可能混入的风控审计报告
+    
+    # 1. 移除可能混入的风控审计报告原文
     if "风控审计官 - 审计报告" in clean_reasoning:
         clean_reasoning = clean_reasoning.split("风控审计官 - 审计报告")[0].strip()
-    # 移除 AI 输出中自带的📌和🎯标签（因为我们已经单独展示了）
-    clean_reasoning = re.sub(r'📌\s*最终判决[：:].*', '', clean_reasoning)
-    clean_reasoning = re.sub(r'🎯\s*执行指令[：:].*', '', clean_reasoning)
+    
+    # 2. 移除 AI 输出中自带的📌、🎯等格式标签行以及策略参数行（方向/仓位/入场/止损/止盈/说明）
+    clean_reasoning = re.sub(r'📌\s*最终判决[：:].*?(\n|$)', '', clean_reasoning)
+    clean_reasoning = re.sub(r'🎯\s*执行指令[：:].*?(\n|$)', '', clean_reasoning)
+    clean_reasoning = re.sub(r'\n\s*方向[：:].*?(\n|$)', '\n', clean_reasoning)
+    clean_reasoning = re.sub(r'\n\s*仓位[：:].*?(\n|$)', '\n', clean_reasoning)
+    clean_reasoning = re.sub(r'\n\s*入场区间[：:].*?(\n|$)', '\n', clean_reasoning)
+    clean_reasoning = re.sub(r'\n\s*止损[：:].*?(\n|$)', '\n', clean_reasoning)
+    clean_reasoning = re.sub(r'\n\s*止盈[：:].*?(\n|$)', '\n', clean_reasoning)
+    clean_reasoning = re.sub(r'\n\s*说明[：:].*?(\n|$)', '\n', clean_reasoning)
+    
+    # 3. 清理多余空行
+    clean_reasoning = re.sub(r'\n{3,}', '\n\n', clean_reasoning)
     clean_reasoning = clean_reasoning.strip()
     
-    # 如果清理后内容仍然很长，截取核心部分
-    if len(clean_reasoning) > 600:
-        clean_reasoning = clean_reasoning[:600] + "..."
+    # 4. 如果清理后内容仍然很长，截取核心部分
+    if len(clean_reasoning) > 500:
+        clean_reasoning = clean_reasoning[:500] + "..."
 
     reasoning_block = f"📋 裁决理由\n> {clean_reasoning}" if clean_reasoning else ""
 
-    # 风险说明（来自 strategy，已被 C 覆盖）
+    # ========== 风险说明（来自 strategy，已被 C 覆盖）==========
     risk_note = strategy.get("risk_note", "请严格设置止损")
     risk_block = f"⚠️ 风险说明\n> {risk_note}"
 
-    # 拼接
+    # ========== 拼接最终消息 ==========
     parts = [title, param, summary]
     if execution:
         parts.append(execution)

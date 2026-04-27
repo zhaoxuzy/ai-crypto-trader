@@ -529,34 +529,21 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 raise ValueError("交易委员会响应为空")
 
             # ---------- 纯文本解析 ----------
-            verdict = "维持原判"
-            direction = original_strategy.get("direction", "neutral")
+            # 初始化变量，默认与原策略一致（后续会被覆盖）
+            original_dir = original_strategy.get("direction", "neutral")
+            direction = original_dir
             position_size = original_strategy.get("position_size", "none")
             entry_low = original_strategy.get("entry_price_low", 0)
             entry_high = original_strategy.get("entry_price_high", 0)
             stop_loss = original_strategy.get("stop_loss", 0)
             take_profit = original_strategy.get("take_profit", 0)
             execution_plan = ""
-            reasoning = content
-            risk_note = ""
 
-            # 提取📌最终判决
+            # 提取📌最终判决行（用于展示）
             verdict_match = re.search(r'📌\s*最终判决[：:]\s*(.*)', content)
-            if verdict_match:
-                verdict_text = verdict_match.group(1).strip()
-                # 修正：优先识别反向操作（包含“多”、“空”或明确反向）
-                if re.search(r'(反向|做多|做空|转为\s*(多|空))', verdict_text):
-                    verdict = "推翻改为反向操作"
-                elif "观望" in verdict_text:
-                    verdict = "推翻改为观望"
-                elif "修正" in verdict_text:
-                    verdict = "修正参数"
-                elif "降级" in verdict_text:
-                    verdict = "降级执行"
-                else:
-                    verdict = "维持原判"
+            title_line = verdict_match.group(0).strip() if verdict_match else "📌 最终判决：维持原判"
 
-            # 提取🎯执行指令中的方向、仓位、价格等信息
+            # 提取🎯执行指令块
             exec_section = re.search(r'🎯\s*执行指令[：:]?\s*(.*?)(?=📋|⚠️|$)', content, re.DOTALL)
             if exec_section:
                 exec_text = exec_section.group(1).strip()
@@ -581,48 +568,50 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 tp_match = re.search(r'止盈[：:]\s*([\d.]+)', exec_text)
                 if tp_match:
                     take_profit = float(tp_match.group(1))
-                # 说明/执行指令
+                # 说明
                 plan_match = re.search(r'说明[：:]\s*(.*)', exec_text)
                 if plan_match:
                     execution_plan = plan_match.group(1).strip()
                 else:
                     execution_plan = exec_text.replace('\n', ' ').strip()
+            else:
+                exec_text = ""
 
-            # 如果判决为反向但方向未变，尝试从执行文本中推断
-            if verdict == "推翻改为反向操作" and direction == original_strategy.get("direction", "neutral"):
-                if "做多" in exec_text.lower() or "long" in exec_text.lower():
-                    direction = "long"
-                elif "做空" in exec_text.lower() or "short" in exec_text.lower():
-                    direction = "short"
-
-            # 提取⚠️风险说明
-            risk_match = re.search(r'⚠️\s*风险说明[：:]\s*(.*)', content, re.DOTALL)
-            if risk_match:
-                risk_note = risk_match.group(1).strip()
-
-            # 如果方向是neutral，清空价格字段
+            # 简化判决逻辑：直接以 direction 决定 verdict
             if direction == "neutral":
+                verdict = "推翻改为观望"
+                # 清空价格字段
                 entry_low, entry_high, stop_loss, take_profit = 0, 0, 0, 0
                 position_size = "none"
+            elif direction != original_dir:
+                verdict = "推翻改为反向操作"
+            else:
+                # 方向未变，则依据判决文本判断是否需要修正或降级
+                if verdict_match:
+                    verdict_text = verdict_match.group(1).strip()
+                    if "修正" in verdict_text:
+                        verdict = "修正参数"
+                    elif "降级" in verdict_text:
+                        verdict = "降级执行"
+                    else:
+                        verdict = "维持原判"
+                else:
+                    verdict = "维持原判"
 
-            # ---------- 新增：提取原始区块供钉钉展示 ----------
-            # 提取标题行（📌最终判决那一整行）
-            title_line = verdict_match.group(0).strip() if verdict_match else "📌 最终判决：维持原判"
-            # 提取执行指令块（🎯到📋之前）
-            exec_block = ""
-            if exec_section:
-                exec_block = exec_section.group(0).strip()
-            # 提取裁决理由块（📋到⚠️之前）
+            # 提取📋裁决理由块
             reasoning_block = ""
             reason_section = re.search(r'📋\s*裁决理由[：:]?\s*(.*?)(?=⚠️|$)', content, re.DOTALL)
             if reason_section:
                 reasoning_block = reason_section.group(0).strip()
-            # 提取风险说明块
-            risk_block = ""
-            if risk_match:
-                risk_block = risk_match.group(0).strip()
 
-            # 包装成与之前代码兼容的结构
+            # 提取⚠️风险说明块
+            risk_match = re.search(r'⚠️\s*风险说明[：:]\s*(.*)', content, re.DOTALL)
+            risk_block = risk_match.group(0).strip() if risk_match else ""
+
+            # 风险说明纯文本（用于 strategy.risk_note）
+            risk_note = risk_match.group(1).strip() if risk_match else ""
+
+            # 包装返回结果
             judge_result = {
                 "judge_C": {
                     "final_verdict": verdict,
@@ -637,9 +626,9 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     "execution_plan": execution_plan,
                     "reasoning": content,
                     "risk_note": risk_note,
-                    # 新增原始块
+                    # 原始块
                     "title_line": title_line,
-                    "exec_block": exec_block,
+                    "exec_block": exec_section.group(0).strip() if exec_section else "",
                     "reasoning_block": reasoning_block,
                     "risk_block": risk_block
                 }

@@ -90,19 +90,16 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
-        # 特殊处理：如果方向变为 neutral 且判决为推翻，显示“风控审计驳回”
+        # 特殊处理：风控审计驳回
         if direction == "neutral" and verdict == "推翻改为观望":
             title = f"策略信号：{symbol}｜⚡ 风控审计 · ⚠️驳回 · {now}"
             param = f"> 现价{data.get('mark_price', 0):.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
             summary_block = "📌 审计结论：原策略被推翻，改为观望"
-            # 提取法官裁决理由
-            judge_reasoning = strategy.get("reasoning", "")
-            judge_section = ""
-            if "[法官裁决]" in judge_reasoning:
-                judge_section = judge_reasoning[judge_reasoning.find("[法官裁决]"):]
-            elif "法官判决" in judge_reasoning:
-                judge_section = judge_reasoning[judge_reasoning.find("法官判决"):]
-            process_block = f"📋 决议过程\n> {judge_section.strip()}" if judge_section else ""
+            process_content = strategy.get("_judge_reasoning", "")
+            if process_content:
+                process_block = f"📋 决议过程\n> {process_content.strip()}"
+            else:
+                process_block = ""
             risk_raw = strategy.get("risk_note", "请严格设置止损")
             risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
             if not risk_lines:
@@ -114,7 +111,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
             parts.append(risk_block)
             return '\n\n'.join(parts)
 
-        # 其他最终信号：交易委员会
+        # 交易委员会
         emoji = "🟢" if direction == "long" else "🔴"
         text = "做多" if direction == "long" else "做空"
         size = strategy.get("position_size", "none")
@@ -143,36 +140,22 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         rr_str = f"{rr:.2f}" if rr else "N/A"
         param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-        # 决议摘要
-        verdict_text = verdict if verdict else "维持原判"
-        summary_block = f"📌 决议：{verdict_text}\n> 交易委员会基于审查官B的审计报告，对原策略进行了最终裁决。"
-
-        # 执行指令
+        summary_block = f"📌 决议：{verdict}"
         exec_plan = strategy.get("execution_plan", "")
         execution_block = f"🎯 执行指令\n> {exec_plan}" if exec_plan else ""
 
-        # 决议过程：提取法官裁决或审查报告
-        judge_reasoning = strategy.get("reasoning", "")
-        judge_section = ""
-        if "[法官裁决]" in judge_reasoning:
-            judge_section = judge_reasoning[judge_reasoning.find("[法官裁决]"):]
-        elif "法官判决" in judge_reasoning:
-            judge_section = judge_reasoning[judge_reasoning.find("法官判决"):]
-        # 若以上没有，则尝试使用审查报告
-        if not judge_section:
-            reviewer_report = strategy.get("_reviewer_report", "")
-            if reviewer_report:
-                judge_section = reviewer_report
-        process_block = f"📋 决议过程\n> {judge_section.strip()}" if judge_section else ""
+        # 优先使用法官裁决理由
+        process_content = strategy.get("_judge_reasoning", "")
+        if process_content:
+            process_block = f"📋 决议过程\n> {process_content.strip()}"
+        else:
+            process_block = ""
 
-        # 风险说明
         risk_raw = strategy.get("risk_note", "请严格设置止损")
         risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
         if not risk_lines:
             risk_lines = ["> 请严格设置止损"]
         risk_block = "⚠️ 风险说明\n" + "\n".join(risk_lines)
-
-        # 不再添加脚注
 
         parts = [title, param, summary_block]
         if execution_block:
@@ -182,7 +165,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         parts.append(risk_block)
         return '\n\n'.join(parts)
 
-    # ---------- 初步信号（审查中）----------
+    # ---------- 初步信号 ----------
     if direction == "neutral":
         title = f"策略信号：{symbol}｜🧠 首席交易员：⚪ 观望 · {now} · ⏳审查中"
         reasoning_raw = strategy.get("reasoning", "无推理过程")

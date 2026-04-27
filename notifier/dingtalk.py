@@ -87,53 +87,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     reviewed = strategy.get("_reviewed", False)
     verdict = strategy.get("_review_verdict", "")
     preliminary = strategy.get("_preliminary", False)
-    def format_review_message(symbol, strategy, reviewer_report, data):
-    """格式化风控审计官的审查报告"""
-    tz = timezone(timedelta(hours=8))
-    now = datetime.now(tz).strftime("%m-%d %H:%M")
-    title = f"策略信号：{symbol}｜⚡ 风控审计 · {now}"
-    report = reviewer_report.get("full_report", "无审查报告")
-    severity = reviewer_report.get("severity_counts", {})
-    summary = f"🔍 审计发现：严重问题{severity.get('高', 0)}个，中等问题{severity.get('中', 0)}个，轻微问题{severity.get('低', 0)}个"
-    return f"{title}\n\n{summary}\n\n📋 审计详情\n> {report.strip()}"
-
-
-def format_judge_message(symbol, strategy, judge_result, data):
-    """格式化交易委员会的最终裁决"""
-    tz = timezone(timedelta(hours=8))
-    now = datetime.now(tz).strftime("%m-%d %H:%M")
-    verdict = strategy.get("_review_verdict", "维持原判")
-    direction = strategy.get("direction", "neutral")
-    emoji = "🟢" if direction == "long" else "🔴"
-    text = "做多" if direction == "long" else "做空"
-    size = strategy.get("position_size", "none")
-    size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
-    conf = strategy.get("confidence", "medium")
-    conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
-    title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}"
-    if verdict == "修正参数":
-        title += " · 🔧审查修正"
-    elif verdict == "降级执行":
-        title += " · ⚠️降级执行"
-    elif verdict == "推翻改为观望":
-        title += " · 🔄推翻改为观望"
-    
-    entry_low = strategy.get("entry_price_low", 0)
-    entry_high = strategy.get("entry_price_high", 0)
-    stop = strategy.get("stop_loss", 0)
-    tp = strategy.get("take_profit", 0)
-    current = data.get("mark_price", 0)
-    param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f}"
-    
-    exec_plan = strategy.get("execution_plan", "")
-    reasoning = strategy.get("_judge_reasoning", "")
-    
-    msg = f"{title}\n\n{param}\n\n📌 最终裁决：{verdict}"
-    if exec_plan:
-        msg += f"\n\n🎯 执行指令\n> {exec_plan}"
-    if reasoning:
-        msg += f"\n\n📋 裁决理由\n> {reasoning}"
-    return msg
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
@@ -257,3 +210,52 @@ def format_judge_message(symbol, strategy, judge_result, data):
     risk_block = "### ⚠️ 风险说明\n" + "\n".join(risk_lines)
 
     return f"{title}\n\n{param}\n\n{reasoning_block}\n\n{risk_block}"
+
+
+def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
+    """格式化风控审计官的审查报告"""
+    tz = timezone(timedelta(hours=8))
+    now = datetime.now(tz).strftime("%m-%d %H:%M")
+    title = f"策略信号：{symbol}｜⚡ 风控审计 · {now}"
+    report = reviewer_report.get("full_report", "无审查报告")
+    severity = reviewer_report.get("severity_counts", {})
+    summary = f"🔍 审计发现：严重问题{severity.get('高', 0)}个，中等问题{severity.get('中', 0)}个，轻微问题{severity.get('低', 0)}个"
+    return f"{title}\n\n{summary}\n\n📋 审计详情\n> {report.strip()}"
+
+
+def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
+    """格式化交易委员会的最终裁决"""
+    tz = timezone(timedelta(hours=8))
+    now = datetime.now(tz).strftime("%m-%d %H:%M")
+    verdict = strategy.get("_review_verdict", "维持原判")
+    direction = strategy.get("direction", "neutral")
+    emoji = "🟢" if direction == "long" else "🔴"
+    text = "做多" if direction == "long" else "做空"
+    size = strategy.get("position_size", "none")
+    size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
+    conf = strategy.get("confidence", "medium")
+    conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
+    title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}"
+    if verdict == "修正参数":
+        title += " · 🔧审查修正"
+    elif verdict == "降级执行":
+        title += " · ⚠️降级执行"
+    elif verdict == "推翻改为观望":
+        title += " · 🔄推翻改为观望"
+
+    entry_low = strategy.get("entry_price_low", 0)
+    entry_high = strategy.get("entry_price_high", 0)
+    stop = strategy.get("stop_loss", 0)
+    tp = strategy.get("take_profit", 0)
+    current = data.get("mark_price", 0)
+    param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f}"
+
+    exec_plan = strategy.get("execution_plan", "")
+    reasoning = strategy.get("_judge_reasoning", "")
+
+    msg = f"{title}\n\n{param}\n\n📌 最终裁决：{verdict}"
+    if exec_plan:
+        msg += f"\n\n🎯 执行指令\n> {exec_plan}"
+    if reasoning:
+        msg += f"\n\n📋 裁决理由\n> {reasoning}"
+    return msg

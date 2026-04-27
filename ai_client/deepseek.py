@@ -632,7 +632,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 }
             }
 
-            logger.info(f"法官C裁决: {verdict}, 方向: {direction}")
+            logger.info(f"交易委员会裁决: {verdict}, 方向: {direction}")
             return judge_result
 
         except Exception as e:

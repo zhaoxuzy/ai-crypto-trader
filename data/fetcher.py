@@ -139,13 +139,11 @@ class CoinGlassClient:
             atrs.append(sum(trs[i-period+1:i+1]) / period)
         return atrs
 
-    def _get_symbol(self, base: str, endpoint: str = "") -> str:
-        """根据不同交易所和端点返回正确的交易对格式"""
-        # CVD端点需要无破折号格式，其他端点需完整格式
-        if "cvd" in endpoint.lower():
-            return f"{base}USDT"
+    def _get_symbol(self, base: str) -> str:
+        # OKX 标准格式
         return f"{base}-USDT-SWAP"
 
+    # ---------- 各数据获取接口 ----------
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
@@ -167,7 +165,13 @@ class CoinGlassClient:
         return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=True, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC", interval: str = "1m", limit: int = 240):
-        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol, "cvd"), "interval": interval, "limit": limit}
+        # CVD端点明确使用Binance且交易对格式为 BTCUSDT
+        params = {
+            "exchange": "Binance",
+            "symbol": f"{symbol.upper()}USDT",
+            "interval": interval,
+            "limit": limit
+        }
         data = self._request("api/futures/cvd/history", params, allow_backup=False, silent_fail=True)
         if data is not None:
             if isinstance(data, list):
@@ -267,6 +271,7 @@ class CoinGlassClient:
             logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
+    # ---------- 核心数据组装 ----------
     def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
         base_symbol = symbol.upper()
         tasks = {
@@ -349,6 +354,19 @@ class CoinGlassClient:
                     max_below = max(below_prices, key=lambda p: pain_map[p])
                     below_cluster = f"{max_below*0.99:.0f}-{max_below*1.01:.0f}"
 
+        # 计算触发距（供内部使用）
+        above_trigger_str = "N/A"
+        below_trigger_str = "N/A"
+        if above_cluster != 'N/A' and '-' in above_cluster:
+            parts = above_cluster.split('-')
+            above_trigger_str = f"+{float(parts[0]) - mark_price:.0f}"
+        if below_cluster != 'N/A' and '-' in below_cluster:
+            parts = below_cluster.split('-')
+            below_trigger_str = f"-{mark_price - float(parts[1]):.0f}"
+
+        above_trigger_val = float(above_trigger_str) if above_trigger_str != 'N/A' else 0
+        below_trigger_val = float(below_trigger_str) if below_trigger_str != 'N/A' else 0
+
         oi_current = self._get_close_from_candle(oi_data[-1]) if oi_data else 0.0
         oi_percentile = self._calc_percentile(oi_data, oi_current)
         oi_change_24h = 0.0
@@ -377,6 +395,9 @@ class CoinGlassClient:
             agg_oi_24h_ago = self._get_close_from_candle(agg_oi_data[-6])
             agg_oi_change_24h = (agg_oi_current - agg_oi_24h_ago) / agg_oi_24h_ago * 100 if agg_oi_24h_ago > 0 else 0.0
 
+        fear_greed = fg_data.get("current", 50)
+        fear_greed_prev_7d = fg_data.get("prev_7d", 50)
+
         # 衍生加速度
         cvd_acceleration = self._calc_momentum(cvd_series[-60:]) if len(cvd_series) >= 60 else 0.0
         oi_series = [self._get_close_from_candle(c) for c in oi_data] if oi_data else []
@@ -385,8 +406,6 @@ class CoinGlassClient:
         funding_momentum = self._calc_momentum(funding_series[-30:]) if len(funding_series) >= 30 else 0.0
 
         # 流动性偏向
-        above_trigger_val = float(above_trigger) if above_trigger != 'N/A' else 0
-        below_trigger_val = float(below_trigger) if below_trigger != 'N/A' else 0
         liquidity_bias = self._calc_liquidity_bias(above_liq, below_liq, above_trigger_val, below_trigger_val, orderbook.get("imbalance", 0.0))
 
         # 诱饵风险因子
@@ -398,9 +417,6 @@ class CoinGlassClient:
                 lure_risk_factor = 0.6
         except:
             pass
-
-        fear_greed = fg_data.get("current", 50)
-        fear_greed_prev_7d = fg_data.get("prev_7d", 50)
 
         return {
             "mark_price": mark_price,
@@ -415,8 +431,8 @@ class CoinGlassClient:
             "liq_ratio": liq_ratio,
             "above_cluster": above_cluster,
             "below_cluster": below_cluster,
-            "above_trigger": above_trigger_val,
-            "below_trigger": below_trigger_val,
+            "above_trigger": above_trigger_str,
+            "below_trigger": below_trigger_str,
             "max_pain": max_pain_data.get("max_pain", 0.0),
             "put_call_ratio": max_pain_data.get("put_call_ratio", 0.0),
             "top_ls_ratio": top_ls_current,
@@ -450,7 +466,6 @@ class CoinGlassClient:
         }
 
     def get_cross_asset_data(self, cross_symbol: str) -> dict:
-        """获取跨币种验证所需的精简数据"""
         logger.info(f"开始获取跨币种验证数据：{cross_symbol}")
         data = {}
         complete = True
@@ -545,7 +560,6 @@ class CoinGlassClient:
 
     @staticmethod
     def _calc_liquidity_bias(above_liq, below_liq, above_trigger, below_trigger, orderbook_imbalance):
-        """计算清算池综合吸引力偏向"""
         try:
             at = float(above_trigger) if above_trigger != 'N/A' else 0
             bt = float(below_trigger) if below_trigger != 'N/A' else 0
@@ -561,32 +575,13 @@ class CoinGlassClient:
             return 'neutral'
 
 
-# ---------- OKX 辅助函数 ----------
+# ---------- OKX 实时价格 ----------
 def get_current_price(inst_id: str) -> float:
     try:
-        url = f"https://www.okx.com/api/v5/market/ticker?instId={inst_id}"
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(f"https://www.okx.com/api/v5/market/ticker?instId={inst_id}", timeout=10)
         data = resp.json()
         if data.get("code") == "0":
             return float(data["data"][0]["last"])
-        logger.warning(f"OKX 获取价格失败: {data}")
-        return 0.0
-    except Exception as e:
-        logger.error(f"OKX 请求异常: {e}")
-        return 0.0
-
-
-def get_klines(inst_id: str, bar: str = "1H", limit: int = 70) -> list:
-    try:
-        url = f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}"
-        resp = requests.get(url, timeout=10)
-        data = resp.json()
-        if data.get("code") == "0":
-            klines = data["data"]
-            klines.reverse()
-            return klines
-        logger.warning(f"OKX 获取K线失败: {data}")
-        return []
-    except Exception as e:
-        logger.error(f"OKX K线请求异常: {e}")
-        return []
+    except:
+        pass
+    return 0.0

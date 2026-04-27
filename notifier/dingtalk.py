@@ -91,10 +91,14 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
-        # 1. 构建标题，根据最终方向展示
+        # 1. 构建简洁的标题和交易指令
+        exec_plan = strategy.get("execution_plan", "")
         if direction == "neutral":
             status_text = "⚠️审查推翻" if verdict == "推翻改为观望" else "⚠️风控驳回"
             title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · {status_text}"
+            # 确保观望时有明确的指令，而不是留空
+            if not exec_plan:
+                exec_plan = "原策略逻辑已被证伪，进入观望状态。等待新的入场信号。"
         else:
             emoji = "🟢" if direction == "long" else "🔴"
             text = "做多" if direction == "long" else "做空"
@@ -113,26 +117,26 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 2. 获取并展示执行指令（始终存在）
-        exec_plan = strategy.get("execution_plan", "")
-        execution_block = f"🎯 执行指令\n{exec_plan}" if exec_plan else "🎯 执行指令\n无"
+        # 2. 执行指令
+        execution_block = f"🎯 执行指令\n{exec_plan}"
 
-        # 3. 裁决理由：只保留“审计指控”开始的部分
+        # 3. 裁决理由：只保留“审计指控”开始的核心内容
         reasoning_text = strategy.get("_judge_reasoning", "")
         if "审计指控" in reasoning_text:
             reasoning_text = reasoning_text[reasoning_text.find("审计指控"):]
-        # 清理可能残存的风控报告片段
         if "风控审计官 - 审计报告" in reasoning_text:
             reasoning_text = reasoning_text.split("风控审计官 - 审计报告")[0].strip()
         reasoning_text = reasoning_text.strip()
         reasoning_block = f"📋 裁决理由：\n{reasoning_text}" if reasoning_text else "📋 裁决理由：\n无"
 
-        # 4. 风险说明（使用委员会C修正后的版本，而非A的原始版本）
+        # 4. 风险说明：深度净化，确保只显示委员会C的版本
         risk_note = strategy.get("risk_note", "请严格设置止损")
-        # 移除AI可能自带的重复标题
+        # 移除所有可能出现的旧标题
         risk_note = re.sub(r'⚠️\s*风险说明\s*', '', risk_note).strip()
-        # 移除末尾可能重复的决议声明
+        risk_note = re.sub(r'###\s*⚠️\s*风险说明\s*', '', risk_note).strip()
+        # 移除末尾可能重复的决议声明或无关词语
         risk_note = re.sub(r'\n*交易委员会决议.*', '', risk_note).strip()
+        risk_note = re.sub(r'\n*⚠️\s*风险说明\s*观望.*', '', risk_note).strip()
         if verdict in ["推翻改为观望", "推翻改为反向操作"]:
             risk_note += f"\n\n交易委员会决议: {verdict}"
         risk_block = f"⚠️ 风险说明\n{risk_note}"

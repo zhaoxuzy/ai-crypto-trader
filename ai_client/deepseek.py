@@ -686,6 +686,8 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
         original_strategy["entry_price_high"] = final.get("entry_price_high", 0)
         original_strategy["stop_loss"] = final.get("stop_loss", 0)
         original_strategy["take_profit"] = final.get("take_profit", 0)
+        original_strategy["execution_plan"] = final.get("execution_plan", "")
+        original_strategy["risk_note"] = final.get("risk_note", "")  # 必须覆盖 A 的风险说明
         _validate_execution_direction(original_strategy)
         return original_strategy
 

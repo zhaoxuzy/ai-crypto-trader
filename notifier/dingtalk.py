@@ -91,7 +91,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
-        # 1. 标题与状态标签
+        # 1. 标题与状态标签（不变）
         if direction == "neutral":
             status_text = "⚠️审查推翻" if verdict == "推翻改为观望" else "⚠️风控驳回"
             title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · {status_text}"
@@ -113,58 +113,41 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 2. 价格参数
-        entry_low = strategy.get("entry_price_low", 0)
-        entry_high = strategy.get("entry_price_high", 0)
-        stop = strategy.get("stop_loss", 0)
-        tp = strategy.get("take_profit", 0)
-        current = data.get("mark_price", 0)
+        # 2. 执行指令（单独展示）
+        exec_plan = strategy.get("execution_plan", "")
+        execution_block = f"🎯 执行指令\n{exec_plan}" if exec_plan else ""
 
-        # 3. 方向图标与文本
-        dir_icon = "⚪" if direction == "neutral" else ("🟢" if direction == "long" else "🔴")
-        dir_text = "观望" if direction == "neutral" else ("做多" if direction == "long" else "做空")
-
-        # 4. 价格显示与依据（简单标注委员会裁决，避免提取麻烦）
-        if direction == "neutral":
-            entry_str = "无（依据：等待触发条件）"
-            stop_str = "无（同上）"
-            tp_str = "无（同上）"
-        else:
-            entry_str = f"{entry_low:.0f}-{entry_high:.0f}（依据：委员会裁决）"
-            stop_str = f"{stop:.0f}（依据：结构外侧）"
-            tp_str = f"{tp:.0f}（依据：流动性池）"
-
-        # 5. 说明（执行指令）
-        explanation = strategy.get("execution_plan", "")
-
-        # 6. 最终策略块（使用📌图标，与裁决理由的📋区分）
-        final_strategy_block = (
-            f"📌 最终策略\n"
-            f"•   方向：{dir_icon} {dir_text}\n"
-            f"•   现价：{current:.0f}\n"
-            f"•   入场区间：{entry_str}\n"
-            f"•   止损：{stop_str}\n"
-            f"•   止盈：{tp_str}\n"
-            f"•   说明：{explanation}"
-        )
-
-        # 7. 裁决理由（取自_judge_reasoning，去除可能重复的标题）
+        # 3. 裁决理由（深度清理，只留审计内容）
         reasoning_text = strategy.get("_judge_reasoning", "")
-        # 清理可能残留的“📋 裁决理由：”或“📋 裁决理由”
-        reasoning_text = re.sub(r'📋\s*裁决理由[：:]?\s*', '', reasoning_text).strip()
-        # 如果文本包含“风控审计官 - 审计报告”这样的残余，也清理掉
         if "风控审计官 - 审计报告" in reasoning_text:
             reasoning_text = reasoning_text.split("风控审计官 - 审计报告")[0].strip()
+        reasoning_text = re.sub(r'📌\s*最终.*?(\n|$)', '', reasoning_text)
+        reasoning_text = re.sub(r'🎯\s*执行.*?(\n|$)', '', reasoning_text)
+        reasoning_text = re.sub(r'📋\s*裁决理由[：:]?', '', reasoning_text)
+        param_patterns = [
+            r'[\n\r]?\s*•?\s*方向[：:]\s*(long|short|neutral|做多|做空|观望).*?(\n|$)',
+            r'[\n\r]?\s*•?\s*仓位[：:]\s*(light|medium|heavy|none|轻仓|中仓|重仓|无).*?(\n|$)',
+            r'[\n\r]?\s*•?\s*入场区间[：:]\s*[\d\.\-\s~至依据]+.*?(\n|$)',
+            r'[\n\r]?\s*•?\s*止损[：:]\s*[\d\.\s依据]+.*?(\n|$)',
+            r'[\n\r]?\s*•?\s*止盈[：:]\s*[\d\.\s依据]+.*?(\n|$)',
+            r'[\n\r]?\s*•?\s*说明[：:]\s*.*?(\n|$)',
+        ]
+        for pattern in param_patterns:
+            reasoning_text = re.sub(pattern, '', reasoning_text)
+        reasoning_text = re.sub(r'\n{3,}', '\n\n', reasoning_text).strip()
         reasoning_block = f"📋 裁决理由：\n{reasoning_text}" if reasoning_text else ""
 
-        # 8. 风险说明
+        # 4. 风险说明
         risk_note = strategy.get("risk_note", "请严格设置止损")
-        risk_block = f"⚠️ 风险说明\n{risk_note}"
+        risk_note = re.sub(r'⚠️\s*风险说明\s*', '', risk_note).strip()
         if verdict in ["推翻改为观望", "推翻改为反向操作"]:
-            risk_block += f"\n\n交易委员会决议: {verdict}"
+            risk_note += f"\n\n交易委员会决议: {verdict}"
+        risk_block = f"⚠️ 风险说明\n{risk_note}"
 
-        # 9. 拼接最终消息
-        parts = [title, "", final_strategy_block]
+        # 5. 拼接最终消息（不再包含 final_strategy_block）
+        parts = [title, ""]
+        if execution_block:
+            parts.append(execution_block)
         if reasoning_block:
             parts.append(reasoning_block)
         parts.append(risk_block)

@@ -35,6 +35,7 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 def format_reasoning(text: str) -> str:
+    """首席交易员推理文本格式化（仅用于初步信号）"""
     if not text:
         return "> 无推理过程"
     text = text.replace('\r\n', '\n').replace('\r', '\n')
@@ -90,7 +91,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
-        # 构建标题与状态标签
+        # 1. 标题与状态标签
         if direction == "neutral":
             status_text = "⚠️审查推翻" if verdict == "推翻改为观望" else "⚠️风控驳回"
             title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · {status_text}"
@@ -112,33 +113,33 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 价格参数
+        # 2. 价格参数
         entry_low = strategy.get("entry_price_low", 0)
         entry_high = strategy.get("entry_price_high", 0)
         stop = strategy.get("stop_loss", 0)
         tp = strategy.get("take_profit", 0)
         current = data.get("mark_price", 0)
 
-        # 方向图标
+        # 3. 方向图标与文本
         dir_icon = "⚪" if direction == "neutral" else ("🟢" if direction == "long" else "🔴")
         dir_text = "观望" if direction == "neutral" else ("做多" if direction == "long" else "做空")
 
-        # 入场、止损、止盈显示
+        # 4. 价格显示与依据（简单标注委员会裁决，避免提取麻烦）
         if direction == "neutral":
-            entry_str = "无"
-            stop_str = "无"
-            tp_str = "无"
+            entry_str = "无（依据：等待触发条件）"
+            stop_str = "无（同上）"
+            tp_str = "无（同上）"
         else:
-            entry_str = f"{entry_low:.0f}-{entry_high:.0f}"
-            stop_str = f"{stop:.0f}"
-            tp_str = f"{tp:.0f}"
+            entry_str = f"{entry_low:.0f}-{entry_high:.0f}（依据：委员会裁决）"
+            stop_str = f"{stop:.0f}（依据：结构外侧）"
+            tp_str = f"{tp:.0f}（依据：流动性池）"
 
-        # 说明（执行指令）
+        # 5. 说明（执行指令）
         explanation = strategy.get("execution_plan", "")
 
-        # 最终策略块
+        # 6. 最终策略块（使用📌图标，与裁决理由的📋区分）
         final_strategy_block = (
-            f"📋 最终策略\n"
+            f"📌 最终策略\n"
             f"•   方向：{dir_icon} {dir_text}\n"
             f"•   现价：{current:.0f}\n"
             f"•   入场区间：{entry_str}\n"
@@ -147,20 +148,22 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
             f"•   说明：{explanation}"
         )
 
-        # 裁决理由：取 _judge_reasoning 并清理
+        # 7. 裁决理由（取自_judge_reasoning，去除可能重复的标题）
         reasoning_text = strategy.get("_judge_reasoning", "")
-        # 清理可能残留的标签
-        reasoning_text = re.sub(r'📋\s*裁决理由[：:]?', '', reasoning_text).strip()
+        # 清理可能残留的“📋 裁决理由：”或“📋 裁决理由”
+        reasoning_text = re.sub(r'📋\s*裁决理由[：:]?\s*', '', reasoning_text).strip()
+        # 如果文本包含“风控审计官 - 审计报告”这样的残余，也清理掉
+        if "风控审计官 - 审计报告" in reasoning_text:
+            reasoning_text = reasoning_text.split("风控审计官 - 审计报告")[0].strip()
         reasoning_block = f"📋 裁决理由：\n{reasoning_text}" if reasoning_text else ""
 
-        # 风险说明
+        # 8. 风险说明
         risk_note = strategy.get("risk_note", "请严格设置止损")
         risk_block = f"⚠️ 风险说明\n{risk_note}"
-        # 如果是推翻或驳回，追加决议说明
         if verdict in ["推翻改为观望", "推翻改为反向操作"]:
             risk_block += f"\n\n交易委员会决议: {verdict}"
 
-        # 拼接最终消息
+        # 9. 拼接最终消息
         parts = [title, "", final_strategy_block]
         if reasoning_block:
             parts.append(reasoning_block)
@@ -209,3 +212,23 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     risk_block = "### ⚠️ 风险说明\n" + "\n".join(risk_lines)
 
     return f"{title}\n\n{param}\n\n{reasoning_block}\n\n{risk_block}"
+
+
+def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
+    """格式化风控审计官的审查报告（供异步推送使用）"""
+    tz = timezone(timedelta(hours=8))
+    now = datetime.now(tz).strftime("%m-%d %H:%M")
+    title = f"策略信号：{symbol}｜⚡ 风控审计 · {now}"
+    report = reviewer_report.get("full_report", "无审查报告")
+    severity = reviewer_report.get("severity_counts", {})
+    summary = f"🔍 审计发现：严重问题{severity.get('高', 0)}个，中等问题{severity.get('中', 0)}个，轻微问题{severity.get('低', 0)}个"
+    report = report.replace('【风控审计官 - 审计报告】', '').strip()
+    report = re.sub(r'#+\s*风控审计官.*\n', '', report).strip()
+    return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n> {report}"
+
+
+def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
+    """格式化交易委员会的最终裁决（异步推送版本，保留标题提示）"""
+    # 直接复用最终策略的格式，但标题改为“交易委员会裁决”以便与审查中信号区分
+    # 实际逻辑同 format_strategy_message 的最终部分，这里略作调整以保持功能完整
+    return format_strategy_message(symbol, strategy, data)

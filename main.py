@@ -2,7 +2,7 @@ import os, sys, time, threading
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, call_reviewer, call_judge, apply_final_verdict
-from notifier.dingtalk import format_strategy_message, format_review_message, format_judge_message, send_dingtalk_message
+from notifier.dingtalk import format_strategy_message, format_review_message, format_judge_message, send_dingtalk_message, format_final_decision
 from data.fetcher import CoinGlassClient, get_current_price
 from utils.logger import logger
 
@@ -67,8 +67,8 @@ def main():
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
             strategy = apply_final_verdict(strategy, judge_result)
-            # 推送最终裁决
-            judge_msg = format_judge_message(symbol, strategy, judge_result, data)
+            # 推送最终裁决（使用新模板，杜绝乱码）
+            judge_msg = format_final_decision(symbol, strategy, judge_result)
             send_dingtalk_message(judge_msg, title=f"{symbol} 策略推送 (交易委员会裁决)")
         except Exception as e:
             logger.warning(f"法官C调用失败: {e}")

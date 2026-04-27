@@ -340,6 +340,7 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         logger.warning(f"入场区间下限({entry_low})大于上限({entry_high})，已自动交换并将仓位降为light")
         s["entry_price_low"], s["entry_price_high"] = entry_high, entry_low
         s["position_size"] = "light"
+        # 继续校验，不返回False
 
     if direction == "long" and stop_loss >= entry_low:
         s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间下方，请人工确认。"
@@ -493,13 +494,13 @@ STEP 3 – 按照标准模板输出最终策略
    - 止损：[价格]（说明依据，若观望则写“无”）
    - 止盈：[价格]（说明依据，若观望则写“无”）
    - 说明：[一句话指令，或观望时的触发条件]
-📋 裁决流程：
-   裁决说明：在此处逐条列出对审计指控的裁决，每条必须包含：指控内容、裁决(采纳/驳回)、依据(说明依据，引用具体数据)
+📋 裁决说明：
+   -在此处逐条列出对审计指控的裁决，每条必须包含：指控内容、裁决(采纳/驳回)、依据(说明依据，引用具体数据)
    例如：1.指控内容：[步骤二] 将30.39B解读为3000亿，数量级夸大。
            裁决结论：采纳/驳回/部分采纳
            核验依据：xxx
            反证风险评估：xx
-   核心逻辑：简述执行指令中策略的制定逻辑，为什么要这么制定？
+   -核心逻辑：简述执行指令中策略制定逻辑，必须提供站的住脚的证据或推论。
 ⚠️ 风险说明：[列出关键风险及应对措施]
 
 """
@@ -543,22 +544,37 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             exec_section = re.search(r'🎯\s*执行指令[：:]?\s*(.*?)(?=📋|⚠️|$)', content, re.DOTALL)
             if exec_section:
                 exec_text = exec_section.group(1).strip()
+                # 1. 方向解析（兼容中英文）
                 dir_match = re.search(r'方向[：:]\s*(long|short|neutral)', exec_text)
                 if dir_match:
                     direction = dir_match.group(1)
+                else:
+                    # 尝试匹配中文
+                    if re.search(r'方向[：:]\s*做多', exec_text):
+                        direction = "long"
+                    elif re.search(r'方向[：:]\s*做空', exec_text):
+                        direction = "short"
+                    elif re.search(r'方向[：:]\s*(观望|中性)', exec_text):
+                        direction = "neutral"
+                
+                # 2. 仓位
                 pos_match = re.search(r'仓位[：:]\s*(light|medium|heavy|none)', exec_text)
                 if pos_match:
                     position_size = pos_match.group(1)
+                # 3. 入场区间
                 entry_match = re.search(r'入场区间[：:]\s*([\d.]+)\s*[-–]\s*([\d.]+)', exec_text)
                 if entry_match:
                     entry_low = float(entry_match.group(1))
                     entry_high = float(entry_match.group(2))
+                # 4. 止损
                 stop_match = re.search(r'止损[：:]\s*([\d.]+)', exec_text)
                 if stop_match:
                     stop_loss = float(stop_match.group(1))
+                # 5. 止盈
                 tp_match = re.search(r'止盈[：:]\s*([\d.]+)', exec_text)
                 if tp_match:
                     take_profit = float(tp_match.group(1))
+                # 6. 说明
                 plan_match = re.search(r'说明[：:]\s*(.*)', exec_text)
                 if plan_match:
                     execution_plan = plan_match.group(1).strip()

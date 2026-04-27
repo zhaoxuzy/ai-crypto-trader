@@ -35,6 +35,7 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 def format_reasoning(text: str) -> str:
+    """首席交易员推理文本格式化（仅用于初步信号）"""
     if not text:
         return "> 无推理过程"
     text = text.replace('\r\n', '\n').replace('\r', '\n')
@@ -90,27 +91,13 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
-        # 1. 从裁决理由中智能识别委员会的真实方向，用于修正标题
-        reasoning_text = strategy.get("_judge_reasoning", "")
-        real_direction = direction  # 默认使用原方向
-        
-        # 如果委员会推翻了原策略，尝试从理由中找出新方向
-        if verdict in ["推翻改为反向操作", "推翻改为观望"]:
-            # 搜索新方向关键词
-            if re.search(r'(?:策略|我决定|最终方向|新方向|转为)[\s]*做多', reasoning_text):
-                real_direction = "long"
-            elif re.search(r'(?:策略|我决定|最终方向|新方向|转为)[\s]*做空', reasoning_text):
-                real_direction = "short"
-            else:
-                real_direction = "neutral"
-
-        # 2. 构建标题
-        if real_direction == "neutral":
+        # 1. 构建标题，根据最终方向展示
+        if direction == "neutral":
             status_text = "⚠️审查推翻" if verdict == "推翻改为观望" else "⚠️风控驳回"
             title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · {status_text}"
         else:
-            emoji = "🟢" if real_direction == "long" else "🔴"
-            text = "做多" if real_direction == "long" else "做空"
+            emoji = "🟢" if direction == "long" else "🔴"
+            text = "做多" if direction == "long" else "做空"
             size = strategy.get("position_size", "none")
             size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
             conf = strategy.get("confidence", "medium")
@@ -126,27 +113,32 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 3. 智能截取裁决理由（仅保留“审计指控”及之后的内容）
+        # 2. 获取并展示执行指令（始终存在）
+        exec_plan = strategy.get("execution_plan", "")
+        execution_block = f"🎯 执行指令\n{exec_plan}" if exec_plan else "🎯 执行指令\n无"
+
+        # 3. 裁决理由：只保留“审计指控”开始的部分
+        reasoning_text = strategy.get("_judge_reasoning", "")
         if "审计指控" in reasoning_text:
             reasoning_text = reasoning_text[reasoning_text.find("审计指控"):]
-        # 清除可能残存的旧标题
-        reasoning_text = re.sub(r'📋\s*裁决理由[：:]?', '', reasoning_text).strip()
-        reasoning_text = re.sub(r'📌\s*最终判决[：:].*?(\n|$)', '', reasoning_text).strip()
-        reasoning_text = re.sub(r'🎯\s*执行指令[：:].*?(\n|$)', '', reasoning_text).strip()
+        # 清理可能残存的风控报告片段
+        if "风控审计官 - 审计报告" in reasoning_text:
+            reasoning_text = reasoning_text.split("风控审计官 - 审计报告")[0].strip()
+        reasoning_text = reasoning_text.strip()
         reasoning_block = f"📋 裁决理由：\n{reasoning_text}" if reasoning_text else "📋 裁决理由：\n无"
 
-        # 4. 风险说明（清理重复标签并追加决议声明）
+        # 4. 风险说明（使用委员会C修正后的版本，而非A的原始版本）
         risk_note = strategy.get("risk_note", "请严格设置止损")
-        # 移除AI可能自带的“⚠️ 风险说明”标题
+        # 移除AI可能自带的重复标题
         risk_note = re.sub(r'⚠️\s*风险说明\s*', '', risk_note).strip()
-        # 移除末尾可能重复的决议声明（如“交易委员会决议: ...”）
+        # 移除末尾可能重复的决议声明
         risk_note = re.sub(r'\n*交易委员会决议.*', '', risk_note).strip()
         if verdict in ["推翻改为观望", "推翻改为反向操作"]:
             risk_note += f"\n\n交易委员会决议: {verdict}"
         risk_block = f"⚠️ 风险说明\n{risk_note}"
 
-        # 5. 拼接最终消息，确保没有多余空行
-        parts = [title, "", reasoning_block, "", risk_block]
+        # 5. 拼接最终消息
+        parts = [title, "", execution_block, "", reasoning_block, "", risk_block]
         return '\n\n'.join(parts)
 
     # ---------- 初步信号（审查中）----------

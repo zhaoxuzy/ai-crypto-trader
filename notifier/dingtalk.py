@@ -91,7 +91,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
-        # 1. 标题与状态标签（不变）
+        # 1. 标题与状态标签
         if direction == "neutral":
             status_text = "⚠️审查推翻" if verdict == "推翻改为观望" else "⚠️风控驳回"
             title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · {status_text}"
@@ -113,17 +113,20 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 2. 执行指令（单独展示）
+        # 2. 执行指令
         exec_plan = strategy.get("execution_plan", "")
         execution_block = f"🎯 执行指令\n{exec_plan}" if exec_plan else ""
 
-        # 3. 裁决理由（深度清理，只留审计内容）
+        # 3. 裁决理由：深度清理，只保留审计裁决和策略总结
         reasoning_text = strategy.get("_judge_reasoning", "")
         if "风控审计官 - 审计报告" in reasoning_text:
             reasoning_text = reasoning_text.split("风控审计官 - 审计报告")[0].strip()
+        # 清除所有可能出现的格式标签及其内容
         reasoning_text = re.sub(r'📌\s*最终.*?(\n|$)', '', reasoning_text)
         reasoning_text = re.sub(r'🎯\s*执行.*?(\n|$)', '', reasoning_text)
+        reasoning_text = re.sub(r'📋\s*策略制定核心逻辑[：:]?', '', reasoning_text)
         reasoning_text = re.sub(r'📋\s*裁决理由[：:]?', '', reasoning_text)
+        # 移除所有策略参数行，无论中英文
         param_patterns = [
             r'[\n\r]?\s*•?\s*方向[：:]\s*(long|short|neutral|做多|做空|观望).*?(\n|$)',
             r'[\n\r]?\s*•?\s*仓位[：:]\s*(light|medium|heavy|none|轻仓|中仓|重仓|无).*?(\n|$)',
@@ -135,16 +138,20 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         for pattern in param_patterns:
             reasoning_text = re.sub(pattern, '', reasoning_text)
         reasoning_text = re.sub(r'\n{3,}', '\n\n', reasoning_text).strip()
+        # 裁决理由标题只出现一次
         reasoning_block = f"📋 裁决理由：\n{reasoning_text}" if reasoning_text else ""
 
-        # 4. 风险说明
+        # 4. 风险说明：清理残留标签和重复决议
         risk_note = strategy.get("risk_note", "请严格设置止损")
         risk_note = re.sub(r'⚠️\s*风险说明\s*', '', risk_note).strip()
+        # 移除末尾可能重复的“交易委员会决议”或“观望”字样（避免与标题重复）
+        risk_note = re.sub(r'\n*交易委员会决议.*', '', risk_note).strip()
+        risk_note = re.sub(r'\n*⚠️\s*风险说明\s*观望.*', '', risk_note).strip()
         if verdict in ["推翻改为观望", "推翻改为反向操作"]:
             risk_note += f"\n\n交易委员会决议: {verdict}"
         risk_block = f"⚠️ 风险说明\n{risk_note}"
 
-        # 5. 拼接最终消息（不再包含 final_strategy_block）
+        # 5. 拼接最终消息（只包含标题、执行指令、裁决理由、风险说明）
         parts = [title, ""]
         if execution_block:
             parts.append(execution_block)

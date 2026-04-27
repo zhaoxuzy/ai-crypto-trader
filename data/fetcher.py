@@ -171,8 +171,13 @@ class CoinGlassClient:
         except:
             return 'neutral'
 
-    def _get_symbol(self, base: str) -> str:
-        return f"{base}-USDT-SWAP"
+    def _get_symbol(self, base: str, endpoint: str = "") -> str:
+    """根据不同交易所和端点返回正确的交易对格式"""
+    # CVD端点需要特殊格式（无破折号）
+    if "cvd" in endpoint.lower():
+        return f"{base}USDT"
+    # 默认格式（OKX接受带破折号的格式）
+    return f"{base}-USDT-SWAP"
 
     # ---------- 各数据获取接口 ----------
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
@@ -196,8 +201,8 @@ class CoinGlassClient:
         return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=True, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC", interval: str = "1m", limit: int = 240):
-        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        data = self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
+    params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol, "cvd"), "interval": interval, "limit": limit}
+    return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
         if data is not None and isinstance(data, list):
             logger.info(f"[CVD原始数据] 返回条数: {len(data)}，首条: {data[0] if data else '空'}")
         return data

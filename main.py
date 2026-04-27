@@ -2,7 +2,7 @@ import os, sys, time, threading
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, call_reviewer, call_judge, apply_final_verdict
-from notifier.dingtalk import format_strategy_message, format_review_message, format_judge_message, send_dingtalk_message
+from notifier.dingtalk import format_strategy_message, send_dingtalk_message
 from data.fetcher import CoinGlassClient, get_current_price
 from utils.logger import logger
 

@@ -125,8 +125,8 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
             title += " · 🔧审查修正"
         elif verdict == "降级执行":
             title += " · ⚠️降级执行"
-        elif verdict == "推翻改为观望":
-            title += " · 🔄推翻改为观望"
+        elif verdict == "推翻原策":
+            title += " · 🔄推翻原策"
 
         entry_low = strategy.get("entry_price_low", 0)
         entry_high = strategy.get("entry_price_high", 0)

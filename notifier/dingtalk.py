@@ -224,25 +224,36 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
 
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
-    """格式化交易委员会的最终裁决"""
+    """格式化交易委员会的最终裁决，只展示关键决策，不重复原始报告"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
-    verdict = strategy.get("_review_verdict", "维持原判")
+    
+    # 从 strategy 中读取最终参数
     direction = strategy.get("direction", "neutral")
-    emoji = "🟢" if direction == "long" else "🔴"
-    text = "做多" if direction == "long" else "做空"
-    size = strategy.get("position_size", "none")
-    size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
-    conf = strategy.get("confidence", "medium")
-    conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
-    title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}"
-    if verdict == "修正参数":
-        title += " · 🔧审查修正"
-    elif verdict == "降级执行":
-        title += " · ⚠️降级执行"
-    elif verdict == "推翻改为观望":
-        title += " · 🔄推翻改为观望"
+    verdict = strategy.get("_review_verdict", "维持原判")
+    reasoning = strategy.get("_judge_reasoning", "")
+    
+    # 标题行
+    if direction == "neutral":
+        title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · ⚠️审查推翻"
+    else:
+        emoji = "🟢" if direction == "long" else "🔴"
+        text = "做多" if direction == "long" else "做空"
+        size = strategy.get("position_size", "none")
+        size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
+        conf = strategy.get("confidence", "medium")
+        conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
+        title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}"
+        if verdict == "维持原判":
+            title += " · ✅审查确认"
+        elif verdict == "修正参数":
+            title += " · 🔧审查修正"
+        elif verdict == "降级执行":
+            title += " · ⚠️降级执行"
+        elif verdict == "推翻改为反向操作":
+            title += " · 🔄推翻改为反向"
 
+    # 参数卡片
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
@@ -250,12 +261,39 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
     current = data.get("mark_price", 0)
     param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f}"
 
-    exec_plan = strategy.get("execution_plan", "")
-    reasoning = strategy.get("_judge_reasoning", "")
+    # 裁决摘要
+    summary = f"📌 最终裁决：{verdict}"
 
-    msg = f"{title}\n\n{param}\n\n📌 最终裁决：{verdict}"
-    if exec_plan:
-        msg += f"\n\n🎯 执行指令\n> {exec_plan}"
-    if reasoning:
-        msg += f"\n\n📋 裁决理由\n> {reasoning}"
-    return msg
+    # 执行指令
+    exec_plan = strategy.get("execution_plan", "")
+    execution = f"🎯 执行指令\n> {exec_plan}" if exec_plan else ""
+
+    # 裁决核心逻辑：从 reasoning 中提取非风控报告的部分
+    # 清除可能混入的风控报告原文
+    clean_reasoning = reasoning
+    # 如果 reasoning 中包含风控审计官的报告，尝试移除
+    if "风控审计官 - 审计报告" in clean_reasoning:
+        parts = clean_reasoning.split("📋 裁决理由：")
+        if len(parts) > 1:
+            clean_reasoning = parts[-1].strip()
+        else:
+            clean_reasoning = clean_reasoning.split("风控审计官 - 审计报告")[0].strip()
+    
+    # 如果 reasoning 太长，截取核心段落
+    if len(clean_reasoning) > 800:
+        clean_reasoning = clean_reasoning[:800] + "..."
+
+    reasoning_block = f"📋 裁决理由\n> {clean_reasoning}" if clean_reasoning else ""
+
+    # 风险说明
+    risk_note = strategy.get("risk_note", "请严格设置止损")
+    risk_block = f"⚠️ 风险说明\n> {risk_note}"
+
+    # 拼接
+    parts = [title, param, summary]
+    if execution:
+        parts.append(execution)
+    if reasoning_block:
+        parts.append(reasoning_block)
+    parts.append(risk_block)
+    return '\n\n'.join(parts)

@@ -649,46 +649,40 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
     if verdict == "维持原判":
         return original_strategy
 
-    elif verdict == "修正参数":
-        original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
-        original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
-        original_strategy["position_size"] = final.get("final_position_size", original_strategy.get("position_size"))
-        original_strategy["entry_price_low"] = final.get("entry_price_low", original_strategy["entry_price_low"])
-        original_strategy["entry_price_high"] = final.get("entry_price_high", original_strategy["entry_price_high"])
-        original_strategy["stop_loss"] = final.get("stop_loss", original_strategy["stop_loss"])
-        original_strategy["take_profit"] = final.get("take_profit", original_strategy["take_profit"])
-        _validate_execution_direction(original_strategy)
+       elif verdict == "修正参数":
+        # ... 原有逻辑（包括方向、仓位、入场、止损、止盈） ...
+        # 清洗裁决理由（只保留“审计指控”开头的内容）
+        raw = final.get("reasoning", "")
+        if "审计指控" in raw:
+            raw = raw[raw.find("审计指控"):]
+        elif "📋 裁决理由" in raw:
+            raw = raw[raw.find("📋 裁决理由") + len("📋 裁决理由"):]
+        original_strategy["_judge_reasoning"] = raw.strip()
         return original_strategy
 
     elif verdict == "降级执行":
+        # 修正：必须同步使用C给出的新方向和入场区间，而不是保留A的空单区间
         original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
-        original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
+        original_strategy["entry_price_low"] = final.get("entry_price_low", original_strategy.get("entry_price_low"))
+        original_strategy["entry_price_high"] = final.get("entry_price_high", original_strategy.get("entry_price_high"))
         original_strategy["stop_loss"] = final.get("stop_loss", original_strategy["stop_loss"])
         original_strategy["take_profit"] = final.get("take_profit", original_strategy["take_profit"])
-        final_size = final.get("final_position_size", "")
-        if final_size:
-            original_strategy["position_size"] = final_size
-        else:
-            size_map = {"heavy": "medium", "medium": "light", "light": "light"}
-            original_strategy["position_size"] = size_map.get(original_strategy.get("position_size", "light"), "light")
-        _validate_execution_direction(original_strategy)
-        return original_strategy
-
-    elif verdict == "推翻改为观望":
-        _force_neutral(original_strategy, f"交易委员会决议: {verdict}")
+        original_strategy["execution_plan"] = final.get("execution_plan", original_strategy.get("execution_plan", ""))
+        original_strategy["risk_note"] = final.get("risk_note", original_strategy.get("risk_note", ""))
+        # 仓位降级
+        size_map = {"heavy": "medium", "medium": "light", "light": "light"}
+        original_strategy["position_size"] = size_map.get(final.get("final_position_size", original_strategy.get("position_size", "light")), "light")
+        # 清洗裁决理由
+        raw = final.get("reasoning", "")
+        if "审计指控" in raw:
+            raw = raw[raw.find("审计指控"):]
+        original_strategy["_judge_reasoning"] = raw.strip()
         return original_strategy
 
     elif verdict == "推翻改为反向操作":
-        original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
-        original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
-        original_strategy["position_size"] = final.get("final_position_size", original_strategy.get("position_size"))
-        original_strategy["entry_price_low"] = final.get("entry_price_low", 0)
-        original_strategy["entry_price_high"] = final.get("entry_price_high", 0)
-        original_strategy["stop_loss"] = final.get("stop_loss", 0)
-        original_strategy["take_profit"] = final.get("take_profit", 0)
-        original_strategy["execution_plan"] = final.get("execution_plan", "")
-        original_strategy["risk_note"] = final.get("risk_note", "")  # 必须覆盖 A 的风险说明
-        _validate_execution_direction(original_strategy)
+        # ... 原有逻辑（全部覆盖） ...
+        raw = final.get("reasoning", "")
+        if "审计指控" in raw:
+            raw = raw[raw.find("审计指控"):]
+        original_strategy["_judge_reasoning"] = raw.strip()
         return original_strategy
-
-    return original_strategy

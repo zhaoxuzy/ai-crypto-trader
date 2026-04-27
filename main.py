@@ -19,10 +19,11 @@ def main():
         data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
+    # 获取跨币种验证数据（精简版，复用get_all_data）
     cross_symbol = "ETH" if symbol == "BTC" else "BTC"
     cross_data = None
     try:
-        cross_data = client.get_cross_asset_data(cross_symbol)
+        cross_data = client.get_all_data(cross_symbol, kline_limit=42)
     except Exception as e:
         logger.warning(f"获取跨币种数据失败：{e}")
 
@@ -35,37 +36,36 @@ def main():
         logger.error(f"{symbol} 策略生成失败: {e}")
         return
 
+    # 基础校验
     valid, msg = validate_strategy(strategy, data)
     if not valid:
         logger.error(f"策略校验失败: {msg}")
         return
 
-    # 2. 推送首席交易员策略
-    strategy["_preliminary"] = True
-    prelim_msg = format_strategy_message(symbol, strategy, data)
-    send_dingtalk_message(prelim_msg, title=f"{symbol} 首席交易员策略")
+    # 2. 推送初步信号
+    preliminary_strategy = strategy.copy()
+    preliminary_strategy["_preliminary"] = True
+    prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
+    send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (审查中...)")
 
-    # 3. 风控审计官 + 交易委员会 异步执行
-    reviewer_report = None
-    judge_result = None
-
+    # 3. 审查官B + 法官C 异步执行（独立超时）
     def run_review_and_judge():
-        nonlocal strategy, reviewer_report, judge_result
+        nonlocal strategy
+        
+        # --- 审查官B，独立超时60秒 ---
+        reviewer_report = None
         try:
             reviewer_report = call_reviewer(strategy, data, symbol)
         except Exception as e:
-            logger.warning(f"风控审计官调用失败: {e}")
+            logger.warning(f"审查官B调用失败: {e}")
             strategy["_reviewed"] = False
             return
 
-        if reviewer_report:
-            review_msg = format_review_message(symbol, strategy, reviewer_report, data)
-            send_dingtalk_message(review_msg, title=f"{symbol} 风控审计报告")
-
+        # --- 法官C，独立超时120秒 ---
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
         except Exception as e:
-            logger.warning(f"交易委员会调用失败: {e}")
+            logger.warning(f"法官C调用失败: {e}")
             strategy["_reviewed"] = False
             return
 
@@ -73,8 +73,9 @@ def main():
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()
-    review_thread.join(timeout=240)
+    review_thread.join(timeout=180)  # 总超时延长至180秒
 
+    # 4. 超时保护
     if review_thread.is_alive():
         logger.warning("审查总线程超时，按原策略降级执行")
         strategy["_reviewed"] = False
@@ -82,19 +83,17 @@ def main():
         size_map = {"heavy": "medium", "medium": "light", "light": "light"}
         strategy["position_size"] = size_map.get(strategy.get("position_size", "light"), "light")
 
+    # 最终校验与推送
     valid, msg = validate_strategy(strategy, data)
     if not valid:
         logger.error(f"最终策略校验失败: {msg}")
         return
 
-    if judge_result:
-        final_msg = format_judge_message(symbol, strategy, data)
-        send_dingtalk_message(final_msg, title=f"{symbol} 交易委员会决议")
-    else:
-        final_msg = format_strategy_message(symbol, strategy, data)
-        send_dingtalk_message(final_msg, title=f"{symbol} 策略推送 (最终)")
-
-    logger.info("所有信号已推送至钉钉")
+    final_msg = format_strategy_message(symbol, strategy, data)
+    if strategy.get("_review_timeout"):
+        final_msg = "> ⚠️ **审查官或法官响应超时，已按原策略降级执行，请人工复核**\n\n" + final_msg
+    send_dingtalk_message(final_msg, title=f"{symbol} 策略推送 (最终)")
+    logger.info("最终信号已推送至钉钉")
 
 if __name__ == "__main__":
     main()

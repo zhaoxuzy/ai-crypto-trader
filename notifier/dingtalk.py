@@ -35,7 +35,6 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 def format_reasoning(text: str) -> str:
-    """首席交易员推理文本格式化（仅用于初步信号）"""
     if not text:
         return "> 无推理过程"
     text = text.replace('\r\n', '\n').replace('\r', '\n')
@@ -113,33 +112,30 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 2. 执行指令
+        # 2. 执行指令：直接取自C修正后的版本
         exec_plan = strategy.get("execution_plan", "无具体指令")
         execution_block = f"🎯 执行指令\n{exec_plan}"
 
-        # 3. 裁决理由：从存储的 `_judge_reasoning` 中提取，并清除可能混入的风险说明
-        reasoning_text = strategy.get("_judge_reasoning", "")
-        # 强力清除任何形式的风险说明（中英文、带标题等）
-        reasoning_text = re.sub(r'⚠️\s*风险说明.*', '', reasoning_text, flags=re.DOTALL)
-        reasoning_text = re.sub(r'###\s*⚠️\s*风险说明.*', '', reasoning_text, flags=re.DOTALL)
-        reasoning_text = re.sub(r'风险说明.*', '', reasoning_text, flags=re.DOTALL)
-        # 移除开头的多余符号（如：、:等）
-        reasoning_text = re.sub(r'^[：:]\s*', '', reasoning_text.strip())
-        reasoning_block = f"📋 裁决理由：\n{reasoning_text.strip()}" if reasoning_text.strip() else "📋 裁决理由：\n无"
+        # 3. 完整裁决内容：直接使用 AI 返回的原始文本，不进行任何修改
+        reasoning_raw = strategy.get("_judge_reasoning", "")
+        # 只做极简处理：如果文本为空，给一个占位符
+        if not reasoning_raw.strip():
+            reasoning_raw = "无裁决理由"
 
-        # 4. 风险说明：使用C覆盖后的版本，去除可能重复的标题
-        risk_note = strategy.get("risk_note", "请严格设置止损")
-        # 如果风险说明中已自带“⚠️ 风险说明”标题，直接使用，否则添加
-        if '⚠️ 风险说明' not in risk_note and '⚠️ 风险说明' not in risk_note:
-            risk_block = f"⚠️ 风险说明\n{risk_note}"
-        else:
-            risk_block = risk_note
-        # 根据verdict追加决议声明
-        if verdict in ["推翻改为观望", "推翻改为反向操作"]:
-            risk_block += f"\n\n交易委员会决议: {verdict}"
+        # 4. 风险说明：直接使用 C 覆盖后的版本，不添加额外标题，让 AI 自行处理格式
+        risk_raw = strategy.get("risk_note", "请严格设置止损")
 
-        # 5. 拼接最终消息
-        parts = [title, "", execution_block, "", reasoning_block, "", risk_block]
+        # 5. 拼接最终消息：标题 + 执行指令 + 原始AI文本 + 风险说明
+        # 注意：不再添加任何额外的“📋 裁决理由：”或“⚠️ 风险说明”标题，完全信任 AI 的输出已包含这些
+        parts = [
+            title,
+            "",
+            execution_block,
+            "",
+            reasoning_raw,
+            "",
+            risk_raw
+        ]
         return '\n\n'.join(parts)
 
     # ---------- 初步信号（审查中）----------

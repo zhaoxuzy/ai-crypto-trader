@@ -91,7 +91,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
-        # 1. 标题与状态标签
+        # 1. 构建简洁的标题
         if direction == "neutral":
             status_text = "⚠️审查推翻" if verdict == "推翻改为观望" else "⚠️风控驳回"
             title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · {status_text}"
@@ -113,51 +113,33 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 2. 执行指令
-        exec_plan = strategy.get("execution_plan", "")
-        execution_block = f"🎯 执行指令\n{exec_plan}" if exec_plan else ""
-
-        # 3. 裁决理由：深度清理，只保留审计裁决和策略总结
+        # 2. 获取并展示 AI 提供的裁决理由
+        #    这里不再进行复杂的正则清洗，而是直接截取“审计指控”及之后的核心内容
         reasoning_text = strategy.get("_judge_reasoning", "")
+        
+        # 如果文本中包含“审计指控”关键词，则丢弃之前的所有内容，这样做既简单又可靠
+        if "审计指控" in reasoning_text:
+            reasoning_text = reasoning_text[reasoning_text.find("审计指控"):]
+        
+        # 如果还残留了风控审计报告的内容，做一次清理
         if "风控审计官 - 审计报告" in reasoning_text:
             reasoning_text = reasoning_text.split("风控审计官 - 审计报告")[0].strip()
-        # 清除所有可能出现的格式标签及其内容
-        reasoning_text = re.sub(r'📌\s*最终.*?(\n|$)', '', reasoning_text)
-        reasoning_text = re.sub(r'🎯\s*执行.*?(\n|$)', '', reasoning_text)
-        reasoning_text = re.sub(r'📋\s*策略制定核心逻辑[：:]?', '', reasoning_text)
-        reasoning_text = re.sub(r'📋\s*裁决理由[：:]?', '', reasoning_text)
-        # 移除所有策略参数行，无论中英文
-        param_patterns = [
-            r'[\n\r]?\s*•?\s*方向[：:]\s*(long|short|neutral|做多|做空|观望).*?(\n|$)',
-            r'[\n\r]?\s*•?\s*仓位[：:]\s*(light|medium|heavy|none|轻仓|中仓|重仓|无).*?(\n|$)',
-            r'[\n\r]?\s*•?\s*入场区间[：:]\s*[\d\.\-\s~至依据]+.*?(\n|$)',
-            r'[\n\r]?\s*•?\s*止损[：:]\s*[\d\.\s依据]+.*?(\n|$)',
-            r'[\n\r]?\s*•?\s*止盈[：:]\s*[\d\.\s依据]+.*?(\n|$)',
-            r'[\n\r]?\s*•?\s*说明[：:]\s*.*?(\n|$)',
-        ]
-        for pattern in param_patterns:
-            reasoning_text = re.sub(pattern, '', reasoning_text)
-        reasoning_text = re.sub(r'\n{3,}', '\n\n', reasoning_text).strip()
-        # 裁决理由标题只出现一次
-        reasoning_block = f"📋 裁决理由：\n{reasoning_text}" if reasoning_text else ""
+            
+        reasoning_text = reasoning_text.strip()
+        # 将裁决理由组装成消息块
+        reasoning_block = f"📋 裁决理由：\n{reasoning_text}" if reasoning_text else "📋 裁决理由：\n无"
 
-        # 4. 风险说明：清理残留标签和重复决议
+        # 3. 构建并清洗风险说明
         risk_note = strategy.get("risk_note", "请严格设置止损")
-        risk_note = re.sub(r'⚠️\s*风险说明\s*', '', risk_note).strip()
-        # 移除末尾可能重复的“交易委员会决议”或“观望”字样（避免与标题重复）
-        risk_note = re.sub(r'\n*交易委员会决议.*', '', risk_note).strip()
-        risk_note = re.sub(r'\n*⚠️\s*风险说明\s*观望.*', '', risk_note).strip()
+        # 移除风险说明中可能自带的重复标题
+        risk_note = risk_note.replace("⚠️ 风险说明", "").strip()
+        # 根据verdict追加决议声明
         if verdict in ["推翻改为观望", "推翻改为反向操作"]:
             risk_note += f"\n\n交易委员会决议: {verdict}"
         risk_block = f"⚠️ 风险说明\n{risk_note}"
 
-        # 5. 拼接最终消息（只包含标题、执行指令、裁决理由、风险说明）
-        parts = [title, ""]
-        if execution_block:
-            parts.append(execution_block)
-        if reasoning_block:
-            parts.append(reasoning_block)
-        parts.append(risk_block)
+        # 4. 拼接最终消息，完全遵循您提供的 DeepSeek 输出模板
+        parts = [title, "", reasoning_block, "", risk_block]
         return '\n\n'.join(parts)
 
     # ---------- 初步信号（审查中）----------
@@ -215,7 +197,6 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     report = report.replace('【风控审计官 - 审计报告】', '').strip()
     report = re.sub(r'#+\s*风控审计官.*\n', '', report).strip()
     return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n> {report}"
-
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
     """格式化交易委员会的最终裁决（异步推送版本，保留标题提示）"""

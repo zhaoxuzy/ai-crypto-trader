@@ -113,32 +113,27 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 2. 获取并展示 AI 提供的裁决理由
-        #    这里不再进行复杂的正则清洗，而是直接截取“审计指控”及之后的核心内容
+        # 2. 直接取用 AI 提供的裁决理由，但只保留“审计指控”开始的部分
         reasoning_text = strategy.get("_judge_reasoning", "")
-        
-        # 如果文本中包含“审计指控”关键词，则丢弃之前的所有内容，这样做既简单又可靠
         if "审计指控" in reasoning_text:
             reasoning_text = reasoning_text[reasoning_text.find("审计指控"):]
-        
-        # 如果还残留了风控审计报告的内容，做一次清理
+        # 清理可能残存的风控报告片段
         if "风控审计官 - 审计报告" in reasoning_text:
             reasoning_text = reasoning_text.split("风控审计官 - 审计报告")[0].strip()
-            
         reasoning_text = reasoning_text.strip()
-        # 将裁决理由组装成消息块
         reasoning_block = f"📋 裁决理由：\n{reasoning_text}" if reasoning_text else "📋 裁决理由：\n无"
 
-        # 3. 构建并清洗风险说明
+        # 3. 风险说明（清理残留的重复标签和说明）
         risk_note = strategy.get("risk_note", "请严格设置止损")
-        # 移除风险说明中可能自带的重复标题
         risk_note = risk_note.replace("⚠️ 风险说明", "").strip()
-        # 根据verdict追加决议声明
+        # 移除末尾可能重复出现的决议或观望字样
+        risk_note = re.sub(r'\n*交易委员会决议.*', '', risk_note).strip()
+        risk_note = re.sub(r'\n*⚠️\s*风险说明\s*观望.*', '', risk_note).strip()
         if verdict in ["推翻改为观望", "推翻改为反向操作"]:
             risk_note += f"\n\n交易委员会决议: {verdict}"
         risk_block = f"⚠️ 风险说明\n{risk_note}"
 
-        # 4. 拼接最终消息，完全遵循您提供的 DeepSeek 输出模板
+        # 4. 拼接最终消息
         parts = [title, "", reasoning_block, "", risk_block]
         return '\n\n'.join(parts)
 
@@ -187,7 +182,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
 
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
-    """格式化风控审计官的审查报告（供异步推送使用）"""
+    """格式化风控审计官的审查报告"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
     title = f"策略信号：{symbol}｜⚡ 风控审计 · {now}"
@@ -198,8 +193,7 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     report = re.sub(r'#+\s*风控审计官.*\n', '', report).strip()
     return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n> {report}"
 
+
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
-    """格式化交易委员会的最终裁决（异步推送版本，保留标题提示）"""
-    # 直接复用最终策略的格式，但标题改为“交易委员会裁决”以便与审查中信号区分
-    # 实际逻辑同 format_strategy_message 的最终部分，这里略作调整以保持功能完整
+    """格式化交易委员会的最终裁决，直接复用最终信号的格式"""
     return format_strategy_message(symbol, strategy, data)

@@ -294,7 +294,7 @@ def _force_neutral(s: dict, reason: str):
     s["stop_loss"] = 0
     s["take_profit"] = 0
     s["execution_plan"] = ""
-    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[原始信号因校验规则被强制改为观望，原因：{reason}").strip()
+    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[原始信号因校验规则被强制改为观望，原因：{reasoning}").strip()
     s["risk_note"] = f"观望。{reason}"
 
 
@@ -374,7 +374,7 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
     bias_map = {'long': '偏向上方', 'short': '偏向下止', 'neutral': '无明确偏向'}
     bias_text = bias_map.get(liquidity_bias, '无数据')
 
-    return f"""你是我们加密货币交易团队的**风控审计官**。你的唯一任务是精准、快速找出首席交易员策略中的错误。你只找错误，不做裁决，不写建议。
+    return f"""你是我们加密货币交易团队的**风控审计官**。你的唯一任务是精准、快速、专业的找出首席交易员策略中的错误，记住：你只找错误。
 
 【交易标的】{symbol}
 【代码层客观锚点】清算池综合吸引力评分：{bias_text}（基于规模/触发距/订单簿计算，数学模型得出）
@@ -459,7 +459,7 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
     report = reviewer_report.get('full_report', '无审计报告')
     market_data_str = json.dumps(data, ensure_ascii=False)
 
-    prompt = f"""你是最终决策的交易委员会主席，拥有二十年加密货币短线合约交易经验。你的团队已准备了首席交易员的策略和风控审计报告。你必须基于事实与逻辑，输出一份可立即执行的交易方案。
+    prompt = f"""你是最终决策的交易委员会主席，拥有二十年加密货币短线合约交易经验。你的团队已准备了【首席交易员的策略】和【风控审计报告】。你必须基于事实与逻辑，输出一份可立即执行的短信交易方案。
 
 【交易标的】{symbol}
 【原策略】方向：{orig_dir}，入场：{entry_l}-{entry_h}，止损：{stop_l}，止盈：{tp_l}
@@ -471,9 +471,9 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
 你必须严格遵循以下两个步骤进行，不可跳过或自由发挥。
 STEP 1 – 审计逐条裁决
 对审计报告中的每一条指控，你必须进行如下操作：
-  - 给出你的裁决结论（采纳 / 驳回 / 部分采纳）
-  - 陈述数据核验依据（必须引用上方“市场数据”中的字段名和具体数值）
-  - 进行反证风险评估（高/中/低）。你必须提出至少一条可能挑战你裁决的证据。反证必须包含：该证据是什么、它为何可能构成威胁、以及你为何最终排除它。若你搜寻了所有数据后确实认为毫无矛盾，才可填写“无”，但必须简述你的搜寻范围作为理由。
+  - 给出你的：裁决结论（采纳 / 驳回 / 部分采纳）
+  - 陈述数据：核验依据（必须引用上方“市场数据”中的字段名和具体数值或专业的判断）
+  - 进行：反证风险评估（高/中/低）。你必须提出至少一条可能挑战你裁决的证据。反证必须包含：该证据是什么、它为何可能构成威胁、以及你为何最终排除它。若你搜寻了所有数据后确实认为毫无矛盾，才可填写“无”，但必须简述你的搜寻范围作为理由。
 
 STEP 2 – 制定最终策略
   (A) 判断你是否维持原策略的方向。
@@ -482,12 +482,11 @@ STEP 2 – 制定最终策略
       2) 引用市场数据中的具体数值，证明该核心假设已被证伪。
       3) 给出支持新方向的两个独立数据指标，每个都必须附带字段名和当前数值。
       4) 给出新策略的入场区间、止损位、止盈位，并简要说明为何如此设置（例如：基于某个关键结构或流动性区域）。
-
-【输出格式（纯文本，务必遵守）】
-请严格按照以下格式输出，不要输出JSON或其他任何格式：
+STEP 3 – 按照标准模板输出最终策略
+        -输出格式要求：纯文本，不要输出JSON或其他任何格式。
+        -输出模板：请严格按照以下模板输出。
 
 📌 最终判决：[维持原判 / 修正参数 / 降级执行 / 推翻]
-
 🎯 执行指令：
    - 方向：[long / short / neutral]
    - 仓位：[light / medium / heavy / none]
@@ -495,10 +494,13 @@ STEP 2 – 制定最终策略
    - 止损：[价格]（说明依据，若观望则写“无”）
    - 止盈：[价格]（说明依据，若观望则写“无”）
    - 说明：[一句话指令，或观望时的触发条件]
-
 📋 裁决理由：
-   （在此处逐条列出对审计指控的裁决，每条必须包含：指控内容、裁决(采纳/驳回)、依据(引用具体数据)。然后简述策略制定核心逻辑）
-
+   -裁决说明：在此处逐条列出对审计指控的裁决，每条必须包含：指控内容、裁决(采纳/驳回)、依据(说明依据，引用具体数据)
+   例如：1.指控内容：[步骤二] 将30.39B解读为3000亿，数量级夸大。
+           裁决结论：采纳/驳回/部分采纳
+           核验依据：xxx
+           反证风险评估：xx
+   -核心逻辑：简述执行指令中策略的制定逻辑，为什么要这么制定？
 ⚠️ 风险说明：[列出关键风险及应对措施]
 """
     return prompt
@@ -541,9 +543,10 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             verdict_match = re.search(r'📌\s*最终判决[：:]\s*(.*)', content)
             if verdict_match:
                 verdict_text = verdict_match.group(1).strip()
-                if "反向" in verdict_text:
+                # 修正：优先识别反向操作（包含“多”、“空”或明确反向）
+                if re.search(r'(反向|做多|做空|转为\s*(多|空))', verdict_text):
                     verdict = "推翻改为反向操作"
-                elif "观望" in verdict_text or "推翻" in verdict_text:
+                elif "观望" in verdict_text:
                     verdict = "推翻改为观望"
                 elif "修正" in verdict_text:
                     verdict = "修正参数"
@@ -583,6 +586,13 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     execution_plan = plan_match.group(1).strip()
                 else:
                     execution_plan = exec_text.replace('\n', ' ').strip()
+
+            # 如果判决为反向但方向未变，尝试从执行文本中推断
+            if verdict == "推翻改为反向操作" and direction == original_strategy.get("direction", "neutral"):
+                if "做多" in exec_text.lower() or "long" in exec_text.lower():
+                    direction = "long"
+                elif "做空" in exec_text.lower() or "short" in exec_text.lower():
+                    direction = "short"
 
             # 提取⚠️风险说明
             risk_match = re.search(r'⚠️\s*风险说明[：:]\s*(.*)', content, re.DOTALL)

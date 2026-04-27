@@ -469,48 +469,42 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
 {reviewer_report.get('full_report', '无报告')}
 
 【你的决策原则】
-1. 你是最终决策者。你的目标是在风险可控的前提下，输出一份可执行的策略。
+1. 你是最终决策者，你的目标是在风险可控的前提下，输出一份**可立即执行**的策略。
 2. 审计报告是你的参考工具，你可以采纳、驳回或部分采纳其中的任何意见。
-3. 如果你认为指出的错误是致命的（数据造假、逻辑断裂、方向与第一段运动矛盾），你应该果断推翻原方案。
-4. 如果你认为指出的错误是非致命的（止损过紧、仓位偏重、某个步骤推理略弱），你应该修正参数而非推翻方向。
-5. 如果你认为质疑本身站不住脚，而原推演逻辑坚实，你应该驳回质疑，维持原方向。
-6. 输出观望意味着放弃交易机会，这本身就是风险。只有当你穷尽所有修正可能，仍无法输出一个逻辑自洽、风险可控的多空方案时，观望才是被迫的合法终局。任何因偷懒或分析不全而草率输出的观望，都是交易委员会的严重失职。
-
-【强制输出要求】
-你必须在 `reasoning` 中逐条回应审计报告中的每一项指控。对于每一项指控，你必须明确写出：
-- 是否采纳该指控？
-- 如果采纳，你做出了什么具体的修正？
-- 如果不采纳，你的反驳理由是什么？
-- 最终，你的决议方案是如何综合这些修正得出的？
-
-【输出一个完整的交易方案】，
-交易策略：币种、方向、仓位、入场区间、止损位、止盈位，执行指令和裁决理由。
+3. 对于审计报告中的每一项指控，你必须明确回应：是否采纳？如果采纳，你做出了什么修正？如果不采纳，你的反驳理由是什么？
+4. 如果指控涉及致命的数据曲解或逻辑断裂，你必须果断推翻原方案。如果指控是非致命的（止损过紧、仓位偏重、推理略弱），你应修正参数而非推翻方向。
+5. **策略重建纪律**：
+   - 如果你推翻了原方向，你必须基于当前市场数据重新判断方向，而不是因为“原方向错了”就自动反向。如果你无法从市场数据中得到明确的新方向，就输出“观望”。
+   - 重新判断方向时，应基于清算池距离/强度、订单簿失衡率、CVD斜率方向、顶级多空比现状、资金费率水平等核心指标，而非叙事。
+   - 新方向的入场区间必须紧贴当前价格（±0.5%以内）。止损必须设在关键技术结构外侧，且满足1.2倍ATR距离。如果找不到这样的止损位，输出“观望”。
+   - 不要构建复杂的假突破、假跌破路径来迎合预判。策略应当简洁、可执行，避免过度拟合市场叙事。
+6. 你输出的方案必须逻辑自洽：`final_direction` 必须是 `long` 或 `short`（或 `neutral` 表示观望），`execution_plan` 中的操作方向必须与 `final_direction` 严格一致。
+7. “观望”是最后的选择。只有在穷尽所有修正手段后，仍无法输出一个逻辑自洽、风险可控且入场紧贴现价的多空方案时，你才能输出观望。任何因偷懒或分析不全而草率输出的观望，都是交易委员会的严重失职。
 
 【行动前自检，必须执行】
 在输出JSON之前，你必须确认：
-- 你的 `final_direction` 是 long 还是 short？
-- 你的 `execution_plan` 中的操作方向（做多/做空）是否与 `final_direction` 严格一致？
-- 如果不一致，说明你的输出存在矛盾，必须修正后再输出。
+- 你的 `final_direction` 是 `long`、`short` 还是 `neutral`？
+- 你的 `execution_plan` 中的操作方向（做多/做空/观望）是否与 `final_direction` 严格一致？
+- 你的入场区间是否紧贴当前价格（±0.5%以内）？
+- 你的止损是否满足1.2倍ATR的距离要求？
+- 如果不满足上述任何一条，你必须在输出前修正，否则你的裁决将被系统视为无效。
 
 输出JSON（不要代码块）：
 {{
-  "judge_C": {{
-    "final_verdict": "维持原判/修正参数/降级执行/推翻改为观望/推翻改为反向操作",
-    "verdict_level": "A/B/C/E",
-    "final_direction": "long/short/neutral",
-    "final_confidence": "high/medium/low",
-    "final_position_size": "light/medium/heavy/none",
-    "entry_price_low": 0.0,
-    "entry_price_high": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "execution_plan": "一句话指令——必须与final_direction的操作方向一致",
-    "reasoning": "逐条裁决过程 + 交易策略",
-    "risk_note": "风险说明"
-  }}
+  "final_verdict": "维持原判/修正参数/降级执行/推翻改为观望/推翻改为反向操作",
+  "verdict_level": "A/B/C/E/R",
+  "final_direction": "long/short/neutral",
+  "final_confidence": "high/medium/low",
+  "final_position_size": "light/medium/heavy/none",
+  "entry_price_low": 0.0,
+  "entry_price_high": 0.0,
+  "stop_loss": 0.0,
+  "take_profit": 0.0,
+  "execution_plan": "一句话指令",
+  "reasoning": "逐条回应审计报告的裁决过程，以及最终方案的推导逻辑。必须包含你重新判断方向所依据的具体数据。",
+  "risk_note": "风险说明"
 }}
 """
-
 
 def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> dict:
     prompt = build_judge_prompt(original_strategy, reviewer_report, data, symbol)

@@ -196,7 +196,7 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
 
 # ===== 委员会最终裁决推送模板（移除代码块，关键字加粗） =====
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None) -> str:
-    """委员会最终裁决推送，直接展示法官C原始区块，并对裁决理由中的关键字加粗"""
+    """委员会最终裁决推送，直接展示原始区块，并对裁决理由中的关键字加粗"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 

@@ -19,16 +19,12 @@ def main():
         data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
-    cross_symbol = "ETH" if symbol == "BTC" else "BTC"
-    cross_data = None
-    try:
-        cross_data = client.get_cross_asset_data(cross_symbol)
-    except Exception as e:
-        logger.warning(f"获取跨币种数据失败：{e}")
+    # ---- 跨币种数据：直接复用主数据中已获取的 ETH/BTC 信息，不再拉取额外数据 ----
+    # 主数据中已经包含了 eth_btc_ratio、eth_btc_ma_7d、eth_btc_percentile，足够第六步使用
+    cross_data = data  # 复用自身
 
     prompt = build_prompt(data, symbol, eth_data=cross_data)
 
-    # 1. 首席交易员生成策略
     try:
         strategy = call_deepseek(prompt)
     except Exception as e:
@@ -40,13 +36,11 @@ def main():
         logger.error(f"策略校验失败: {msg}")
         return
 
-    # 2. 推送初步信号
     preliminary_strategy = strategy.copy()
     preliminary_strategy["_preliminary"] = True
     prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
     send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (审查中...)")
 
-    # 3. 审查官B + 法官C 异步执行
     def run_review_and_judge():
         nonlocal strategy
         try:
@@ -59,7 +53,6 @@ def main():
 
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
-            # 保存法官的裁决理由，供钉钉推送使用
             strategy["_judge_reasoning"] = judge_result.get("judge_C", {}).get("reasoning", "")
         except Exception as e:
             logger.warning(f"法官C调用失败: {e}")

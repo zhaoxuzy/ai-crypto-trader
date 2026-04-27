@@ -94,7 +94,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         if direction == "neutral" and verdict == "推翻改为观望":
             title = f"策略信号：{symbol}｜⚡ 风控审计 · ⚠️驳回 · {now}"
             param = f"> 现价{data.get('mark_price', 0):.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
-            # 裁决摘要
             summary_block = "📌 审计结论：原策略被推翻，改为观望"
             # 提取法官裁决理由
             judge_reasoning = strategy.get("reasoning", "")
@@ -103,26 +102,16 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 judge_section = judge_reasoning[judge_reasoning.find("[法官裁决]"):]
             elif "法官判决" in judge_reasoning:
                 judge_section = judge_reasoning[judge_reasoning.find("法官判决"):]
-            reasoning_block = f"📋 裁决理由\n> {judge_section.strip()}" if judge_section else ""
-            # 风险说明
+            process_block = f"📋 决议过程\n> {judge_section.strip()}" if judge_section else ""
             risk_raw = strategy.get("risk_note", "请严格设置止损")
             risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
             if not risk_lines:
                 risk_lines = ["> 请严格设置止损"]
             risk_block = "⚠️ 风险说明\n" + "\n".join(risk_lines)
-            # 脚注
-            atr = data.get("atr_15m", 0)
-            funding = data.get("funding_rate", 0)
-            oi_chg = data.get("oi_change_24h", 0)
-            cvd = data.get("cvd_slope", 0)
-            cvd_dir = "↗" if cvd > 0 else ("↘" if cvd < 0 else "→")
-            fg = data.get("fear_greed", 50)
-            foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
             parts = [title, param, summary_block]
-            if reasoning_block:
-                parts.append(reasoning_block)
+            if process_block:
+                parts.append(process_block)
             parts.append(risk_block)
-            parts.append(foot)
             return '\n\n'.join(parts)
 
         # 其他最终信号：交易委员会
@@ -162,14 +151,19 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         exec_plan = strategy.get("execution_plan", "")
         execution_block = f"🎯 执行指令\n> {exec_plan}" if exec_plan else ""
 
-        # 决议理由
+        # 决议过程：提取法官裁决或审查报告
         judge_reasoning = strategy.get("reasoning", "")
         judge_section = ""
         if "[法官裁决]" in judge_reasoning:
             judge_section = judge_reasoning[judge_reasoning.find("[法官裁决]"):]
         elif "法官判决" in judge_reasoning:
             judge_section = judge_reasoning[judge_reasoning.find("法官判决"):]
-        reasoning_block = f"📋 决议理由\n> {judge_section.strip()}" if judge_section else ""
+        # 若以上没有，则尝试使用审查报告
+        if not judge_section:
+            reviewer_report = strategy.get("_reviewer_report", "")
+            if reviewer_report:
+                judge_section = reviewer_report
+        process_block = f"📋 决议过程\n> {judge_section.strip()}" if judge_section else ""
 
         # 风险说明
         risk_raw = strategy.get("risk_note", "请严格设置止损")
@@ -178,22 +172,14 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
             risk_lines = ["> 请严格设置止损"]
         risk_block = "⚠️ 风险说明\n" + "\n".join(risk_lines)
 
-        # 脚注
-        atr = data.get("atr_15m", 0)
-        funding = data.get("funding_rate", 0)
-        oi_chg = data.get("oi_change_24h", 0)
-        cvd = data.get("cvd_slope", 0)
-        cvd_dir = "↗" if cvd > 0 else ("↘" if cvd < 0 else "→")
-        fg = data.get("fear_greed", 50)
-        foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
+        # 不再添加脚注
 
         parts = [title, param, summary_block]
         if execution_block:
             parts.append(execution_block)
-        if reasoning_block:
-            parts.append(reasoning_block)
+        if process_block:
+            parts.append(process_block)
         parts.append(risk_block)
-        parts.append(foot)
         return '\n\n'.join(parts)
 
     # ---------- 初步信号（审查中）----------
@@ -206,14 +192,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         if not risk_lines:
             risk_lines = ["> 请严格设置止损"]
         risk_block = "### ⚠️ 风险说明\n" + "\n".join(risk_lines)
-        atr = data.get("atr_15m", 0)
-        funding = data.get("funding_rate", 0)
-        oi_chg = data.get("oi_change_24h", 0)
-        cvd = data.get("cvd_slope", 0)
-        cvd_dir = "↗" if cvd > 0 else ("↘" if cvd < 0 else "→")
-        fg = data.get("fear_greed", 50)
-        foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
-        return f"{title}\n\n{reasoning_block}\n\n{risk_block}\n\n{foot}"
+        return f"{title}\n\n{reasoning_block}\n\n{risk_block}"
 
     emoji = "🟢" if direction == "long" else "🔴"
     text = "做多" if direction == "long" else "做空"
@@ -244,12 +223,4 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         risk_lines = ["> 请严格设置止损"]
     risk_block = "### ⚠️ 风险说明\n" + "\n".join(risk_lines)
 
-    atr = data.get("atr_15m", 0)
-    funding = data.get("funding_rate", 0)
-    oi_chg = data.get("oi_change_24h", 0)
-    cvd = data.get("cvd_slope", 0)
-    cvd_dir = "↗" if cvd > 0 else ("↘" if cvd < 0 else "→")
-    fg = data.get("fear_greed", 50)
-    foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
-
-    return f"{title}\n\n{param}\n\n{reasoning_block}\n\n{risk_block}\n\n{foot}"
+    return f"{title}\n\n{param}\n\n{reasoning_block}\n\n{risk_block}"

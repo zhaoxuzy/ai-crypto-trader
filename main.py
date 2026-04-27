@@ -51,7 +51,6 @@ def main():
         nonlocal strategy
         try:
             reviewer_report = call_reviewer(strategy, data, symbol)
-            # ---- 关键修改：将审查报告存入策略字典，供钉钉推送使用 ----
             strategy["_reviewer_report"] = reviewer_report.get("full_report", "")
         except Exception as e:
             logger.warning(f"审查官B调用失败: {e}")
@@ -60,9 +59,11 @@ def main():
 
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
+            # 保存法官的裁决理由，供钉钉推送使用
+            strategy["_judge_reasoning"] = judge_result.get("judge_C", {}).get("reasoning", "")
         except Exception as e:
             logger.warning(f"法官C调用失败: {e}")
-            strategy["_reviewed"] = False
+            strategy["_judged"] = False
             return
 
         strategy = apply_final_verdict(strategy, judge_result)

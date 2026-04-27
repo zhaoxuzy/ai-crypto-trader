@@ -28,7 +28,7 @@ def main():
 
     prompt = build_prompt(data, symbol, eth_data=cross_data)
 
-    # 1. 交易员A生成策略
+    # 1. 首席交易员生成策略
     try:
         strategy = call_deepseek(prompt)
     except Exception as e:
@@ -40,12 +40,12 @@ def main():
         logger.error(f"策略校验失败: {msg}")
         return
 
-    # 2. 推送A的初步信号（完整推演）
+    # 2. 推送首席交易员策略
     strategy["_preliminary"] = True
     prelim_msg = format_strategy_message(symbol, strategy, data)
-    send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (A-交易员)")
+    send_dingtalk_message(prelim_msg, title=f"{symbol} 首席交易员策略")
 
-    # 3. 审查官B + 法官C 异步执行
+    # 3. 风控审计官 + 交易委员会 异步执行
     reviewer_report = None
     judge_result = None
 
@@ -54,19 +54,18 @@ def main():
         try:
             reviewer_report = call_reviewer(strategy, data, symbol)
         except Exception as e:
-            logger.warning(f"审查官B调用失败: {e}")
+            logger.warning(f"风控审计官调用失败: {e}")
             strategy["_reviewed"] = False
             return
 
-        # 推送B的审查报告
         if reviewer_report:
             review_msg = format_review_message(symbol, strategy, reviewer_report, data)
-            send_dingtalk_message(review_msg, title=f"{symbol} 审查报告 (B-审查官)")
+            send_dingtalk_message(review_msg, title=f"{symbol} 风控审计报告")
 
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
         except Exception as e:
-            logger.warning(f"法官C调用失败: {e}")
+            logger.warning(f"交易委员会调用失败: {e}")
             strategy["_reviewed"] = False
             return
 
@@ -88,10 +87,9 @@ def main():
         logger.error(f"最终策略校验失败: {msg}")
         return
 
-    # 4. 推送C的最终裁决
     if judge_result:
         final_msg = format_judge_message(symbol, strategy, data)
-        send_dingtalk_message(final_msg, title=f"{symbol} 最终裁决 (C-法官)")
+        send_dingtalk_message(final_msg, title=f"{symbol} 交易委员会决议")
     else:
         final_msg = format_strategy_message(symbol, strategy, data)
         send_dingtalk_message(final_msg, title=f"{symbol} 策略推送 (最终)")

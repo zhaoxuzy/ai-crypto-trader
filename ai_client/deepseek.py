@@ -340,7 +340,6 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         logger.warning(f"入场区间下限({entry_low})大于上限({entry_high})，已自动交换并将仓位降为light")
         s["entry_price_low"], s["entry_price_high"] = entry_high, entry_low
         s["position_size"] = "light"
-        # 继续校验，不返回False
 
     if direction == "long" and stop_loss >= entry_low:
         s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间下方，请人工确认。"
@@ -529,7 +528,6 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 raise ValueError("交易委员会响应为空")
 
             # ---------- 纯文本解析 ----------
-            # 初始化变量，默认与原策略一致（后续会被覆盖）
             original_dir = original_strategy.get("direction", "neutral")
             direction = original_dir
             position_size = original_strategy.get("position_size", "none")
@@ -539,36 +537,28 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             take_profit = original_strategy.get("take_profit", 0)
             execution_plan = ""
 
-            # 提取📌最终判决行（用于展示）
             verdict_match = re.search(r'📌\s*最终判决[：:]\s*(.*)', content)
             title_line = verdict_match.group(0).strip() if verdict_match else "📌 最终判决：维持原判"
 
-            # 提取🎯执行指令块
             exec_section = re.search(r'🎯\s*执行指令[：:]?\s*(.*?)(?=📋|⚠️|$)', content, re.DOTALL)
             if exec_section:
                 exec_text = exec_section.group(1).strip()
-                # 方向
                 dir_match = re.search(r'方向[：:]\s*(long|short|neutral)', exec_text)
                 if dir_match:
                     direction = dir_match.group(1)
-                # 仓位
                 pos_match = re.search(r'仓位[：:]\s*(light|medium|heavy|none)', exec_text)
                 if pos_match:
                     position_size = pos_match.group(1)
-                # 入场区间
                 entry_match = re.search(r'入场区间[：:]\s*([\d.]+)\s*[-–]\s*([\d.]+)', exec_text)
                 if entry_match:
                     entry_low = float(entry_match.group(1))
                     entry_high = float(entry_match.group(2))
-                # 止损
                 stop_match = re.search(r'止损[：:]\s*([\d.]+)', exec_text)
                 if stop_match:
                     stop_loss = float(stop_match.group(1))
-                # 止盈
                 tp_match = re.search(r'止盈[：:]\s*([\d.]+)', exec_text)
                 if tp_match:
                     take_profit = float(tp_match.group(1))
-                # 说明
                 plan_match = re.search(r'说明[：:]\s*(.*)', exec_text)
                 if plan_match:
                     execution_plan = plan_match.group(1).strip()
@@ -577,16 +567,14 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             else:
                 exec_text = ""
 
-            # 简化判决逻辑：直接以 direction 决定 verdict
+            # 简化判决：以 direction 为准
             if direction == "neutral":
                 verdict = "推翻改为观望"
-                # 清空价格字段
                 entry_low, entry_high, stop_loss, take_profit = 0, 0, 0, 0
                 position_size = "none"
             elif direction != original_dir:
                 verdict = "推翻改为反向操作"
             else:
-                # 方向未变，则依据判决文本判断是否需要修正或降级
                 if verdict_match:
                     verdict_text = verdict_match.group(1).strip()
                     if "修正" in verdict_text:
@@ -598,20 +586,15 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 else:
                     verdict = "维持原判"
 
-            # 提取📋裁决理由块
             reasoning_block = ""
             reason_section = re.search(r'📋\s*裁决理由[：:]?\s*(.*?)(?=⚠️|$)', content, re.DOTALL)
             if reason_section:
                 reasoning_block = reason_section.group(0).strip()
 
-            # 提取⚠️风险说明块
             risk_match = re.search(r'⚠️\s*风险说明[：:]\s*(.*)', content, re.DOTALL)
             risk_block = risk_match.group(0).strip() if risk_match else ""
-
-            # 风险说明纯文本（用于 strategy.risk_note）
             risk_note = risk_match.group(1).strip() if risk_match else ""
 
-            # 包装返回结果
             judge_result = {
                 "judge_C": {
                     "final_verdict": verdict,
@@ -626,7 +609,6 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     "execution_plan": execution_plan,
                     "reasoning": content,
                     "risk_note": risk_note,
-                    # 原始块
                     "title_line": title_line,
                     "exec_block": exec_section.group(0).strip() if exec_section else "",
                     "reasoning_block": reasoning_block,
@@ -648,11 +630,12 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
 def _validate_execution_direction(s: dict):
     exec_plan = s.get("execution_plan", "")
     final_direction = s.get("direction", "")
-    if final_direction == "long" and "做空" in exec_plan:
-        logger.warning("输出矛盾：方向为long但执行指令包含做空，已自动将方向改为neutral")
+    # 避免因文本中提到“放弃做空，转向做多”而误判方向矛盾
+    if final_direction == "long" and "做空" in exec_plan and "做多" not in exec_plan:
+        logger.warning("输出矛盾：方向为long但执行指令包含做空且未提及做多，已自动将方向改为neutral")
         _force_neutral(s, "输出矛盾：方向与执行指令不一致")
-    elif final_direction == "short" and "做多" in exec_plan:
-        logger.warning("输出矛盾：方向为short但执行指令包含做多，已自动将方向改为neutral")
+    elif final_direction == "short" and "做多" in exec_plan and "做空" not in exec_plan:
+        logger.warning("输出矛盾：方向为short但执行指令包含做多且未提及做空，已自动将方向改为neutral")
         _force_neutral(s, "输出矛盾：方向与执行指令不一致")
 
 
@@ -667,13 +650,11 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
     original_strategy["_review_verdict"] = verdict
     original_strategy["_judge_data"] = final
 
-    # 保存原始区块到 strategy，供推送使用
     original_strategy["_title_line"] = final.get("title_line", "")
     original_strategy["_exec_block_raw"] = final.get("exec_block", "")
     original_strategy["_reasoning_block_raw"] = final.get("reasoning_block", "")
     original_strategy["_risk_block_raw"] = final.get("risk_block", "")
 
-    # 清洗裁决理由的辅助函数
     def _clean_reasoning(raw):
         if not raw:
             return ""

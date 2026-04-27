@@ -118,15 +118,12 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
         # 3. 完整裁决内容：直接使用 AI 返回的原始文本，不进行任何修改
         reasoning_raw = strategy.get("_judge_reasoning", "")
-        # 只做极简处理：如果文本为空，给一个占位符
         if not reasoning_raw.strip():
             reasoning_raw = "无裁决理由"
 
-        # 4. 风险说明：直接使用 C 覆盖后的版本，不添加额外标题，让 AI 自行处理格式
+        # 4. 风险说明：直接使用 C 覆盖后的版本
         risk_raw = strategy.get("risk_note", "请严格设置止损")
 
-        # 5. 拼接最终消息：标题 + 执行指令 + 原始AI文本 + 风险说明
-        # 注意：不再添加任何额外的“📋 裁决理由：”或“⚠️ 风险说明”标题，完全信任 AI 的输出已包含这些
         parts = [
             title,
             "",
@@ -197,7 +194,7 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
     return format_strategy_message(symbol, strategy, data)
 
 
-# ===== 新增：委员会最终裁决推送模板（按原始块展示，关键字加粗） =====
+# ===== 委员会最终裁决推送模板（移除代码块，关键字加粗） =====
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None) -> str:
     """委员会最终裁决推送，直接展示法官C原始区块，并对裁决理由中的关键字加粗"""
     tz = timezone(timedelta(hours=8))
@@ -234,20 +231,30 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     reasoning_block = strategy.get("_reasoning_block_raw", "")
     risk_block = strategy.get("_risk_block_raw", "")
 
-    # 处理裁决理由：转义特殊字符（除了我们手动加粗的部分），并对关键字加粗
-    # 先转义星号和下划线，避免意外解析
+    # 通用清理：移除所有代码块标记（```）避免钉钉渲染为代码滑动窗口
+    def _remove_code_blocks(text: str) -> str:
+        if not text:
+            return ""
+        # 移除 ``` 开头及结尾的代码块标记
+        text = re.sub(r'```[\s\S]*?```', '', text)   # 完整代码块全部删除
+        text = re.sub(r'```', '', text)               # 残留的反引号也去掉
+        return text
+
+    title_line = _remove_code_blocks(title_line)
+    exec_block = _remove_code_blocks(exec_block)
+    reasoning_block = _remove_code_blocks(reasoning_block)
+    risk_block = _remove_code_blocks(risk_block)
+
+    # 转义特殊字符（除了手动加粗的部分）
     def escape_non_bold(text: str) -> str:
-        # 保护已有的加粗标记（**...**）
-        # 简单做法：先替换掉所有 * 为 \*，然后再将 \*\* 还原为 **
         text = text.replace('*', r'\*')
         text = text.replace(r'\*\*', '**')  # 恢复手动加粗
         text = text.replace('_', r'\_')
         return text
 
-    # 关键字列表
+    # 关键字加粗
     keywords = ["指控内容", "裁决结论", "核验依据", "反证风险评估", "核心逻辑"]
     for kw in keywords:
-        # 使用正则忽略已经加粗的情况
         reasoning_block = re.sub(
             r'(?<!\*)(' + re.escape(kw) + r')(?!\*)',
             r'**\1**',
@@ -256,8 +263,6 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
 
     # 转义除关键字外的特殊字符
     reasoning_block = escape_non_bold(reasoning_block)
-
-    # 执行指令和风险说明简单转义
     exec_block = exec_block.replace('*', r'\*').replace('_', r'\_')
     risk_block = risk_block.replace('*', r'\*').replace('_', r'\_')
     title_line = title_line.replace('*', r'\*').replace('_', r'\_')

@@ -90,14 +90,14 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     # ---------- 最终信号（审查后）----------
     if reviewed and not preliminary:
-        # 特殊处理：风控审计驳回
+        # 风控审计驳回
         if direction == "neutral" and verdict == "推翻改为观望":
             title = f"策略信号：{symbol}｜⚡ 风控审计 · ⚠️驳回 · {now}"
             param = f"> 现价{data.get('mark_price', 0):.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
             summary_block = "📌 审计结论：原策略被推翻，改为观望"
-            process_content = strategy.get("_judge_reasoning", "")
+            process_content = strategy.get("_reviewer_report", "")
             if process_content:
-                process_block = f"📋 决议过程\n> {process_content.strip()}"
+                process_block = f"📋 决议过程\n> 【风控审计官 - 审计报告】\n> {process_content.strip()}"
             else:
                 process_block = ""
             risk_raw = strategy.get("risk_note", "请严格设置止损")
@@ -144,12 +144,15 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         exec_plan = strategy.get("execution_plan", "")
         execution_block = f"🎯 执行指令\n> {exec_plan}" if exec_plan else ""
 
-        # 优先使用法官裁决理由
-        process_content = strategy.get("_judge_reasoning", "")
-        if process_content:
-            process_block = f"📋 决议过程\n> {process_content.strip()}"
-        else:
-            process_block = ""
+        # 决议过程：先审计报告，后法官裁决
+        process_parts = []
+        reviewer = strategy.get("_reviewer_report", "")
+        if reviewer:
+            process_parts.append(f"【风控审计官 - 审计报告】\n> {reviewer.strip()}")
+        judge = strategy.get("_judge_reasoning", "")
+        if judge:
+            process_parts.append(f"【交易委员会裁决理由】\n> {judge.strip()}")
+        process_block = "📋 决议过程\n> " + "\n\n> ".join(process_parts) if process_parts else ""
 
         risk_raw = strategy.get("risk_note", "请严格设置止损")
         risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
@@ -165,7 +168,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         parts.append(risk_block)
         return '\n\n'.join(parts)
 
-    # ---------- 初步信号 ----------
+    # ---------- 初步信号（审查中）----------
     if direction == "neutral":
         title = f"策略信号：{symbol}｜🧠 首席交易员：⚪ 观望 · {now} · ⏳审查中"
         reasoning_raw = strategy.get("reasoning", "无推理过程")

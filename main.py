@@ -19,11 +19,11 @@ def main():
         data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
-    # 获取跨币种验证数据（精简版，复用get_all_data）
+    # 获取跨币种验证数据（使用并发精简拉取）
     cross_symbol = "ETH" if symbol == "BTC" else "BTC"
     cross_data = None
     try:
-        cross_data = client.get_all_data(cross_symbol, kline_limit=42)
+        cross_data = client.get_cross_asset_data(cross_symbol)
     except Exception as e:
         logger.warning(f"获取跨币种数据失败：{e}")
 
@@ -36,7 +36,6 @@ def main():
         logger.error(f"{symbol} 策略生成失败: {e}")
         return
 
-    # 基础校验
     valid, msg = validate_strategy(strategy, data)
     if not valid:
         logger.error(f"策略校验失败: {msg}")
@@ -48,12 +47,9 @@ def main():
     prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
     send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (审查中...)")
 
-    # 3. 审查官B + 法官C 异步执行（独立超时）
+    # 3. 审查官B + 法官C 异步执行
     def run_review_and_judge():
         nonlocal strategy
-        
-        # --- 审查官B，独立超时60秒 ---
-        reviewer_report = None
         try:
             reviewer_report = call_reviewer(strategy, data, symbol)
         except Exception as e:
@@ -61,7 +57,6 @@ def main():
             strategy["_reviewed"] = False
             return
 
-        # --- 法官C，独立超时120秒 ---
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
         except Exception as e:
@@ -75,7 +70,6 @@ def main():
     review_thread.start()
     review_thread.join(timeout=180)
 
-    # 4. 超时保护
     if review_thread.is_alive():
         logger.warning("审查总线程超时，按原策略降级执行")
         strategy["_reviewed"] = False
@@ -83,7 +77,6 @@ def main():
         size_map = {"heavy": "medium", "medium": "light", "light": "light"}
         strategy["position_size"] = size_map.get(strategy.get("position_size", "light"), "light")
 
-    # 最终校验与推送
     valid, msg = validate_strategy(strategy, data)
     if not valid:
         logger.error(f"最终策略校验失败: {msg}")

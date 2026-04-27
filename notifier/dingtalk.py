@@ -97,7 +97,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
             summary_block = "📌 审计结论：原策略被推翻，改为观望"
             process_content = strategy.get("_reviewer_report", "")
             if process_content:
-                process_block = f"📋 决议过程\n> 【风控审计官 - 审计报告】\n> {process_content.strip()}"
+                process_block = f"📋 决议过程\n> \n> {process_content.strip()}"
             else:
                 process_block = ""
             risk_raw = strategy.get("risk_note", "请严格设置止损")
@@ -224,11 +224,10 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
 
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
-    """格式化交易委员会的最终裁决，只展示关键决策，不重复原始报告"""
+    """格式化交易委员会的最终裁决，只展示关键决策，不重复原始报告和格式标签"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
     
-    # 从 strategy 中读取最终参数
     direction = strategy.get("direction", "neutral")
     verdict = strategy.get("_review_verdict", "维持原判")
     reasoning = strategy.get("_judge_reasoning", "")
@@ -264,28 +263,27 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
     # 裁决摘要
     summary = f"📌 最终裁决：{verdict}"
 
-    # 执行指令
+    # 执行指令（来自 strategy，已被 C 覆盖）
     exec_plan = strategy.get("execution_plan", "")
     execution = f"🎯 执行指令\n> {exec_plan}" if exec_plan else ""
 
-    # 裁决核心逻辑：从 reasoning 中提取非风控报告的部分
-    # 清除可能混入的风控报告原文
+    # 裁决理由：清理掉 AI 原文中的格式标签和可能的审计报告残留
     clean_reasoning = reasoning
-    # 如果 reasoning 中包含风控审计官的报告，尝试移除
+    # 移除可能混入的风控审计报告
     if "风控审计官 - 审计报告" in clean_reasoning:
-        parts = clean_reasoning.split("📋 裁决理由：")
-        if len(parts) > 1:
-            clean_reasoning = parts[-1].strip()
-        else:
-            clean_reasoning = clean_reasoning.split("风控审计官 - 审计报告")[0].strip()
+        clean_reasoning = clean_reasoning.split("风控审计官 - 审计报告")[0].strip()
+    # 移除 AI 输出中自带的📌和🎯标签（因为我们已经单独展示了）
+    clean_reasoning = re.sub(r'📌\s*最终判决[：:].*', '', clean_reasoning)
+    clean_reasoning = re.sub(r'🎯\s*执行指令[：:].*', '', clean_reasoning)
+    clean_reasoning = clean_reasoning.strip()
     
-    # 如果 reasoning 太长，截取核心段落
-    if len(clean_reasoning) > 800:
-        clean_reasoning = clean_reasoning[:800] + "..."
+    # 如果清理后内容仍然很长，截取核心部分
+    if len(clean_reasoning) > 600:
+        clean_reasoning = clean_reasoning[:600] + "..."
 
     reasoning_block = f"📋 裁决理由\n> {clean_reasoning}" if clean_reasoning else ""
 
-    # 风险说明
+    # 风险说明（来自 strategy，已被 C 覆盖）
     risk_note = strategy.get("risk_note", "请严格设置止损")
     risk_block = f"⚠️ 风险说明\n> {risk_note}"
 

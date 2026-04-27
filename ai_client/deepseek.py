@@ -445,182 +445,173 @@ def call_reviewer(original_strategy: dict, data: dict, symbol: str) -> dict:
                 logger.warning("风控审计官所有重试均失败，标记为通过，跳过审计")
                 return {"verdict": "通过", "full_report": "审计官调用失败，跳过审计"}
 
-
 # ------------------- 交易委员会：最终决议 -------------------
 def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> str:
-    return f"""你是我们加密货币交易团队的**交易委员会**，拥有最终决策权。你的团队已为你准备了以下材料：
-1. 首席交易员的策略方案（包含完整推演过程）
-2. 风控审计官的审计报告（包含数据错误、逻辑漏洞和反证提示）
-3. 完整的市场数据集（包含所有指标的具体数值）
+    """
+    交易委员会最终决策提示词（v5 流程化可审计版）
+    完全兼容当前 data 结构和下游解析逻辑。
+    """
+    # 安全获取结构化指控列表
+    charges = reviewer_report.get('charges', [])
+    # 获取审计报告全文（用于展示和参考）
+    full_report = reviewer_report.get('full_report', '')
+    
+    # 当前价格：优先使用 mark_price（本系统标准字段）
+    current_price = data.get('mark_price', data.get('last_price', data.get('close', '未知')))
 
-你的职责不是做选择题，而是基于你的专业判断，输出一份最终的、可直接执行的交易方案。
+    # 可选决策基准参数
+    benchmark_rr = data.get('benchmark_rr', None)
+    rr_deviation_threshold = data.get('rr_deviation_threshold', 0.30)
+    risk_per_trade = data.get('risk_per_trade', 0.02)
 
-【交易标的】{symbol}
-【首席交易员的策略】
-方向：{original_strategy.get('direction')}
-仓位：{original_strategy.get('position_size')}
-入场：{original_strategy.get('entry_price_low')} - {original_strategy.get('entry_price_high')}
-止损：{original_strategy.get('stop_loss')}
-止盈：{original_strategy.get('take_profit')}
+    benchmark_str = f'{benchmark_rr:.2f}' if benchmark_rr is not None else '未提供'
+    deviation_pct = f'{rr_deviation_threshold*100:.0f}%'
 
-【首席交易员的原始推演过程】
-{original_strategy.get('reasoning', '无推演过程')}
+    # 安全读取原策略字段
+    orig_dir = original_strategy.get('direction', 'neutral')
+    orig_pos = original_strategy.get('position_size', 'none')
+    entry_l = original_strategy.get('entry_price_low', 'N/A')
+    entry_h = original_strategy.get('entry_price_high', 'N/A')
+    stop_l = original_strategy.get('stop_loss', 'N/A')
+    tp_l = original_strategy.get('take_profit', 'N/A')
+    orig_reasoning = original_strategy.get('reasoning', '无推演过程')
 
-【风控审计官的审计报告】
-{reviewer_report.get('full_report', '无报告')}
+    prompt = f"""你是唯一拥有最终裁决权的【交易委员会主席】。你必须在不确定性中做出最优决策，并承担风险一致性责任。
 
-【当前市场数据】（以下数据是A和B都使用的同一份数据，你必须基于此核对所有指控）
+你必须遵循以下固定裁决流程，不可跳过或自由发挥。
+
+====================
+【裁决流程（必须按顺序执行）】
+====================
+
+STEP 1 – 审计逐条裁决
+对每一条结构化指控，输出：
+  - 裁决结论（采纳 / 驳回 / 部分采纳）
+  - 数据核验依据（必须引用 data 中的字段名和具体数值）
+  - 反证风险（高/中/低）及至少一条可能挑战你裁决的证据；若确无矛盾，填写“无”并简述搜寻范围。
+    反证必须包含：该证据是什么、它为何可能构成威胁、以及你为何最终排除它。
+
+STEP 2 – 方向决策
+- 判断是否维持 original_strategy.direction
+- 若推翻，必须：
+  1) 明确指出原方向所依赖的核心假设（例如“CVD持续为正显示买盘强劲”）
+  2) 用 data 中的具体数值证伪该假设
+  3) 给出新方向的两个独立数据支撑，每个支撑均需附带字段名与当前数值
+
+STEP 3 – 风险校验与可接受性
+你需要基于入场、止损、止盈计算结果进行三维校验：
+
+① 盈亏比：计算你的入场区间（取最差入场价）到止损和止盈的比值。
+   - 若提供了 benchmark_rr（当前：{benchmark_str}）：
+      比较你的盈亏比与基准。若偏差超过 {deviation_pct}，你必须承认风险补偿不足，并主动降仓或转为观望，不得强行辩护。
+   - 若未提供基准：你必须引用波动率、订单簿厚度、市场情绪等数据，解释该盈亏比在当前情境下为何可接受。空洞理由（如“低波动环境”）禁止。
+
+② 止损风险：计算止损触发时的预估亏损占账户比例（基于 risk_per_trade = {risk_per_trade*100:.1f}%）。
+   - 若超过该比例，必须降仓或调整止损至合规，否则必须转为观望。
+   - 若你认为需要调整风险比例，必须给出 data 中支撑该调整的具体波动率或流动性异常证据。
+
+③ 止损距离与波动匹配：
+   - 获取数据中的 ATR（近20日，若无则用近10日K线平均振幅）。
+   - 计算止损距离（入场区间最差价至止损价的差值）。
+   - 输出三个数值：预估亏损（%或绝对值）、ATR值、亏损占ATR的比例。
+   - 判断该比例是否处于常态波动范围内（如显著超过1.5倍ATR需给出充分的结构性理由，否则可能表示止损过宽或波动异常，应降仓）。
+
+STEP 4 – 结构验证（入场区间与止损）
+你必须回答以下问题，并输出计算明细：
+  (1) 入场区间是否位于可识别的技术结构（支撑/阻力、订单簿密集区）内？给出该结构在 data 中的具体价格边界。
+  (2) 计算区间半宽（区间宽度 / 2）并与近5根或10根K线的平均振幅（或ATR）对比。
+      输出：半宽值、所采用振幅值、数据来源字段。
+      若半宽 > 均幅的50%，必须评估滑点风险是否可控。
+  (3) 止损是否设在上述结构的外侧？阐明理由。
+
+STEP 5 – 仓位决策（风险驱动）
+仓位必须由以下参数推导，而非主观判断：
+  - 单笔风险承受比例 {risk_per_trade*100:.1f}%
+  - 止损距离（转化为账户亏损比例）
+  - 当前波动率（ATR）
+计算若止损触发时的实际亏损比例，说明其与 risk_per_trade 的关系。若因波动异常需调整比例，必须引用 data 中的具体证据（如“当前ATR为历史均值3倍”）。最终输出 light / medium / heavy / none（对应极轻仓/轻仓/中仓/重仓/无）。
+
+STEP 6 – 观望/降级决策
+只有在以下条件之一成立时，你才可以输出 neutral 或观望：
+  - 盈亏比硬约束失败且无法通过降仓弥合
+  - 止损风险无法降至 risk_per_trade 以下
+  - 入场区间无法紧贴当前价格且缺乏结构支撑
+  - 关键数据字段缺失，导致无法完成上述校验
+若选择观望，必须给出明确的、可量化的重新入场触发条件（例如“价格突破 X 并站稳，同时 CVD 转正”）。
+
+====================
+【反幻觉与静默失败规则】
+====================
+- 只能使用“当前市场数据”中存在的字段和数值，严禁编造。
+- 所有关键判断必须引用字段名 + 具体数值。
+- 若执行计算时发现所需数据字段缺失：
+   → 必须在对应步骤的说明中明确指出“缺少 X 字段”
+   → 自动降低仓位一级（如中仓→轻仓），若核心字段缺失则必须转为观望。
+   → 缺失信息不得用虚拟值填充。
+
+====================
+【输入数据】
+====================
+标的：{symbol}
+当前价格：{current_price}
+
+首席交易员策略：
+方向：{orig_dir}
+仓位：{orig_pos}
+入场区间：{entry_l} - {entry_h}
+止损：{stop_l}
+止盈：{tp_l}
+
+推演逻辑：
+{orig_reasoning}
+
+风控审计报告全文：
+{full_report if full_report else '（无单独文本报告，需自行核验核心假设）'}
+
+结构化指控列表（若为空则代表无指控）：
+{json.dumps(charges, ensure_ascii=False, indent=2) if charges else '[]'}
+
+当前市场数据（唯一核验来源）：
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
-【你的决策原则】
-【你的决策原则】
-1. **你是最终决策者**。你的目标是在风险可控的前提下，输出一份**可立即执行**的交易方案。对于审计报告中的每一项指控，你必须明确回应：是否采纳？采纳后的具体修正，或不采纳的反驳理由。
-2. **裁决基于证据链，而非错误标签**。B的错误严重性标注（高/中/低）只是参考，不是指令。你应自行判断：A的核心证据链（它依赖哪两三个关键指标）是否被这些错误击穿？如果证据链断裂，你可以推翻方向；如果只是推理过度或参数偏差，你应优先选择修正参数而非推翻。若你推翻方向，必须给出新方向所依赖的关键指标及其具体数值。
-3. **你的裁决必须让团队能够立刻行动**：
-   - 所有理由必须有数据锚定：提到任何市场指标时，必须同时引用其具体数值（如“CVD斜率 -737757”），禁止使用“数据显示”等模糊措辞。
-   - 入场区间紧贴当前价格（±0.3%以内）。若无法满足，输出“观望”并写明触发条件。
-   - 止损设在关键技术结构外侧且满足1.2倍ATR。若盈亏比因此低于1.5，可通过降低仓位来优化，但不可牺牲止损有效性，也不得通过远离现价来改善盈亏比。
-   - 策略应简洁、可执行。不要构建复杂的假突破/假跌破叙事来迎合预判。踏空也是一种风险——不要为了规避小额止损而将入场点设得远离现价。
-4. **“观望”是最后选项**。只有在穷尽修正手段后仍无法产出逻辑自洽且紧贴现价的方案时，你才能输出观望。任何因偷懒而草率输出的观望，都是交易委员会的严重失职。
-【证据链强制要求——裁决理由的可信度保证】
-对于每一项指控，你的裁决理由必须包含以下三要素，缺一不可：
-1. **指控内容**：简述B指控了什么。
-2. **数据核验**：你必须引用上方“当前市场数据”中的具体字段和数值来支持你的判断。例如：“CVD加速度实际值为X，应为Y解读，原解读为Z，因此采纳/驳回此指控。”
-3. **裁决声明**：明确写出“采纳”或“驳回”，以及具体的修正动作。
+====================
+【输出格式（严格 JSON）】
+====================
+直接返回一个纯净的 JSON 对象。如果你有额外解释冲动，请写入相应文本字段，禁止在 JSON 外附加任何内容。
 
-**禁止出现以下情况**：
-- 脱离具体数据值，仅用“我认为”、“逻辑上”等主观词语推演。
-- 在不引用任何数据的情况下声称“证据不足”或“A已提前回应”。
-- 编造不存在的数据值来支持你的裁决。
-
-【输出规范】
-你的最终输出必须包含以下四个清晰段落，以便于团队立即执行：
-📌 最终决议：[维持原判 / 修正参数 / 降级执行 / 推翻改为观望 / 推翻改为反向操作]
-🎯 执行指令：[入场区间、止损位、止盈位、仓位] 或 [观望原因及入场触发条件]
-📋 裁决理由：[逐条回应审计报告的指控，每条包含：指控内容、数据核验、裁决声明。然后简述方向判断的核心理据]
-⚠️ 风险说明：[列出关键风险及应对措施]
-
-输出JSON（不要代码块）：
+JSON 结构：
 {{
-  "final_verdict": "维持原判/修正参数/降级执行/推翻改为观望/推翻改为反向操作",
-  "verdict_level": "A/B/C/E/R",
-  "final_direction": "long/short/neutral",
-  "final_confidence": "high/medium/low",
-  "final_position_size": "light/medium/heavy/none",
-  "entry_price_low": 0.0,
-  "entry_price_high": 0.0,
-  "stop_loss": 0.0,
-  "take_profit": 0.0,
-  "execution_plan": "一句话指令",
-  "reasoning": "必须包含📌🎯📋⚠️四个段落，其中📋裁决理由必须逐条包含指控内容、数据核验、裁决声明",
-  "risk_note": "风险说明"
+  "final_verdict": "维持原判 / 修正参数 / 降级执行 / 推翻改为观望 / 推翻改为反向操作",
+  "verdict_level": "A / B / C / E / R",
+  "final_direction": "long / short / neutral",
+  "final_confidence": "high / medium / low",
+  "final_position_size": "light / medium / heavy / none",
+  "entry_price_low": null,
+  "entry_price_high": null,
+  "stop_loss": null,
+  "take_profit": null,
+  "execution_plan": "一句话执行指令（若观望则写触发条件）",
+  "reasoning": {{
+    "audit": [
+      {{
+        "charge": "指控简述",
+        "verdict": "采纳/驳回/部分采纳",
+        "data_evidence": "引用字段及数值",
+        "counter_evidence": "反证及其威胁程度(高/中/低)，排除理由"
+      }}
+    ],
+    "direction": "方向决策逻辑，包含推翻时的证伪和新支撑",
+    "risk_check": "盈亏比计算与基准对比、止损风险计算、亏损/ATR三数值",
+    "structure": "入场区间结构说明、半宽vs均幅对比、止损结构验证",
+    "position_logic": "仓位推导及盈亏比、风险匹配",
+    "fallback_or_watch": "若为观望/降级，说明失败原因和触发条件；否则填'无'"
+  }},
+  "risk_note": "关键风险及应对措施"
 }}
+
+约束：
+- neutral 方向时，所有价格字段（entry_*、stop_loss、take_profit）必须为 null，仓位为 none。
+- reasoning.audit 若无指控则为空数组 []。
+- 输出必须可被标准 JSON 解析器直接解析，无额外文字。
 """
-
-def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> dict:
-    prompt = build_judge_prompt(original_strategy, reviewer_report, data, symbol)
-    client = OpenAI(
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url="https://api.deepseek.com",
-        timeout=TIMEOUT_SECONDS
-    )
-    for attempt in range(MAX_RETRIES):
-        try:
-            logger.info(f"交易委员会 调用 (尝试 {attempt+1}/{MAX_RETRIES})")
-            resp = client.chat.completions.create(
-                model="deepseek-v4-pro",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=4096,
-                timeout=120
-            )
-            content = resp.choices[0].message.content or ""
-            _log_response(prompt, content)
-            if not content.strip():
-                raise ValueError("交易委员会响应为空")
-            json_str = extract_json(content)
-            logger.info(f"法官C原始输出: {json_str[:500]}")
-            judge_result = json.loads(json_str)
-            
-            # 兼容扁平结构：如果没有 judge_C 包装，则创建一个包装
-            if "judge_C" not in judge_result:
-                judge_result = {"judge_C": judge_result}
-            
-            logger.info(f"法官C裁决: {judge_result.get('judge_C', {}).get('final_verdict')}")
-            return judge_result
-            
-        except Exception as e:
-            logger.warning(f"交易委员会调用失败: {e}")
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
-            else:
-                return {"judge_C": {"final_verdict": "维持原判", "verdict_level": "A"}}
-
-
-def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_report: dict = None) -> dict:
-    verdict = judge_result.get("judge_C", {}).get("final_verdict", "维持原判")
-    final = judge_result.get("judge_C", {})
-
-    logger.info(f"应用最终决议: {verdict}")
-
-    original_strategy["_reviewed"] = True
-    original_strategy["_original_direction"] = original_strategy.get("direction")
-    original_strategy["_review_verdict"] = verdict
-    original_strategy["_judge_reasoning"] = final.get("reasoning", "")
-    original_strategy["_judge_data"] = final
-
-    if verdict == "维持原判":
-        return original_strategy
-
-    elif verdict == "修正参数":
-        original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
-        original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
-        original_strategy["position_size"] = final.get("final_position_size", original_strategy.get("position_size"))
-        original_strategy["entry_price_low"] = final.get("entry_price_low", original_strategy["entry_price_low"])
-        original_strategy["entry_price_high"] = final.get("entry_price_high", original_strategy["entry_price_high"])
-        original_strategy["stop_loss"] = final.get("stop_loss", original_strategy["stop_loss"])
-        original_strategy["take_profit"] = final.get("take_profit", original_strategy["take_profit"])
-        _validate_execution_direction(original_strategy)
-        return original_strategy
-
-    elif verdict == "降级执行":
-        original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
-        original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
-        original_strategy["stop_loss"] = final.get("stop_loss", original_strategy["stop_loss"])
-        original_strategy["take_profit"] = final.get("take_profit", original_strategy["take_profit"])
-        final_size = final.get("final_position_size", "")
-        if final_size:
-            original_strategy["position_size"] = final_size
-        else:
-            size_map = {"heavy": "medium", "medium": "light", "light": "light"}
-            original_strategy["position_size"] = size_map.get(original_strategy.get("position_size", "light"), "light")
-        _validate_execution_direction(original_strategy)
-        return original_strategy
-
-    elif verdict == "推翻改为观望":
-        _force_neutral(original_strategy, f"交易委员会决议: {verdict}")
-        return original_strategy
-
-    elif verdict == "推翻改为反向操作":
-        original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
-        original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
-        original_strategy["position_size"] = final.get("final_position_size", original_strategy.get("position_size"))
-        original_strategy["entry_price_low"] = final.get("entry_price_low", 0)
-        original_strategy["entry_price_high"] = final.get("entry_price_high", 0)
-        original_strategy["stop_loss"] = final.get("stop_loss", 0)
-        original_strategy["take_profit"] = final.get("take_profit", 0)
-        _validate_execution_direction(original_strategy)
-        return original_strategy
-
-    return original_strategy
-
-
-def _validate_execution_direction(s: dict):
-    exec_plan = s.get("execution_plan", "")
-    final_direction = s.get("direction", "")
-    
-    if final_direction == "long" and "做空" in exec_plan:
-        logger.warning("输出矛盾：方向为long但执行指令包含做空，已自动将方向改为neutral")
-        _force_neutral(s, "输出矛盾：方向与执行指令不一致")
-    elif final_direction == "short" and "做多" in exec_plan:
-        logger.warning("输出矛盾：方向为short但执行指令包含做多，已自动将方向改为neutral")
-        _force_neutral(s, "输出矛盾：方向与执行指令不一致")
+    return prompt

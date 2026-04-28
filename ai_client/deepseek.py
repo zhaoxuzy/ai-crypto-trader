@@ -598,7 +598,8 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 if price_match:
                     current_price = float(price_match.group(1))
                 else:
-                    current_price = data.get("mark_price", 0.0)
+                    current_price = data.get("mark_price", 0)  # 回退到API价格
+            
 
                 # 4. 入场区间
                 entry_match = re.search(r'入场区间[：:]\s*([\d.]+)\s*[-–]\s*([\d.]+)', exec_text)

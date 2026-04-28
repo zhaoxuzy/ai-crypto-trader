@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 
 
+# ========== 基础推送 ==========
 def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     webhook = os.getenv("DINGTALK_WEBHOOK_URL", "")
     secret = os.getenv("DINGTALK_SECRET", "")
@@ -34,6 +35,7 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         return False
 
 
+# ========== 格式化工具 ==========
 def format_reasoning(text: str) -> str:
     if not text:
         return "> 无推理过程"
@@ -79,6 +81,7 @@ def format_reasoning(text: str) -> str:
     return '\n'.join(cleaned)
 
 
+# ========== 首席交易员初步信号 ==========
 def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
@@ -88,9 +91,8 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     verdict = strategy.get("_review_verdict", "")
     preliminary = strategy.get("_preliminary", False)
 
-    # ---------- 最终信号（审查后）----------
+    # --- 审查后最终信号 ---
     if reviewed and not preliminary:
-        # 1. 标题
         if direction == "neutral":
             status_text = "⚠️审查推翻" if verdict == "推翻改为观望" else "⚠️风控驳回"
             title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · {status_text}"
@@ -112,30 +114,16 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 2. 执行指令：直接取自C修正后的版本
         exec_plan = strategy.get("execution_plan", "无具体指令")
         execution_block = f"🎯 执行指令\n{exec_plan}"
-
-        # 3. 完整裁决内容：直接使用 AI 返回的原始文本，不进行任何修改
         reasoning_raw = strategy.get("_judge_reasoning", "")
         if not reasoning_raw.strip():
             reasoning_raw = "无裁决理由"
-
-        # 4. 风险说明：直接使用 C 覆盖后的版本
         risk_raw = strategy.get("risk_note", "请严格设置止损")
 
-        parts = [
-            title,
-            "",
-            execution_block,
-            "",
-            reasoning_raw,
-            "",
-            risk_raw
-        ]
-        return '\n\n'.join(parts)
+        return '\n\n'.join([title, "", execution_block, "", reasoning_raw, "", risk_raw])
 
-    # ---------- 初步信号（审查中）----------
+    # --- 初步信号（审查中） ---
     if direction == "neutral":
         title = f"策略信号：{symbol}｜🧠 首席交易员：⚪ 观望 · {now} · ⏳审查中"
         reasoning_raw = strategy.get("reasoning", "无推理过程")
@@ -179,6 +167,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     return f"{title}\n\n{param}\n\n{reasoning_block}\n\n{risk_block}"
 
 
+# ========== 风控审计报告 ==========
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
@@ -186,17 +175,14 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     report = reviewer_report.get("full_report", "无审查报告")
     severity = reviewer_report.get("severity_counts", {})
     summary = f"🔍 审计发现：严重问题{severity.get('高', 0)}个，中等问题{severity.get('中', 0)}个，轻微问题{severity.get('低', 0)}个"
-    # 在原有清洗之后（去掉标题、分隔线），添加以下代码
+
     report = report.replace('【风控审计官 - 审计报告】', '').strip()
     report = re.sub(r'^---\s*', '', report, flags=re.MULTILINE)
-    # --- 新增：自动换行处理 ---
-    # 1. 在中文序号（一、二、...）前加空行，让大段分离
     report = re.sub(r'(?<!\n)(?=[一二三四五六七八九十]、)', '\n\n', report)
-    # 2. 在条目符号（- 或 •）前加换行
     report = re.sub(r'(?<!\n)(?=[-•])', '\n', report)
-    # 去除首尾多余空行
     report = report.strip()
-    # ✨ 修改点：在审计报告标题后增加一个空行，确保“一、”单独成行
+
+    # 标题后增加空行，确保“一、”独立成行
     return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n\n{report}"
 
 
@@ -204,9 +190,9 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
     return format_strategy_message(symbol, strategy, data)
 
 
-# ===== 委员会最终裁决推送模板（移除代码块，关键字加粗，现价插入正确位置） =====
+# ========== 交易委员会最终裁决（更新版） ==========
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> str:
-    """委员会最终裁决推送，直接展示原始区块，并对裁决理由中的关键字加粗"""
+    """委员会最终裁决推送，直接展示原始区块，关键字加粗，自动插入现价"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -215,7 +201,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     conf = strategy.get("confidence", "medium")
     verdict = strategy.get("_review_verdict", "")
 
-    # 灵活仓位映射：支持英文和中文
+    # 中英文仓位映射
     size_map = {
         "light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位",
         "轻仓": "轻仓", "中仓": "中仓", "重仓": "重仓", "无仓位": "无仓位"
@@ -239,19 +225,18 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     status_tag = status_tag_map.get(verdict, "")
     title = f"策略信号：{symbol}｜📋 交易委员会：{dir_icon} {dir_text} · {size_map.get(size, size)} · {conf_map.get(conf, '')} · {now} {status_tag}"
 
-    # 获取原始块
+    # 获取原始区块
     title_line = strategy.get("_title_line", "")
     exec_block = strategy.get("_exec_block_raw", "")
     reasoning_block = strategy.get("_reasoning_block_raw", "")
     risk_block = strategy.get("_risk_block_raw", "")
 
-    # 通用清理：移除所有代码块标记（```）避免钉钉渲染为代码滑动窗口
+    # 移除代码块标记
     def _remove_code_blocks(text: str) -> str:
         if not text:
             return ""
-        # 移除 ``` 开头及结尾的代码块标记
-        text = re.sub(r'```[\s\S]*?```', '', text)   # 完整代码块全部删除
-        text = re.sub(r'```', '', text)               # 残留的反引号也去掉
+        text = re.sub(r'```[\s\S]*?```', '', text)
+        text = re.sub(r'```', '', text)
         return text
 
     title_line = _remove_code_blocks(title_line)
@@ -259,14 +244,14 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     reasoning_block = _remove_code_blocks(reasoning_block)
     risk_block = _remove_code_blocks(risk_block)
 
-    # 转义特殊字符（除了手动加粗的部分）
+    # 转义函数（保留手工加粗）
     def escape_non_bold(text: str) -> str:
         text = text.replace('*', r'\*')
-        text = text.replace(r'\*\*', '**')  # 恢复手动加粗
+        text = text.replace(r'\*\*', '**')
         text = text.replace('_', r'\_')
         return text
 
-    # 关键字加粗
+    # 对裁决理由中的关键字加粗
     keywords = ["指控内容", "裁决结论", "核验依据", "反证风险评估", "核心逻辑"]
     for kw in keywords:
         reasoning_block = re.sub(
@@ -275,25 +260,25 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
             reasoning_block
         )
 
-    # 转义除关键字外的特殊字符
     reasoning_block = escape_non_bold(reasoning_block)
     exec_block = exec_block.replace('*', r'\*').replace('_', r'\_')
     risk_block = risk_block.replace('*', r'\*').replace('_', r'\_')
     title_line = title_line.replace('*', r'\*').replace('_', r'\_')
 
-    # ✨ 在 exec_block 的“仓位”行后插入现价行（如果缺失且 data 中有价格）
+    # ---------- 关键修正：在“仓位”行后插入现价 ----------
     if data and data.get("mark_price", 0) > 0 and exec_block:
         price = data["mark_price"]
         if '现价' not in exec_block:
-            # 匹配模式：“- 仓位：”开头的行，在其后插入“   - 现价：xxx”
+            # 匹配行首缩进 + 符号(-或•) + “仓位：”并捕获整行
             exec_block = re.sub(
-                r'( - 仓位：[^\n]*)',
+                r'(^\s*[-•]\s*仓位：[^\n]*)',
                 r'\1\n   - 现价：{:.1f}'.format(price),
                 exec_block,
-                count=1
+                count=1,
+                flags=re.MULTILINE
             )
 
-    # 拼装最终消息
+    # 拼装消息
     parts = [title]
     if title_line:
         parts.append(title_line)

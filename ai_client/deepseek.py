@@ -561,9 +561,11 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                         direction = "neutral"
                 
                 # 2. 仓位
-                pos_match = re.search(r'仓位[：:]\s*(light|medium|heavy|none)', exec_text)
+                pos_match = re.search(r'仓位[：:]\s*(light|medium|heavy|none|轻仓|中仓|重仓|无)', exec_text)
                 if pos_match:
-                    position_size = pos_match.group(1)
+                    raw_pos = pos_match.group(1)
+                    pos_map = {'轻仓': 'light', '中仓': 'medium', '重仓': 'heavy', '无': 'none'}
+                    position_size = pos_map.get(raw_pos, raw_pos)
                 # 3. 入场区间
                 entry_match = re.search(r'入场区间[：:]\s*([\d.]+)\s*[-–]\s*([\d.]+)', exec_text)
                 if entry_match:

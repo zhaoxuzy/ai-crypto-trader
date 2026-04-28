@@ -572,26 +572,51 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     elif re.search(r'方向[：:]\s*(观望|中性)', exec_text):
                         direction = "neutral"
                 
-                # 2. 仓位
-                pos_match = re.search(r'仓位[：:]\s*(light|medium|heavy|none|轻仓|中仓|重仓|无)', exec_text)
+                           if exec_section:
+                exec_text = exec_section.group(1).strip()
+                # 1. 方向解析（兼容中英文）
+                dir_match = re.search(r'方向[：:]\s*(long|short|neutral)', exec_text)
+                if dir_match:
+                    direction = dir_match.group(1)
+                else:
+                    if re.search(r'方向[：:]\s*做多', exec_text):
+                        direction = "long"
+                    elif re.search(r'方向[：:]\s*做空', exec_text):
+                        direction = "short"
+                    elif re.search(r'方向[：:]\s*(观望|中性)', exec_text):
+                        direction = "neutral"
+
+                # 2. 仓位解析（兼容中英文）
+                pos_match = re.search(r'仓位[：:]\s*(light|medium|heavy|none|轻仓|中仓|重仓|无仓位)', exec_text)
                 if pos_match:
                     raw_pos = pos_match.group(1)
-                    pos_map = {'轻仓': 'light', '中仓': 'medium', '重仓': 'heavy', '无': 'none'}
+                    pos_map = {'轻仓': 'light', '中仓': 'medium', '重仓': 'heavy', '无仓位': 'none'}
                     position_size = pos_map.get(raw_pos, raw_pos)
-                # 3. 入场区间
+
+                # 3. 新增：提取现价
+                price_match = re.search(r'现价[：:]\s*([\d.]+)', exec_text)
+                if price_match:
+                    current_price = float(price_match.group(1))
+                else:
+                    current_price = data.get("mark_price", 0.0)
+
+                # 4. 入场区间
                 entry_match = re.search(r'入场区间[：:]\s*([\d.]+)\s*[-–]\s*([\d.]+)', exec_text)
                 if entry_match:
                     entry_low = float(entry_match.group(1))
                     entry_high = float(entry_match.group(2))
-                # 4. 止损
+
+                # 5. 止损
                 stop_match = re.search(r'止损[：:]\s*([\d.]+)', exec_text)
                 if stop_match:
                     stop_loss = float(stop_match.group(1))
-                # 5. 止盈
+
+                # 6. 止盈
                 tp_match = re.search(r'止盈[：:]\s*([\d.]+)', exec_text)
                 if tp_match:
                     take_profit = float(tp_match.group(1))
-                # 6. 说明
+
+                # 7. 说明/执行指令
                 plan_match = re.search(r'说明[：:]\s*(.*)', exec_text)
                 if plan_match:
                     execution_plan = plan_match.group(1).strip()

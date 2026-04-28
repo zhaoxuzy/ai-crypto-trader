@@ -48,7 +48,7 @@ def main():
     prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
     send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (审查中...)")
 
-    # 3. 异步审查：审查官B → 法官C，在线程内即时推送
+    # 3. 异步审查：审查官B → 交易委员会C，在线程内即时推送
     def run_review_and_judge():
         nonlocal strategy
 
@@ -63,7 +63,7 @@ def main():
             strategy["_reviewed"] = False
             return
 
-        # --- 法官C ---
+        # --- 交易委员会C ---
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
             strategy = apply_final_verdict(strategy, judge_result)

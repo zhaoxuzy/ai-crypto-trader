@@ -553,10 +553,12 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             take_profit = original_strategy.get("take_profit", 0)
             execution_plan = ""
 
+            # 提取最终判决
             verdict_match = re.search(r'📌\s*最终判决[：:]\s*(.*)', content)
             title_line = verdict_match.group(0).strip() if verdict_match else "📌 最终判决：维持原判"
 
-                        exec_section = re.search(r'🎯\s*执行指令[：:]?\s*(.*?)(?=📋|⚠️|$)', content, re.DOTALL)
+            # 提取执行指令块
+            exec_section = re.search(r'🎯\s*执行指令[：:]?\s*(.*?)(?=📋|⚠️|$)', content, re.DOTALL)
             if exec_section:
                 exec_text = exec_section.group(1).strip()
                 # 1. 方向解析（兼容中英文）
@@ -629,11 +631,13 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 else:
                     verdict = "维持原判"
 
+            # 提取裁决理由块
             reasoning_block = ""
-            reason_section = re.search(r'📋\s*裁决说明[：:]?\s*(.*?)(?=⚠️|$)', content, re.DOTALL)
+            reason_section = re.search(r'📋\s*裁决理由[：:]?\s*(.*?)(?=⚠️|$)', content, re.DOTALL)
             if reason_section:
                 reasoning_block = reason_section.group(0).strip()
 
+            # 提取风险说明块
             risk_match = re.search(r'⚠️\s*风险说明[：:]\s*(.*)', content, re.DOTALL)
             risk_block = risk_match.group(0).strip() if risk_match else ""
             risk_note = risk_match.group(1).strip() if risk_match else ""
@@ -655,7 +659,8 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     "title_line": title_line,
                     "exec_block": exec_section.group(0).strip() if exec_section else "",
                     "reasoning_block": reasoning_block,
-                    "risk_block": risk_block
+                    "risk_block": risk_block,
+                    "current_price": current_price if 'current_price' in dir() else data.get("mark_price", 0)
                 }
             }
 
@@ -668,7 +673,6 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
             else:
                 return {"judge_C": {"final_verdict": "维持原判", "verdict_level": "A"}}
-
 
 def _validate_execution_direction(s: dict):
     exec_plan = s.get("execution_plan", "")

@@ -457,17 +457,38 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
     tp_l = original_strategy.get('take_profit', 'N/A')
     
     report = reviewer_report.get('full_report', '无审计报告')
-    market_data_str = json.dumps(data, ensure_ascii=False)
+
+    # 只提取关键字段，不再传完整JSON
+    key_data = {
+        "mark_price": data.get("mark_price"),
+        "liquidity_bias": data.get("liquidity_bias"),
+        "above_liq": f"{data.get('above_liq', 0)/1e9:.2f}B",
+        "below_liq": f"{data.get('below_liq', 0)/1e9:.2f}B",
+        "above_trigger": data.get("above_trigger"),
+        "below_trigger": data.get("below_trigger"),
+        "liq_ratio": data.get("liq_ratio"),
+        "cvd_slope": data.get("cvd_slope"),
+        "cvd_acceleration": data.get("cvd_acceleration"),
+        "oi_percentile": data.get("oi_percentile"),
+        "top_ls_percentile": data.get("top_ls_percentile"),
+        "funding_rate": data.get("funding_rate"),
+        "netflow_24h": data.get("netflow"),
+        "atr_15m": data.get("atr_15m"),
+        "max_pain": data.get("max_pain"),
+        "orderbook_imbalance": data.get("orderbook_imbalance"),
+    }
 
     prompt = f"""你是最终决策的**独立交易委员会主席**，拥有二十年加密货币短线合约交易经验。
 你的职责是：基于【市场数据】，公正审核【首席交易员的策略】和【风控审计报告】，给出最合理的执行方案。
-【基本数据】
-交易标的：{symbol}
-原策略：方向：{orig_dir}，入场：{entry_l}-{entry_h}，止损：{stop_l}，止盈：{tp_l}
-推演过程：{original_strategy.get('reasoning', '无')}
-审计报告：{report}
-完整市场数据：{market_data_str}
 
+【市场数据】
+交易标的：{symbol}
+（以下为关键指标快照，所有判断必须引用这些字段）
+{json.dumps(key_data, ensure_ascii=False, indent=2)}
+
+【原策略】方向：{orig_dir}，入场：{entry_l}-{entry_h}，止损：{stop_l}，止盈：{tp_l}
+【推演过程】{original_strategy.get('reasoning', '无')[:500]}  # 截断推演过程
+【审计报告】{report}
 【裁决规则】
 1. **事实为上**：所有判断必须引用【市场数据】的具体字段和数值，不得凭感觉或记忆。
 2. **独立公正**：既不听信首席交易员的一面之词，也不盲从审计官的指控。你必须亲自核验每一项审计指出的错误，同时也要主动检查审计官是否遗漏了重要反证。

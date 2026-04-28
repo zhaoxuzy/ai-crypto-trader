@@ -61,15 +61,15 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     size_map = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}
     conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
 
-    # 分行构建
-    line1 = f"**策略信号：{symbol}｜🧠 首席交易员 🔍待审计**"
-    line2 = f"{dir_map.get(direction, '⚪ 观望')} · {size_map.get(pos_size, '未知')} · {conf_map.get(conf, '？')}   {now}"
-    line3 = f"现价：{current:.0f} · 入场：{entry_low:.0f}-{entry_high:.0f} · 止损：{stop_loss:.0f} · 止盈：{take_profit:.0f}"
+    # 每一行末加两个空格确保换行
+    line1 = f"**策略信号：{symbol}｜🧠 首席交易员 🔍待审计**  "
+    line2 = f"{dir_map.get(direction, '⚪ 观望')} · {size_map.get(pos_size, '未知')} · {conf_map.get(conf, '？')}   {now}  "
+    line3 = f"现价：{current:.0f} · 入场：{entry_low:.0f}-{entry_high:.0f} · 止损：{stop_loss:.0f} · 止盈：{take_profit:.0f}  "
 
     reasoning = strategy.get("reasoning", "无推演过程")
     reasoning = _safe_truncate(reasoning)
 
-    # 拼接（每行直接换行）
+    # 拼接：前三行用软换行，然后空一行，接着代码块标题和代码块
     body = (
         f"{line1}\n"
         f"{line2}\n"
@@ -97,11 +97,12 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     else:
         conclusion = "✅ 通过"
 
-    line1 = f"**策略信号：{symbol}｜⚡ 风控审计官 📋审计完成**"
-    line2 = f"结论：{conclusion}   {now}"
-    line3 = f"🔴严重 {high}"
-    line4 = f"🟡中等 {medium}"
-    line5 = f"⚪轻微 {low}"
+    # 标题行末加两个空格
+    line1 = f"**策略信号：{symbol}｜⚡ 风控审计官 📋审计完成**  "
+    line2 = f"结论：{conclusion}   {now}  "
+    line3 = f"🔴严重 {high}  "
+    line4 = f"🟡中等 {medium}  "
+    line5 = f"⚪轻微 {low}  "
 
     report = reviewer_report.get("full_report", "无审查报告")
     report = _safe_truncate(report)
@@ -145,9 +146,10 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         "推翻改为反向操作": "🔄推翻·反向"
     }
 
-    line1 = f"**策略信号：{symbol}｜📋 交易委员会 ⚖️最终裁决**"
-    line2 = f"{verdict_map.get(verdict, verdict)} · {dir_map.get(direction, '')} · {size_map.get(pos_size, '')} · {conf_map.get(conf, '')}   {now}"
-    line3 = f"现价：{current:.1f} · 入场：{entry_low:.0f}-{entry_high:.0f} · 止损：{stop_loss:.0f} · 止盈：{take_profit:.0f}"
+    # 每行末加两个空格
+    line1 = f"**策略信号：{symbol}｜📋 交易委员会 ⚖️最终裁决**  "
+    line2 = f"{verdict_map.get(verdict, verdict)} · {dir_map.get(direction, '')} · {size_map.get(pos_size, '')} · {conf_map.get(conf, '')}   {now}  "
+    line3 = f"现价：{current:.1f} · 入场：{entry_low:.0f}-{entry_high:.0f} · 止损：{stop_loss:.0f} · 止盈：{take_profit:.0f}  "
 
     judge_content = (
         strategy.get("_title_line", "") + "\n" +

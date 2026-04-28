@@ -204,7 +204,7 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
     return format_strategy_message(symbol, strategy, data)
 
 
-# ===== 委员会最终裁决推送模板（移除代码块，关键字加粗，新增现价行，修复仓位） =====
+# ===== 委员会最终裁决推送模板（移除代码块，关键字加粗，现价插入正确位置） =====
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> str:
     """委员会最终裁决推送，直接展示原始区块，并对裁决理由中的关键字加粗"""
     tz = timezone(timedelta(hours=8))
@@ -281,15 +281,17 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     risk_block = risk_block.replace('*', r'\*').replace('_', r'\_')
     title_line = title_line.replace('*', r'\*').replace('_', r'\_')
 
-    # ✨ 新增：提取现价（若 data 参数提供）
-    price_line = ""
-    if data and data.get("mark_price", 0) > 0:
-        price_line = f'📍 现价：{data["mark_price"]:.2f}'
-        # 将现价插入到 exec_block 的最前面，或者放在 exec_block 之前
-        if exec_block:
-            exec_block = price_line + "\n" + exec_block
-        else:
-            exec_block = price_line
+    # ✨ 在 exec_block 的“仓位”行后插入现价行（如果缺失且 data 中有价格）
+    if data and data.get("mark_price", 0) > 0 and exec_block:
+        price = data["mark_price"]
+        if '现价' not in exec_block:
+            # 匹配模式：“- 仓位：”开头的行，在其后插入“   - 现价：xxx”
+            exec_block = re.sub(
+                r'( - 仓位：[^\n]*)',
+                r'\1\n   - 现价：{:.1f}'.format(price),
+                exec_block,
+                count=1
+            )
 
     # 拼装最终消息
     parts = [title]

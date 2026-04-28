@@ -384,7 +384,7 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
 {original_strategy.get('reasoning', '无推演过程')}
 【审查查要】
 你要假设团队的资金安全完全取决于你是否能挑出每一个错误，遗漏任何错误都将导致灾难性亏损。因此浅显的审查或敷衍的逐条都是不可接受的。
-请严格按照以下模板输出，只输出报告内容，不要额外解释。
+请严格按照以下模板输出，只输出简洁的报告内容，不要额外解释。
 
 【风控审计官 - 审计报告】
 一、遗漏指标与分析缺失：

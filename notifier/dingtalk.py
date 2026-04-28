@@ -1,3 +1,4 @@
+# notifier/dingtalk.py
 import os
 import time
 import hmac
@@ -36,7 +37,8 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 # ========== 长度保护 ==========
-def _safe_truncate(text: str, max_len: int = 3500) -> str:
+def _safe_truncate(text: str, max_len: int = 15000) -> str:
+    """截断过长的文本，防止超出钉钉消息上限"""
     if len(text) <= max_len:
         return text
     hint = "\n\n... (内容过长已截断，完整信息见运行日志)"
@@ -61,11 +63,8 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     size_map = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}
     conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
 
-    # 标题
     line_title = f"**{symbol} 策略｜🧠首席交易员 · 🔍提交审计**  "
-    # 方向、仓位、置信度
     line_decision = f"{dir_map.get(direction, '⚪ 观望')} · {size_map.get(pos_size, '未知')} · {conf_map.get(conf, '？')}   {now}  "
-    # 价格行（每项单独一行）
     line_price = (
         f"现价：{current:.0f}\n"
         f"入场：{entry_low:.0f}-{entry_high:.0f}\n"
@@ -103,11 +102,8 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     else:
         conclusion = "通过"
 
-    # 标题
     line_title = f"**{symbol} 策略｜⚡风控审计官 · 📋审计完成**  "
-    # 结论行（无任何符号）
     line_conclusion = f"结论：{conclusion}   {now}  "
-    # 严重度统计
     line_severity = f"🔴严重 {high}  🟡中等 {medium}  ⚪轻微 {low}  "
 
     report = reviewer_report.get("full_report", "无审查报告")
@@ -150,11 +146,8 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         "推翻改为反向操作": "🔄推翻"
     }
 
-    # 标题
     line_title = f"**{symbol} 策略｜📋交易委员会 · ⚖️最终裁决**  "
-    # 裁决动作、方向、仓位、置信度
     line_decision = f"{verdict_map.get(verdict, verdict)} · {dir_map.get(direction, '')} · {size_map.get(pos_size, '')} · {conf_map.get(conf, '')}   {now}  "
-    # 价格行（单独成行）
     line_price = (
         f"现价：{current:.1f}\n"
         f"入场：{entry_low:.0f}-{entry_high:.0f}\n"
@@ -162,14 +155,13 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         f"止盈：{take_profit:.0f}  "
     )
 
-    # 法官原始输出，放入代码块
     judge_content = (
         strategy.get("_title_line", "") + "\n" +
         strategy.get("_exec_block_raw", "") + "\n" +
         strategy.get("_reasoning_block_raw", "") + "\n" +
         strategy.get("_risk_block_raw", "")
     )
-    judge_content = judge_content.strip()
+    judge_content = _safe_truncate(judge_content.strip(), max_len=15000)
 
     body = (
         f"{line_title}\n"

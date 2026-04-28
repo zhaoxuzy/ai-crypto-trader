@@ -192,7 +192,6 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
 
 # ========== 交易委员会最终裁决（更新版） ==========
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> str:
-    """委员会最终裁决推送，直接展示原始区块，关键字加粗，现价自动插入执行指令头部"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -202,8 +201,8 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
 
     # 中英文仓位映射
     size_map = {
-        "light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位",
-        "轻仓": "轻仓", "中仓": "中仓", "重仓": "重仓", "无仓位": "无仓位"
+        "light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无",
+        "轻仓": "轻仓", "中仓": "中仓", "重仓": "重仓", "无": "无"
     }
     conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
     status_tag_map = {
@@ -223,23 +222,30 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
 
     status_tag = status_tag_map.get(verdict, "")
 
-    # 获取原始块
-    title_line = strategy.get("_title_line", "")
+    # 获取原始块（优先从 strategy，否则从 judge_result）
     exec_block = strategy.get("_exec_block_raw", "")
+    if not exec_block and judge_result:
+        exec_block = judge_result.get("judge_C", {}).get("exec_block", "")
+    title_line = strategy.get("_title_line", "")
     reasoning_block = strategy.get("_reasoning_block_raw", "")
     risk_block = strategy.get("_risk_block_raw", "")
 
-    # ---------- 从执行指令中提取仓位，确保一致性 ----------
+    # ----- 提取仓位，支持中英文，且优先从 judge_result 中取正确的英文值 -----
     size = "无仓位"
     if exec_block:
         m = re.search(r'仓位[：:]\s*(\S+)', exec_block)
         if m:
             raw = m.group(1).strip()
             size = size_map.get(raw, raw)
+    if size == "无仓位" and judge_result:
+        # 如果 block 中没找到，尝试用 judge_C 里的 final_position_size
+        pos = judge_result.get("judge_C", {}).get("final_position_size", "")
+        if pos:
+            size = size_map.get(pos, pos)
 
     title = f"策略信号：{symbol}｜📋 交易委员会：{dir_icon} {dir_text} · {size} · {conf_map.get(conf, '')} · {now} {status_tag}"
 
-    # 通用清理：移除代码块标记
+    # 清理代码块
     def _remove_code_blocks(text: str) -> str:
         if not text:
             return ""
@@ -272,19 +278,20 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     risk_block = risk_block.replace('*', r'\*').replace('_', r'\_')
     title_line = title_line.replace('*', r'\*').replace('_', r'\_')
 
-    # ---------- 简单稳定的现价插入：在执行指令标题后直接添加一行 ----------
+    # ----- 在仓位行之后插入现价，兼容多种缩进和符号（- • · 等） -----
     if data and data.get("mark_price", 0) > 0 and exec_block:
         price = data["mark_price"]
         if '现价' not in exec_block:
-            # 找到 “🎯 执行指令：” 并紧随其后插入现价行（保持缩进一致）
+            # 匹配行首缩进 + 符号(-或•或·) + “仓位：” 或 “仓位:”
             exec_block = re.sub(
-                r'(🎯\s*执行指令[：:]?\s*\n)',
-                r'\1   - 现价：{:.1f}\n'.format(price),
+                r'(^\s*[-•·]\s*仓位[：:][^\n]*)',
+                r'\1\n   - 现价：{:.1f}'.format(price),
                 exec_block,
-                count=1
+                count=1,
+                flags=re.MULTILINE
             )
 
-    # 拼装
+    # 拼装消息
     parts = [title]
     if title_line:
         parts.append(title_line)

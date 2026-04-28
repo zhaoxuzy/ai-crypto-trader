@@ -81,7 +81,7 @@ def main():
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()
-    review_thread.join(timeout=300)  # 总超时 5 分钟，足够 B 和 C 完成
+    review_thread.join(timeout=600)  # 总超时 10分钟，足够 B 和 C 完成
 
     # 4. 超时保护：如果线程仍未结束，降级执行原始策略
     if review_thread.is_alive():

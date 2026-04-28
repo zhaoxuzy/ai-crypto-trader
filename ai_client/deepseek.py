@@ -542,7 +542,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             resp = client.chat.completions.create(
                 model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=4096,
+                max_tokens=8192,
                 timeout=120
             )
             content = resp.choices[0].message.content or ""

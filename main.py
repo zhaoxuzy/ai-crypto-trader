@@ -68,7 +68,7 @@ def main():
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
             strategy = apply_final_verdict(strategy, judge_result)
             # 推送最终裁决（使用新模板，展示原始块并加粗关键字）
-            judge_msg = format_final_decision(symbol, strategy, judge_result)
+            judge_msg = format_final_decision(symbol, strategy, judge_result, data)
             send_dingtalk_message(judge_msg, title=f"{symbol} 策略推送 (交易委员会裁决)")
         except Exception as e:
             logger.warning(f"法官C调用失败: {e}")

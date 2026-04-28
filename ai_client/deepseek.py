@@ -556,23 +556,8 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             verdict_match = re.search(r'📌\s*最终判决[：:]\s*(.*)', content)
             title_line = verdict_match.group(0).strip() if verdict_match else "📌 最终判决：维持原判"
 
-            exec_section = re.search(r'🎯\s*执行指令[：:]?\s*(.*?)(?=📋|⚠️|$)', content, re.DOTALL)
+                        exec_section = re.search(r'🎯\s*执行指令[：:]?\s*(.*?)(?=📋|⚠️|$)', content, re.DOTALL)
             if exec_section:
-                exec_text = exec_section.group(1).strip()
-                # 1. 方向解析（兼容中英文）
-                dir_match = re.search(r'方向[：:]\s*(long|short|neutral)', exec_text)
-                if dir_match:
-                    direction = dir_match.group(1)
-                else:
-                    # 尝试匹配中文
-                    if re.search(r'方向[：:]\s*做多', exec_text):
-                        direction = "long"
-                    elif re.search(r'方向[：:]\s*做空', exec_text):
-                        direction = "short"
-                    elif re.search(r'方向[：:]\s*(观望|中性)', exec_text):
-                        direction = "neutral"
-                
-                           if exec_section:
                 exec_text = exec_section.group(1).strip()
                 # 1. 方向解析（兼容中英文）
                 dir_match = re.search(r'方向[：:]\s*(long|short|neutral)', exec_text)
@@ -593,13 +578,12 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     pos_map = {'轻仓': 'light', '中仓': 'medium', '重仓': 'heavy', '无仓位': 'none'}
                     position_size = pos_map.get(raw_pos, raw_pos)
 
-                # 3. 新增：提取现价
+                # 3. 提取现价
                 price_match = re.search(r'现价[：:]\s*([\d.]+)', exec_text)
                 if price_match:
                     current_price = float(price_match.group(1))
                 else:
-                    current_price = data.get("mark_price", 0)  # 回退到API价格
-            
+                    current_price = data.get("mark_price", 0.0)
 
                 # 4. 入场区间
                 entry_match = re.search(r'入场区间[：:]\s*([\d.]+)\s*[-–]\s*([\d.]+)', exec_text)

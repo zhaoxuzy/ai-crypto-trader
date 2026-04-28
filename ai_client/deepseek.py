@@ -131,7 +131,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 {cross_context}
 ---
 【硬性约束】
-1. 必须且只能引用上方提供的具体数据，不得编造、估算或使用记忆中的任何数值。
+1. 必须且只能引用上方提供的具体数据，不得编造、估算或使用记忆中的任何数值，不允许出现数据解读错误、前后矛盾或逻辑链条断裂。。
 2. 你的 `reasoning` 字段必须包含从第一步到第六步的完整推演文本，每一步都必须显式包含“分析数据”、“第一反应”、“自我质疑”、“最终结论”子标题及详细完整内容。
 ---
 第一步：环境定调
@@ -373,7 +373,7 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
     bias_map = {'long': '偏向上方', 'short': '偏向下止', 'neutral': '无明确偏向'}
     bias_text = bias_map.get(liquidity_bias, '无数据')
 
-    return f"""你是我们加密货币交易团队的**风控审计官**。你的唯一任务是精准、快速找出首席交易员策略中的错误。你只找错误，不做裁决，不写建议。
+    return f"""你是加密货币交易团队的风控审计官，唯一任务是在首席交易员提交的策略中找出所有错误。你的审查标准：零遗漏、极度详尽、只找错误，不写裁决、不写建议、不写正确做法。
 
 【交易标的】{symbol}
 【代码层客观锚点】清算池综合吸引力评分：{bias_text}（基于规模/触发距/订单簿计算，数学模型得出）
@@ -382,8 +382,8 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
 
 【原策略推演过程】
 {original_strategy.get('reasoning', '无推演过程')}
-
-【审查要求】
+【审查查要】
+你要假设团队的资金安全完全取决于你是否能挑出每一个错误，遗漏任何错误都将导致灾难性亏损。因此浅显的审查或敷衍的逐条都是不可接受的。
 请严格按照以下模板输出，只输出报告内容，不要额外解释。
 
 【风控审计官 - 审计报告】
@@ -462,7 +462,7 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
     report = reviewer_report.get('full_report', '无审计报告')
     market_data_str = json.dumps(data, ensure_ascii=False)
 
-    prompt = f"""你是最终决策的交易委员会主席，拥有二十年加密货币短线合约交易经验。你的团队已准备了【首席交易员的策略】和【风控审计报告】。你必须基于事实与逻辑，输出一份可立即执行的短信交易方案。
+    prompt = f"""你是交易委员会主席，拥有二十年加密货币短线合约实战经验，经历过多次极端行情与黑天鹅事件。你的团队已为你提交了两份材料：1. 【首席交易员的策略】2. 【风控审计报告】，你必须基于这两份材料中的事实与逻辑，结合自己的专业和经验输出一份可立即执行的短线加密货币交易方案。
 
 【交易标的】{symbol}
 【原策略】方向：{orig_dir}，入场：{entry_l}-{entry_h}，止损：{stop_l}，止盈：{tp_l}

@@ -147,9 +147,13 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         "推翻改为反向操作": "🔄推翻·反向"
     }
 
+    # 标题
     title = f"**策略信号：{symbol}｜⚖️最终策略**  "
-    line_role = f"📋 交易委员会 {verdict_map.get(verdict, verdict)} ·   {now}  "
-    line_decision = f"{dir_map.get(direction, '')} · {size_map.get(pos_size, '')} · {conf_map.get(conf, '')}  "
+    # 角色 + 时间
+    line_role = f"📋 交易委员会   {now}  "
+    # 裁决动作 + 方向 + 仓位 + 置信度
+    line_decision = f"{verdict_map.get(verdict, verdict)} · {dir_map.get(direction, '')} · {size_map.get(pos_size, '')} · {conf_map.get(conf, '')}  "
+    # 价格行（按要求换行）
     line_price = (
         f"现价：{current:.1f} ·\n"
         f"入场：{entry_low:.0f}-{entry_high:.0f}\n"

@@ -1,3 +1,4 @@
+# notifier/dingtalk.py 重构版
 import os
 import time
 import hmac
@@ -10,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 
 
+# ========== 基础发送函数 (不变) ==========
 def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     webhook = os.getenv("DINGTALK_WEBHOOK_URL", "")
     secret = os.getenv("DINGTALK_SECRET", "")
@@ -34,66 +36,107 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         return False
 
 
-def format_reasoning(text: str) -> str:
-    if not text:
-        return "> 无推理过程"
-    text = text.replace('\r\n', '\n').replace('\r', '\n')
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    titles = [
-        "第[一二三四五六七八九]步[：:]",
-        "分析数据[：:]",
-        "第一反应[：:]",
-        "自我质疑[：:]",
-        "最终结论[：:]",
-        "交叉验证与裁决[：:]",
-        "价格路径推演[：:]",
-        "推理自检[：:]",
-        "入场区间[：:]",
-        "止损位[：:]",
-        "止盈位[：:]",
-        "主动证伪信号[：:]",
-        "微观盘口确认[：:]"
-    ]
-    for title in titles:
-        text = re.sub(rf'(?<!\n)({title})', r'\n\1', text)
-    lines = text.split('\n')
-    quoted = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            quoted.append('> ')
-            continue
-        if re.match(r'^第[一二三四五六七八九]步[：:]', line):
-            line = re.sub(r'^(第[一二三四五六七八九]步)', r'**\1**', line)
-        elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|交叉验证与裁决|价格路径推演|推理自检|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
-            line = re.sub(r'^([^：:]+)', r'**\1**', line)
-        quoted.append(f'> {line}' if not line.startswith('>') else line)
-    cleaned = []
-    prev_empty = False
-    for q in quoted:
-        is_empty = (q.strip() == '>')
-        if is_empty and prev_empty:
-            continue
-        cleaned.append(q)
-        prev_empty = is_empty
-    return '\n'.join(cleaned)
+# ========== 工具函数 ==========
+def _safe(s: str) -> str:
+    """转义钉钉 markdown 中的特殊字符，避免乱码"""
+    if not s:
+        return ""
+    s = s.replace('\\', '\\\\')  # 反斜杠必须最先转义
+    s = s.replace('_', '\\_')
+    s = s.replace('*', '\\*')
+    s = s.replace('`', '\\`')
+    s = s.replace('[', '\\[')
+    s = s.replace(']', '\\]')
+    return s
 
 
-def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
+def _bold(text: str) -> str:
+    """将文本包在加粗符号中"""
+    return f"**{text}**"
+
+
+def _now():
     tz = timezone(timedelta(hours=8))
-    now = datetime.now(tz).strftime("%m-%d %H:%M")
-    direction = strategy.get("direction", "neutral")
+    return datetime.now(tz).strftime("%m-%d %H:%M")
 
-    reviewed = strategy.get("_reviewed", False)
-    verdict = strategy.get("_review_verdict", "")
-    preliminary = strategy.get("_preliminary", False)
 
-    # ---------- 最终信号（审查后）----------
-    if reviewed and not preliminary:
-        # 1. 标题
+# ========== 1. 首席交易员初步信号 (审查中) ==========
+def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
+    """
+    初步信号：只发送一次，展示核心参数、价格推演和风险。
+    当 strategy['_preliminary'] 为 True 时，使用审查中模板。
+    否则（例如超时降级）回退到旧格式，保证兼容性。
+    """
+    if strategy.get("_preliminary"):
+        # ----- 审查中样式 -----
+        direction = strategy.get("direction", "neutral")
+        pos_size = strategy.get("position_size", "none")
+        confidence = strategy.get("confidence", "medium")
+
+        # 方向映射
+        if direction == "long":
+            dir_icon, dir_text = "🟢", "做多"
+        elif direction == "short":
+            dir_icon, dir_text = "🔴", "做空"
+        else:
+            dir_icon, dir_text = "⚪", "观望"
+
+        size_map = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}
+        conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
+
+        title = _bold(f"策略信号：{symbol} 🔍审查中…")
+        meta = (f"{dir_icon} {dir_text} · {size_map.get(pos_size, '未知')} · {conf_map.get(confidence, '中')}\n"
+                f"🧠首席交易员 ⏱ {_now()}")
+
+        # 价格参数
+        entry_low = strategy.get("entry_price_low", 0)
+        entry_high = strategy.get("entry_price_high", 0)
+        stop_loss = strategy.get("stop_loss", 0)
+        take_profit = strategy.get("take_profit", 0)
+        current = data.get("mark_price", strategy.get("mark_price", 0))
+        rr = strategy.get("_calculated_rr", 0)
+        rr_str = f"{rr:.2f}" if rr else "N/A"
+
+        price_line = (f"📊 现价 {current:.0f} · 入场 {entry_low:.0f}-{entry_high:.0f} · "
+                      f"止损 {stop_loss:.0f} · 止盈 {take_profit:.0f} · 盈亏比 {rr_str}")
+
+        # 价格路径推演 (从 reasoning 末尾提取，或使用第七步总结)
+        # 如果 model 在 JSON 中有 execution_plan 也可以使用
+        exec_plan = strategy.get("execution_plan", "")
+        if not exec_plan:
+            # 尝试从 reasoning 最后一段提取第七步
+            reasoning = strategy.get("reasoning", "")
+            # 简单提取最后一句作为推演路径
+            lines = reasoning.strip().split('\n')
+            # 找包含“第七步”或“价格路径”的行
+            path_line = ""
+            for i, line in enumerate(lines):
+                if "第七步" in line or "价格路径" in line:
+                    path_line = " ".join(lines[i:]).strip()
+                    break
+            if not path_line and lines:
+                # 取最后200字符
+                path_line = lines[-1] if len(lines[-1]) > 20 else " ".join(lines[-3:])
+            exec_plan = path_line if path_line else "等待信号确认"
+        path_text = _safe(exec_plan[:300])  # 截断防止过长
+
+        risk = strategy.get("risk_note", "请严格设置止损")
+        risk = _safe(risk)
+
+        msg = (f"{title}\n{meta}\n\n"
+               f"{price_line}\n\n"
+               f"🗺️ 价格路径推演：{path_text}\n\n"
+               f"⚠️ 风险说明：{risk}")
+        return msg
+
+    else:
+        # ----- 旧版备选 (超时降级等情况) -----
+        # 保留原先逻辑，避免出错
+        from datetime import datetime as dt, timezone as tz, timedelta
+        now = datetime.now(timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
+        direction = strategy.get("direction", "neutral")
         if direction == "neutral":
-            status_text = "⚠️审查推翻" if verdict == "推翻改为观望" else "⚠️风控驳回"
-            title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · {status_text}"
+            title = f"策略信号：{symbol}｜📋 交易委员会：⚪ 观望 · {now} · ⚠️风控驳回"
         else:
             emoji = "🟢" if direction == "long" else "🔴"
             text = "做多" if direction == "long" else "做空"
@@ -101,131 +144,79 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
             size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
             conf = strategy.get("confidence", "medium")
             conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
+            verdict = strategy.get("_review_verdict", "")
             status_tag = ""
-            if verdict == "维持原判":
-                status_tag = " · ✅审查确认"
-            elif verdict == "修正参数":
-                status_tag = " · 🔧审查修正"
-            elif verdict == "降级执行":
-                status_tag = " · ⚠️降级执行"
-            elif verdict == "推翻改为反向操作":
+            if verdict == "推翻改为反向操作":
                 status_tag = " · 🔄推翻"
             title = f"策略信号：{symbol}｜📋 交易委员会：{emoji} {text} · {size_cn} · {conf_cn} · {now}{status_tag}"
 
-        # 2. 执行指令：直接取自C修正后的版本
         exec_plan = strategy.get("execution_plan", "无具体指令")
-        execution_block = f"🎯 执行指令\n{exec_plan}"
-
-        # 3. 完整裁决内容：直接使用 AI 返回的原始文本，不进行任何修改
-        reasoning_raw = strategy.get("_judge_reasoning", "")
-        if not reasoning_raw.strip():
-            reasoning_raw = "无裁决理由"
-
-        # 4. 风险说明：直接使用 C 覆盖后的版本
+        reasoning_raw = strategy.get("_judge_reasoning", strategy.get("reasoning", ""))
         risk_raw = strategy.get("risk_note", "请严格设置止损")
 
-        parts = [
-            title,
-            "",
-            execution_block,
-            "",
-            reasoning_raw,
-            "",
-            risk_raw
-        ]
+        parts = [title, "", f"🎯 执行指令\n{exec_plan}", "", reasoning_raw, "", risk_raw]
         return '\n\n'.join(parts)
 
-    # ---------- 初步信号（审查中）----------
-    if direction == "neutral":
-        title = f"策略信号：{symbol}｜🧠 首席交易员：⚪ 观望 · {now} · ⏳审查中"
-        reasoning_raw = strategy.get("reasoning", "无推理过程")
-        reasoning_block = f"### 🧠 交易员推理\n{format_reasoning(reasoning_raw)}"
-        risk_raw = strategy.get("risk_note", "请严格设置止损")
-        risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
-        if not risk_lines:
-            risk_lines = ["> 请严格设置止损"]
-        risk_block = "### ⚠️ 风险说明\n" + "\n".join(risk_lines)
-        return f"{title}\n\n{reasoning_block}\n\n{risk_block}"
 
-    emoji = "🟢" if direction == "long" else "🔴"
-    text = "做多" if direction == "long" else "做空"
-    size = strategy.get("position_size", "none")
-    size_cn = {"light": "轻仓", "medium": "中仓", "heavy": "重仓"}.get(size, "")
-    conf = strategy.get("confidence", "medium")
-    conf_cn = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}.get(conf, "🟡中")
-    title = f"策略信号：{symbol}｜🧠 首席交易员：{emoji} {text} · {size_cn} · {conf_cn} · {now} · ⏳审查中"
-
-    entry_low = strategy.get("entry_price_low", 0)
-    entry_high = strategy.get("entry_price_high", 0)
-    stop = strategy.get("stop_loss", 0)
-    tp = strategy.get("take_profit", 0)
-    current = data.get("mark_price", 0)
-    mid = (entry_low + entry_high) / 2 if entry_low and entry_high else 0
-    risk = abs(mid - stop) if stop else 0
-    reward = abs(tp - mid) if tp else 0
-    rr = reward / risk if risk > 0 else 0
-    rr_str = f"{rr:.2f}" if rr else "N/A"
-    param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
-
-    reasoning_raw = strategy.get("reasoning", "无推理过程")
-    reasoning_block = f"### 🧠 交易员推理\n{format_reasoning(reasoning_raw)}"
-
-    risk_raw = strategy.get("risk_note", "请严格设置止损")
-    risk_lines = [f"> {line.strip()}" for line in risk_raw.split('\n') if line.strip()]
-    if not risk_lines:
-        risk_lines = ["> 请严格设置止损"]
-    risk_block = "### ⚠️ 风险说明\n" + "\n".join(risk_lines)
-
-    return f"{title}\n\n{param}\n\n{reasoning_block}\n\n{risk_block}"
-
-
+# ========== 2. 风控审计报告 (简要版) ==========
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
-    tz = timezone(timedelta(hours=8))
-    now = datetime.now(tz).strftime("%m-%d %H:%M")
-    title = f"策略信号：{symbol}｜⚡ 风控审计 · {now}"
-    report = reviewer_report.get("full_report", "无审查报告")
-    severity = reviewer_report.get("severity_counts", {})
-    summary = f"🔍 审计发现：严重问题{severity.get('高', 0)}个，中等问题{severity.get('中', 0)}个，轻微问题{severity.get('低', 0)}个"
-    # 在原有清洗之后（去掉标题、分隔线），添加以下代码
-report = report.replace('【风控审计官 - 审计报告】', '').strip()
-report = re.sub(r'^---\s*', '', report, flags=re.MULTILINE)
+    counts = reviewer_report.get("severity_counts", {"高": 0, "中": 0, "低": 0})
+    high = counts.get("高", 0)
+    medium = counts.get("中", 0)
+    low = counts.get("低", 0)
 
-# --- 新增：自动换行处理 ---
-# 1. 在中文序号（一、二、...）前加空行，让大段分离
-report = re.sub(r'(?<!\n)(?=[一二三四五六七八九十]、)', '\n\n', report)
-# 2. 在条目符号（- 或 •）前加换行
-report = re.sub(r'(?<!\n)(?=[-•])', '\n', report)
-# 去除首尾多余空行
-report = report.strip()
+    # 审计结论
+    if high > 0:
+        conclusion = "❌ 驳回"
+    elif medium > 0 or low > 0:
+        conclusion = "⚠️ 存疑"
+    else:
+        conclusion = "✅ 通过"
 
-return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n{report}"
+    # 提取核心错误描述（取 full_report 中前两个严重项）
+    report_text = reviewer_report.get("full_report", "")
+    core_errors = []
+    for line in report_text.split('\n'):
+        if line.strip().startswith('-') and '严重性：高' in line:
+            # 简化显示
+            core_errors.append(line.strip('- ').strip())
+        if line.strip().startswith('-') and '严重性：中' in line:
+            core_errors.append(line.strip('- ').strip())
+        if len(core_errors) >= 2:
+            break
+
+    error_brief = "；".join(core_errors) if core_errors else "无关键错误"
+
+    # 反方提示 (从第四部分提取)
+    anti_text = ""
+    for line in report_text.split('\n'):
+        if "做市商" in line or "反向" in line or "猎杀" in line:
+            anti_text = line.strip()
+            break
+    if not anti_text:
+        anti_text = "请关注清算池博弈"
+
+    title = _bold(f"策略信号：{symbol} ⚡审计完成")
+    meta = (f"🔴严重{high} · 🟡中等{medium} · ⚪轻微{low}\n"
+            f"⚡风控审计官 ⏱ {_now()}")
+
+    msg = (f"{title}\n{meta}\n\n"
+           f"📋 审计结论：{conclusion} ({_safe(error_brief)})\n"
+           f"⚖️ 反方提示：{_safe(anti_text)}")
+    return msg
 
 
-def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
-    return format_strategy_message(symbol, strategy, data)
-
-
-# ===== 委员会最终裁决推送模板（移除代码块，关键字加粗） =====
+# ========== 3. 交易委员会最终裁决 (简要版) ==========
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None) -> str:
-    """委员会最终裁决推送，直接展示原始区块，并对裁决理由中的关键字加粗"""
-    tz = timezone(timedelta(hours=8))
-    now = datetime.now(tz).strftime("%m-%d %H:%M")
-
+    """
+    最终裁决，展示执行指令、核心逻辑和风险。
+    """
     direction = strategy.get("direction", "neutral")
-    size = strategy.get("position_size", "none")
-    conf = strategy.get("confidence", "medium")
+    pos_size = strategy.get("position_size", "none")
+    confidence = strategy.get("confidence", "medium")
     verdict = strategy.get("_review_verdict", "")
 
-    size_map = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}
-    conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
-    status_tag_map = {
-        "维持原判": "✅审查确认",
-        "修正参数": "🔧审查修正",
-        "降级执行": "⚠️降级执行",
-        "推翻改为观望": "🔄推翻→观望",
-        "推翻改为反向操作": "🔄推翻→反向操作"
-    }
-
+    # 方向图标
     if direction == "long":
         dir_icon, dir_text = "🟢", "做多"
     elif direction == "short":
@@ -233,60 +224,84 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     else:
         dir_icon, dir_text = "⚪", "观望"
 
-    status_tag = status_tag_map.get(verdict, "")
-    title = f"策略信号：{symbol}｜📋 交易委员会：{dir_icon} {dir_text} · {size_map.get(size, '')} · {conf_map.get(conf, '')} · {now} {status_tag}"
+    size_map = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}
+    conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
 
-    # 获取原始块
-    title_line = strategy.get("_title_line", "")
-    exec_block = strategy.get("_exec_block_raw", "")
-    reasoning_block = strategy.get("_reasoning_block_raw", "")
-    risk_block = strategy.get("_risk_block_raw", "")
+    # 标题
+    title = _bold(f"策略信号：{symbol} 📋最终裁决")
 
-    # 通用清理：移除所有代码块标记（```）避免钉钉渲染为代码滑动窗口
-    def _remove_code_blocks(text: str) -> str:
-        if not text:
-            return ""
-        # 移除 ``` 开头及结尾的代码块标记
-        text = re.sub(r'```[\s\S]*?```', '', text)   # 完整代码块全部删除
-        text = re.sub(r'```', '', text)               # 残留的反引号也去掉
-        return text
+    # 第二行：判决动作 + 方向 + 仓位 + 置信度
+    if verdict == "维持原判":
+        action = "✅维持原判"
+    elif verdict == "修正参数":
+        action = "🔧修正参数"
+    elif verdict == "降级执行":
+        action = "⚠️降级执行"
+    elif verdict == "推翻改为反向操作":
+        action = "🔄推翻"
+    elif verdict == "推翻改为观望":
+        action = "🔄推翻→观望"
+    else:
+        action = "⚪观望"
 
-    title_line = _remove_code_blocks(title_line)
-    exec_block = _remove_code_blocks(exec_block)
-    reasoning_block = _remove_code_blocks(reasoning_block)
-    risk_block = _remove_code_blocks(risk_block)
+    meta = (f"{action} · {dir_icon}{dir_text} · {size_map.get(pos_size, '？')} · {conf_map.get(confidence, '？')}\n"
+            f"📋交易委员会 ⏱ {_now()}")
 
-    # 转义特殊字符（除了手动加粗的部分）
-    def escape_non_bold(text: str) -> str:
-        text = text.replace('*', r'\*')
-        text = text.replace(r'\*\*', '**')  # 恢复手动加粗
-        text = text.replace('_', r'\_')
-        return text
+    # 执行指令
+    entry_low = strategy.get("entry_price_low", 0)
+    entry_high = strategy.get("entry_price_high", 0)
+    stop_loss = strategy.get("stop_loss", 0)
+    take_profit = strategy.get("take_profit", 0)
+    exec_plan = strategy.get("execution_plan", "无")
+    current = data.get("mark_price", 0) if judge_result else strategy.get("mark_price", 0)  # 尽量获取现价
 
-    # 关键字加粗
-    keywords = ["指控内容", "裁决结论", "核验依据", "反证风险评估", "核心逻辑"]
-    for kw in keywords:
-        reasoning_block = re.sub(
-            r'(?<!\*)(' + re.escape(kw) + r')(?!\*)',
-            r'**\1**',
-            reasoning_block
+    # 执行块
+    if direction == "neutral":
+        exec_block = "🎯 执行指令：当前无操作（观望）"
+    else:
+        exec_block = (
+            f"🎯 执行指令：\n"
+            f"方向：{dir_icon}{dir_text}\n"
+            f"现价：{current:.0f}\n"
+            f"入场：{entry_low:.0f}-{entry_high:.0f} （基于关键支撑/清算区）\n"
+            f"止损：{stop_loss:.0f} （跌破关键位）\n"
+            f"止盈：{take_profit:.0f} （目标流动性区域）\n"
+            f"说明：{_safe(exec_plan)}"
         )
 
-    # 转义除关键字外的特殊字符
-    reasoning_block = escape_non_bold(reasoning_block)
-    exec_block = exec_block.replace('*', r'\*').replace('_', r'\_')
-    risk_block = risk_block.replace('*', r'\*').replace('_', r'\_')
-    title_line = title_line.replace('*', r'\*').replace('_', r'\_')
-
-    # 拼装最终消息
-    parts = [title]
-    if title_line:
-        parts.append(title_line)
-    if exec_block:
-        parts.append(exec_block)
+    # 核心逻辑（从 _judge_reasoning 或 reasoning_block_raw 中提取一句话）
+    core_logic = ""
+    reasoning_block = strategy.get("_reasoning_block_raw", "")
     if reasoning_block:
-        parts.append(reasoning_block)
-    if risk_block:
-        parts.append(risk_block)
+        # 尝试提取最后一段“核心逻辑”或两行文本
+        lines = reasoning_block.split('\n')
+        for i, line in enumerate(lines):
+            if "核心逻辑" in line:
+                core_logic = line.strip()
+                break
+        if not core_logic and lines:
+            core_logic = lines[-1] if len(lines[-1]) > 20 else lines[-2]
+        core_logic = _safe(core_logic[:200])
+    if not core_logic:
+        core_logic = strategy.get("_judge_reasoning", "")
+        core_logic = _safe(core_logic[:200])
+    if not core_logic:
+        core_logic = "无详细理由"
 
-    return '\n\n'.join(parts)
+    risk = _safe(strategy.get("risk_note", "请严格设置止损"))
+
+    msg = (f"{title}\n{meta}\n\n"
+           f"{exec_block}\n\n"
+           f"📋 核心逻辑：{core_logic}\n\n"
+           f"⚠️ 风险说明：{risk}")
+    return msg
+
+
+# ========== 兼容旧接口 ==========
+def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
+    # 直接调用新最终裁决模板
+    return format_final_decision(symbol, strategy, judge_result)
+
+
+# 移除旧版 format_reasoning 等不需要的函数，避免命名空间污染
+# （可选：保留 format_reasoning 以备其他地方使用，如果确定无引用可删除）

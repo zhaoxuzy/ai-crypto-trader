@@ -186,8 +186,19 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     report = reviewer_report.get("full_report", "无审查报告")
     severity = reviewer_report.get("severity_counts", {})
     summary = f"🔍 审计发现：严重问题{severity.get('高', 0)}个，中等问题{severity.get('中', 0)}个，轻微问题{severity.get('低', 0)}个"
-    report = report.replace('【风控审计官 - 审计报告】', '').strip()
-    return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n{report}"
+    # 在原有清洗之后（去掉标题、分隔线），添加以下代码
+report = report.replace('【风控审计官 - 审计报告】', '').strip()
+report = re.sub(r'^---\s*', '', report, flags=re.MULTILINE)
+
+# --- 新增：自动换行处理 ---
+# 1. 在中文序号（一、二、...）前加空行，让大段分离
+report = re.sub(r'(?<!\n)(?=[一二三四五六七八九十]、)', '\n\n', report)
+# 2. 在条目符号（- 或 •）前加换行
+report = re.sub(r'(?<!\n)(?=[-•])', '\n', report)
+# 去除首尾多余空行
+report = report.strip()
+
+return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n{report}"
 
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:

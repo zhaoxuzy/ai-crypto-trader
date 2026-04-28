@@ -196,14 +196,16 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     report = re.sub(r'(?<!\n)(?=[-•])', '\n', report)
     # 去除首尾多余空行
     report = report.strip()
-    return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n{report}"
+    # ✨ 修改点：在审计报告标题后增加一个空行，确保“一、”单独成行
+    return f"{title}\n\n{summary}\n\n📋 风控审计官 - 审计报告\n\n{report}"
+
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
     return format_strategy_message(symbol, strategy, data)
 
 
-# ===== 委员会最终裁决推送模板（移除代码块，关键字加粗） =====
-def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None) -> str:
+# ===== 委员会最终裁决推送模板（移除代码块，关键字加粗，新增现价行，修复仓位） =====
+def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> str:
     """委员会最终裁决推送，直接展示原始区块，并对裁决理由中的关键字加粗"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
@@ -213,7 +215,11 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     conf = strategy.get("confidence", "medium")
     verdict = strategy.get("_review_verdict", "")
 
-    size_map = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}
+    # 灵活仓位映射：支持英文和中文
+    size_map = {
+        "light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位",
+        "轻仓": "轻仓", "中仓": "中仓", "重仓": "重仓", "无仓位": "无仓位"
+    }
     conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
     status_tag_map = {
         "维持原判": "✅审查确认",
@@ -231,7 +237,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         dir_icon, dir_text = "⚪", "观望"
 
     status_tag = status_tag_map.get(verdict, "")
-    title = f"策略信号：{symbol}｜📋 交易委员会：{dir_icon} {dir_text} · {size_map.get(size, '')} · {conf_map.get(conf, '')} · {now} {status_tag}"
+    title = f"策略信号：{symbol}｜📋 交易委员会：{dir_icon} {dir_text} · {size_map.get(size, size)} · {conf_map.get(conf, '')} · {now} {status_tag}"
 
     # 获取原始块
     title_line = strategy.get("_title_line", "")
@@ -274,6 +280,16 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     exec_block = exec_block.replace('*', r'\*').replace('_', r'\_')
     risk_block = risk_block.replace('*', r'\*').replace('_', r'\_')
     title_line = title_line.replace('*', r'\*').replace('_', r'\_')
+
+    # ✨ 新增：提取现价（若 data 参数提供）
+    price_line = ""
+    if data and data.get("mark_price", 0) > 0:
+        price_line = f'📍 现价：{data["mark_price"]:.2f}'
+        # 将现价插入到 exec_block 的最前面，或者放在 exec_block 之前
+        if exec_block:
+            exec_block = price_line + "\n" + exec_block
+        else:
+            exec_block = price_line
 
     # 拼装最终消息
     parts = [title]

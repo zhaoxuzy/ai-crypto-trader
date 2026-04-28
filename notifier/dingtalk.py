@@ -169,7 +169,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         strategy.get("_reasoning_block_raw", "") + "\n" +
         strategy.get("_risk_block_raw", "")
     )
-    judge_content = _safe_truncate(judge_content.strip())
+    judge_content = judge_content.strip()
 
     body = (
         f"{line_title}\n"

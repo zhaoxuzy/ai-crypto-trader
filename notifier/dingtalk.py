@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 
 
-# ========== 基础推送 ==========
+# ========== 基础推送（Markdown） ==========
 def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     webhook = os.getenv("DINGTALK_WEBHOOK_URL", "")
     secret = os.getenv("DINGTALK_SECRET", "")
@@ -23,7 +23,6 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     if secret and secret.lower() != "none":
         try:
             sign_str = f"{ts}\n{secret}"
-            # 优化点 1：使用 quote 替代 quote_plus，避免 + 号引发验签失败
             signature = base64.b64encode(
                 hmac.new(
                     secret.encode("utf-8"),
@@ -31,7 +30,7 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
                     hashlib.sha256,
                 ).digest()
             ).decode()
-            sign = urllib.parse.quote(signature, safe="")
+            sign = urllib.parse.quote(signature, safe="")      # 优化点1
             url_parts = list(urllib.parse.urlparse(webhook))
             query = dict(urllib.parse.parse_qsl(url_parts[4]))
             query.update({"timestamp": ts, "sign": sign})
@@ -57,11 +56,11 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 # ========== 工具函数 ==========
 def _extract_final_step(text: str) -> str:
-    """从完整推演中提取第七步：制定交易计划（优化点 2）"""
+    """从完整推演中提取第七步：制定交易计划（优化点2）"""
     if not text:
         return ""
 
-    # 非贪婪匹配“第七步：/：”后的内容，直到下一个“第X步”或文本结束
+    # 非贪婪匹配到下一个“第X步”或文本结束
     pattern = r'第七步[：:]\s*[^\n]*\n(.*?)(?=\n第[一二三四五六七八九十]+\s*步|\Z)'
     m = re.search(pattern, text, re.DOTALL)
     if m:
@@ -69,7 +68,7 @@ def _extract_final_step(text: str) -> str:
         if content:
             return content
 
-    # 如果没找到下一个步骤，退化为取第七步标题行后所有内容
+    # 退化为取第七步标题行之后全部
     m = re.search(r'(第七步[：:].*)', text, re.DOTALL)
     if m:
         content = m.group(1).strip()
@@ -81,14 +80,15 @@ def _extract_final_step(text: str) -> str:
 
 
 def _safe_code_block(text: str) -> str:
-    """将文本中的三个反引号暂时替换，避免破坏 Markdown 代码块（优化点 3）"""
+    """将文本中的三个反引号暂时替换，避免破坏 Markdown 代码块（优化点3）"""
     if not text:
         return ""
     return text.replace("```", "'''")
 
 
-# ========== 1. 首席交易员初步信 ==========
-def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
+# ========== 1. 首席交易员初步信号（A推送） ==========
+def format_strategy_message(symbol: str, strategy: dict, data: dict) -> bool:
+    """发送首席交易员信号：标题+参数+第七步纯文本"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -99,7 +99,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     entry_high = strategy.get("entry_price_high", 0) or 0
     stop_loss = strategy.get("stop_loss", 0) or 0
     take_profit = strategy.get("take_profit", 0) or 0
-    current = data.get("mark_price", 0) or 0
+    current = (data.get("mark_price", 0) or 0) if data else 0
 
     dir_icon = {"long": "🟢", "short": "🔴", "neutral": "⚪"}.get(direction, "⚪")
     dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(direction, "观望")
@@ -107,34 +107,31 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "?")
 
     header = f"### 🧠 首席交易员 · 提交审计 | {symbol} | {dir_icon} {dir_text} | {size_text} | 置信度{conf_icon} | {now}"
+    price_block = (
+        f"现价 {current:.0f}  |  "
+        f"入场 {entry_low:.0f}-{entry_high:.0f}  |  "
+        f"止损 {stop_loss:.0f}  |  "
+        f"止盈 {take_profit:.0f}"
+    )
 
-    if direction == "neutral":
-        price_block = "**方向：观望，暂不设置入场/止损/止盈**"
-    else:
-        price_block = (
-            f"现价 {current:.0f}  |  "
-            f"入场 {entry_low:.0f}-{entry_high:.0f}  |  "
-            f"止损 {stop_loss:.0f}  |  "
-            f"止盈 {take_profit:.0f}"
-        )
+    full_reasoning = strategy.get("reasoning", "")
+    final_step = _extract_final_step(full_reasoning)
+    if not final_step:
+        final_step = "未解析到第七步"
 
-    # 改回显示完整的推理过程，不做提取第七步
-    reasoning = strategy.get("reasoning", "无推演过程")
-
-    # 可选：去除乱码字符，防止出现这类怪符号
-    reasoning = reasoning.encode('utf-8', 'ignore').decode('utf-8', 'ignore')
-
+    # 纯文本展示，不加代码块
     body = (
         f"{header}\n"
         f"{price_block}\n\n"
-        f"**推演过程**\n"                    # 恢复为「推演过程」
-        f"````\n{reasoning}\n````"
+        f"**第七步 · 交易计划**\n\n"
+        f"{final_step}"
     )
-    return body
+
+    return send_dingtalk_message(body, f"首席交易员·{symbol}")
 
 
-# ========== 2. 风控审计报告 ==========
-def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
+# ========== 2. 风控审计报告（暂时不变） ==========
+def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> bool:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -161,11 +158,11 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
         f"**审计报告**\n"
         f"```\n{_safe_code_block(report)}\n```"
     )
-    return body
+    return send_dingtalk_message(body, f"风控审计·{symbol}")
 
 
-# ========== 3. 交易委员会最终裁决 ==========
-def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> str:
+# ========== 3. 交易委员会最终裁决（暂时不变，后续会改） ==========
+def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> bool:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -212,9 +209,9 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         f"**裁决内容**\n"
         f"```\n{_safe_code_block(judge_content)}\n```"
     )
-    return body
+    return send_dingtalk_message(body, f"最终裁决·{symbol}")
 
 
 # ========== 兼容旧版 ==========
-def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
+def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> bool:
     return format_final_decision(symbol, strategy, judge_result, data)

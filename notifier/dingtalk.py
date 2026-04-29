@@ -51,15 +51,18 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 # ========== 长度保护 ==========
-def _safe_truncate(text: str, max_len: int = 800) -> str:
+def _safe_truncate(text: str, max_bytes: int = 3500) -> str:
     """
-    截断过长的文本，防止超出钉钉消息字节上限（2048字节，约680个中文）
-    默认 800 字符，可兼顾英文较多时的安全线
+    按字节安全截断，防止超出钉钉消息上限（4096字节）。
+    默认保留3500字节给长文本，其余空间给标题和格式。
     """
-    if len(text) <= max_len:
+    b = text.encode('utf-8')
+    if len(b) <= max_bytes:
         return text
+    # 反向查找完整字符边界
+    truncated = b[:max_bytes].decode('utf-8', errors='ignore')
     hint = "\n\n... (内容过长已截断，完整信息见运行日志)"
-    return text[:max_len - len(hint)] + hint
+    return truncated + hint
 
 
 # ========== 1. 首席交易员初步信号 ==========
@@ -76,27 +79,30 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     take_profit = strategy.get("take_profit", 0)
     current = data.get("mark_price", 0)
 
-    dir_map = {"long": "🟢 做多", "short": "🔴 做空", "neutral": "⚪ 观望"}
-    size_map = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}
-    conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
+    # 简化图标与文字
+    dir_icon = {"long": "🟢", "short": "🔴", "neutral": "⚪"}.get(direction, "⚪")
+    dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(direction, "观望")
+    size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(pos_size, "?")
+    conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "?")
 
-    line_title = f"**{symbol} 策略｜🧠首席交易员 · 🔍提交审计**  "
-    line_decision = f"{dir_map.get(direction, '⚪ 观望')} · {size_map.get(pos_size, '未知')} · {conf_map.get(conf, '？')}   {now}  "
-    line_price = (
-        f"现价：{current:.0f}\n"
-        f"入场：{entry_low:.0f}-{entry_high:.0f}\n"
-        f"止损：{stop_loss:.0f}\n"
-        f"止盈：{take_profit:.0f}  "
+    # 紧凑头部
+    header = f"### {dir_icon} {symbol} {dir_text} | {size_text} | 置信度{conf_icon} | {now}"
+
+    # 关键价格行
+    price_block = (
+        f"现价 {current:.0f}  |  "
+        f"入场 {entry_low:.0f}-{entry_high:.0f}  |  "
+        f"止损 {stop_loss:.0f}  |  "
+        f"止盈 {take_profit:.0f}"
     )
 
+    # 推理内容，保留足够空间（约 3000 字节，钉钉限制4096）
     reasoning = strategy.get("reasoning", "无推演过程")
-    reasoning = _safe_truncate(reasoning, max_len=1500)   # 预留空间给标题、价格等
+    reasoning = _safe_truncate(reasoning, max_bytes=3200)  # 给头部留896字节
 
-    # 使用四个反引号防止内容中的 ``` 提前闭合
     body = (
-        f"{line_title}\n"
-        f"{line_decision}\n"
-        f"{line_price}\n\n"
+        f"{header}\n"
+        f"{price_block}\n\n"
         f"**推演过程**\n"
         f"````\n{reasoning}\n````"
     )
@@ -114,23 +120,21 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     low = severity.get("低", 0)
 
     if high > 0:
-        conclusion = "驳回"
+        conclusion = "⛔ 驳回"
     elif medium > 0 or low > 0:
-        conclusion = "存疑"
+        conclusion = "⚠️ 存疑"
     else:
-        conclusion = "通过"
+        conclusion = "✅ 通过"
 
-    line_title = f"**{symbol} 策略｜⚡风控审计官 · 📋审计完成**  "
-    line_conclusion = f"结论：{conclusion}   {now}  "
-    line_severity = f"🔴严重 {high}  🟡中等 {medium}  ⚪轻微 {low}  "
+    header = f"### {conclusion} {symbol} 风控审计 | {now}"
+    sev_line = f"严重 {high}  中等 {medium}  轻微 {low}"
 
     report = reviewer_report.get("full_report", "无审查报告")
-    report = _safe_truncate(report, max_len=800)
+    report = _safe_truncate(report, max_bytes=3200)
 
     body = (
-        f"{line_title}\n"
-        f"{line_conclusion}\n"
-        f"{line_severity}\n\n"
+        f"{header}\n"
+        f"{sev_line}\n\n"
         f"**审计报告**\n"
         f"````\n{report}\n````"
     )
@@ -152,34 +156,38 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     take_profit = strategy.get("take_profit", 0)
     current = data.get("mark_price", 0) if data else 0
 
-    dir_map = {"long": "🟢做多", "short": "🔴做空", "neutral": "⚪观望"}
-    size_map = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}
-    conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
+    dir_icon = {"long": "🟢", "short": "🔴", "neutral": "⚪"}.get(direction, "⚪")
+    dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(direction, "观望")
+    size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(pos_size, "?")
+    conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "?")
 
-    verdict_map = {
-        "维持原判": "✅维持原判",
-        "修正参数": "🔧修正参数",
-        "降级执行": "⚠️降级执行",
-        "推翻改为观望": "🔄推翻→观望",
-        "推翻改为反向操作": "🔄推翻"
+    verdict_icon_map = {
+        "维持原判": "✅",
+        "修正参数": "🔧",
+        "降级执行": "⚠️",
+        "推翻改为观望": "🔄",
+        "推翻改为反向操作": "🔄",
     }
+    verdict_icon = verdict_icon_map.get(verdict, "📌")
+    verdict_text = verdict if verdict else "裁决"
 
-    line_title = f"**{symbol} 策略｜📋交易委员会 · ⚖️最终裁决**  "
-    line_decision = f"{verdict_map.get(verdict, verdict)} · {dir_map.get(direction, '')} · {size_map.get(pos_size, '')} · {conf_map.get(conf, '')}   {now}  "
-    line_price = (
-        f"现价：{current:.1f}\n"
-        f"入场：{entry_low:.0f}-{entry_high:.0f}\n"
-        f"止损：{stop_loss:.0f}\n"
-        f"止盈：{take_profit:.0f}  "
+    header = f"### {verdict_icon} {symbol} 交易委员会 | {verdict_text} | {now}"
+    decision_line = f"{dir_icon} {dir_text} | {size_text} | 置信度{conf_icon}"
+
+    price_block = (
+        f"现价 {current:.1f}  |  "
+        f"入场 {entry_low:.0f}-{entry_high:.0f}  |  "
+        f"止损 {stop_loss:.0f}  |  "
+        f"止盈 {take_profit:.0f}"
     )
 
     judge_content = strategy.get("_judge_reasoning", "")
-    judge_content = _safe_truncate(judge_content, max_len=800)
+    judge_content = _safe_truncate(judge_content, max_bytes=3000)  # 给头部留约1KB
 
     body = (
-        f"{line_title}\n"
-        f"{line_decision}\n"
-        f"{line_price}\n\n"
+        f"{header}\n"
+        f"{decision_line}\n"
+        f"{price_block}\n\n"
         f"**裁决内容**\n"
         f"````\n{judge_content}\n````"
     )

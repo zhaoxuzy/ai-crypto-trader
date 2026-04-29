@@ -90,7 +90,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     )
 
     reasoning = strategy.get("reasoning", "无推演过程")
-    reasoning = _safe_truncate(reasoning, max_len=800)   # 预留空间给标题、价格等
+    reasoning = _safe_truncate(reasoning, max_len=1500)   # 预留空间给标题、价格等
 
     # 使用四个反引号防止内容中的 ``` 提前闭合
     body = (

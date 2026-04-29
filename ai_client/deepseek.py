@@ -29,18 +29,19 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     below_trigger = "N/A"
     below_far_boundary = "N/A"
 
+    # -- FIX: 使用带符号格式化，避免出现 +- 或 -- 双符号
     if above_cluster != 'N/A' and '-' in above_cluster:
         parts = above_cluster.split('-')
         above_low = float(parts[0])
         above_high = float(parts[1])
-        above_trigger = f"+{above_low - current:.0f}"
-        above_far_boundary = f"+{above_high - current:.0f}"
+        above_trigger = f"{above_low - current:+.0f}"
+        above_far_boundary = f"{above_high - current:+.0f}"
     if below_cluster != 'N/A' and '-' in below_cluster:
         parts = below_cluster.split('-')
         below_low = float(parts[0])
         below_high = float(parts[1])
-        below_trigger = f"-{current - below_high:.0f}"
-        below_far_boundary = f"-{current - below_low:.0f}"
+        below_trigger = f"{below_high - current:+.0f}"   # 正常为负值
+        below_far_boundary = f"{below_low - current:+.0f}"
 
     data_quality = data.get("data_quality", {})
     missing = [k for k, v in data_quality.items() if v == "❌ 缺失"]
@@ -91,12 +92,17 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
 资金流：CVD斜率{cross_cvd:.4f}（{cross_cvd_dir}）
 """
 
+    # -- FIX: 显式处理 None 值，避免格式化崩溃
+    cvd_accel = data.get('cvd_acceleration') or 0
+    oi_accel = data.get('oi_acceleration') or 0
+    funding_mom = data.get('funding_momentum') or 0
+
     dynamic_instructions = f"""
 【时间维度动态分析】
 CAUTION: CVD斜率仅代表过去，你必须结合加速度判断趋势的“续航力”。
-- CVD加速度：{data.get('cvd_acceleration', 0):.3f}（正值=卖盘加速增强，负值=卖盘减弱）
-- OI加速度：{data.get('oi_acceleration', 0):.3f}（正值=持仓下降加速，负值=下降减速）
-- 资金费率动量：{data.get('funding_momentum', 0):.6f}
+- CVD加速度：{cvd_accel:.3f}（正值=卖盘加速增强，负值=卖盘减弱）
+- OI加速度：{oi_accel:.3f}（正值=持仓下降加速，负值=下降减速）
+- 资金费率动量：{funding_mom:.6f}
 在第四步“资金流验证”的最终结论中，必须明确当前趋势属于：加速、衰竭，还是稳定。
 【假突破陷阱识别】
 诱导风险系数：{data.get('lure_risk_factor', 0):.2f} (>0.5 表示存在显著诱盘风险)
@@ -318,7 +324,7 @@ def _force_neutral(s: dict, reason: str):
     s["stop_loss"] = 0
     s["take_profit"] = 0
     s["execution_plan"] = ""
-    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[原始信号因校验规则被强制改为观望，原因：{reason}").strip()
+    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[原始信号因校验规则被强制改为观望，原因：{reasoning}"]).strip()
     s["risk_note"] = f"观望。{reason}"
 
 
@@ -333,7 +339,10 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         below_liq = data.get("below_liq", 0)
         cvd_slope = data.get("cvd_slope", None)
 
-        if above_liq <= 0 and below_liq <= 0 and direction != "neutral":
+        # -- FIX: 包容性检查，避免 None <= 0 抛出 TypeError
+        above_ok = above_liq is not None and above_liq > 0
+        below_ok = below_liq is not None and below_liq > 0
+        if not above_ok and not below_ok and direction != "neutral":
             _force_neutral(s, "清算数据缺失，强制输出 neutral")
             return True, "已自动修正为观望"
 
@@ -364,7 +373,6 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         logger.warning(f"入场区间下限({entry_low})大于上限({entry_high})，已自动交换并将仓位降为light")
         s["entry_price_low"], s["entry_price_high"] = entry_high, entry_low
         s["position_size"] = "light"
-        # 继续校验，不返回False
 
     if direction == "long" and stop_loss >= entry_low:
         s["risk_note"] = s.get("risk_note", "") + " [系统提示] 止损位未处于入场区间下方，请人工确认。"
@@ -598,6 +606,10 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     dir_map = {"做多": "long", "做空": "short", "观望": "neutral",
                                "long": "long", "short": "short", "neutral": "neutral"}
                     direction = dir_map.get(raw_dir, original_dir)
+                else:
+                    # -- OPT: 未匹配到方向时记录警告并回退为 neutral，而不是沿用原方向
+                    logger.warning("交易委员会输出未明确方向，强制设为 neutral")
+                    direction = "neutral"
 
                 # 2. 仓位解析并标准化
                 pos_match = re.search(r'仓位[：:]\s*(轻仓|中仓|重仓|无|无仓位|light|medium|heavy|none)', exec_text)
@@ -698,15 +710,23 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 return {"judge_C": {"final_verdict": "维持原判", "verdict_level": "A"}}
 
 
+# -- OPT: 增强方向一致性检查，若执行计划同时包含做多和做空关键词则强制 neutral
 def _validate_execution_direction(s: dict):
     exec_plan = s.get("execution_plan", "")
     final_direction = s.get("direction", "")
-    if final_direction == "long" and "做空" in exec_plan and "做多" not in exec_plan:
+
+    has_long = "做多" in exec_plan or "long" in exec_plan.lower()
+    has_short = "做空" in exec_plan or "short" in exec_plan.lower()
+
+    if final_direction == "long" and has_short and not has_long:
         logger.warning("输出矛盾：方向为long但执行指令包含做空且未提及做多，已自动将方向改为neutral")
         _force_neutral(s, "输出矛盾：方向与执行指令不一致")
-    elif final_direction == "short" and "做多" in exec_plan and "做空" not in exec_plan:
+    elif final_direction == "short" and has_long and not has_short:
         logger.warning("输出矛盾：方向为short但执行指令包含做多且未提及做空，已自动将方向改为neutral")
         _force_neutral(s, "输出矛盾：方向与执行指令不一致")
+    elif has_long and has_short:
+        logger.warning("执行指令同时包含做多和做空关键词，可能存在矛盾，已强制 neutral")
+        _force_neutral(s, "执行指令方向冲突")
 
 
 def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_report: dict = None) -> dict:

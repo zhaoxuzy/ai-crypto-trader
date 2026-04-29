@@ -511,7 +511,7 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
        
 📌 最终判决：[维持原判 / 修正参数 / 降级执行 / 推翻]
 🎯 执行指令：
-   -币种：{symbol}
+   - 币种：{symbol}
    - 方向：[做多 / 做空 / 观望]
    - 现价：
    - 仓位：[轻仓 / 中仓 / 重仓 / 无]

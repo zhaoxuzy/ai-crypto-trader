@@ -253,6 +253,15 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
             json_str = extract_json(final_content)
             s = json.loads(json_str)
 
+            # 从“最终合约策略”文本中提取真正的最终方向，纠正JSON可能的填充错误
+            reasoning_text = s.get("reasoning", "")
+            final_decision_match = re.search(r'我决定(?:输出)?【(long|short|neutral)】', reasoning_text)
+            if final_decision_match:
+                corrected_direction = final_decision_match.group(1)
+                if s.get("direction") != corrected_direction:
+                    logger.warning(f"方向纠正：推理文本明确写为“{corrected_direction}”，JSON中为“{s.get('direction')}”，已自动修正")
+                    s["direction"] = corrected_direction
+
             s.setdefault("position_size", "none")
             s.setdefault("execution_plan", "")
             s.setdefault("reasoning", "")

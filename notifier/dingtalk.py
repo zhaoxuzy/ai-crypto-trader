@@ -14,6 +14,11 @@ from utils.logger import logger
 
 # ===================== 基础推送 =====================
 def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
+    # 安全校验：内容不能为空
+    if not content or not content.strip():
+        logger.error(f"钉钉推送内容为空，已跳过: title={title}")
+        return False
+
     webhook = os.getenv("DINGTALK_WEBHOOK_URL", "")
     secret = os.getenv("DINGTALK_SECRET", "")
     if not webhook:
@@ -58,28 +63,20 @@ def _safe_code_block(text: str) -> str:
     return text.replace("```", "'''")
 
 
-# ===================== 裁决文本解析（改进） =====================
+# ===================== 裁决文本解析 =====================
 def _parse_judge_execution(text: str) -> dict:
-    """
-    从裁决全文中提取最终判决和交易指令。
-    返回值包含：verdict_raw, verdict, direction, position_size, entry_low, entry_high, stop_loss, take_profit
-    """
     result = {}
     if not text:
         return result
 
-    # ----- 提取最终判决（健壮处理换行情况） -----
-    # 先将文本按行拆分，寻找包含“最终判决”关键字的行
     lines = text.split('\n')
     verdict_raw = ""
     for i, line in enumerate(lines):
-        # 匹配 📌 最终判决：xxx  或  最终判决：xxx
         m = re.search(r'(?:📌\s*)?最终判决[：:]\s*(.*)', line)
         if m:
             verdict_raw = m.group(1).strip()
-            # 如果本行为空（即冒号后无内容），则尝试取下一非空行
             if not verdict_raw:
-                for j in range(i+1, len(lines)):
+                for j in range(i + 1, len(lines)):
                     nxt = lines[j].strip()
                     if nxt:
                         verdict_raw = nxt
@@ -87,13 +84,11 @@ def _parse_judge_execution(text: str) -> dict:
             break
 
     if not verdict_raw:
-        verdict_raw = "维持原判"  # 完全无法提取时的默认值
+        verdict_raw = "维持原判"
 
     result["verdict_raw"] = verdict_raw
-    # 内部判断推翻/维持原判（保留备用）
     result["verdict"] = "推翻" if "推翻" in verdict_raw else "维持原判"
 
-    # 2. 定位执行指令块
     exec_start = re.search(r'🎯\s*执行指令', text)
     if not exec_start:
         return result
@@ -134,30 +129,31 @@ def _parse_judge_execution(text: str) -> dict:
 
 # ===================== 超长拆分发送 =====================
 DINGTALK_MAX_CHARS = 4000
-DISPLAY_HINT = "\n\n*（若手机端显示不全，请点开消息查看全文）*"
 
-def _send_long_with_code_block(body: str, title: str) -> None:
-    """发送长消息，处理代码块，不返回布尔值，直接记录日志"""
+
+def _send_long_with_code_block(body: str, title: str, trailing_hint: str = "") -> None:
+    """发送长消息，支持可选的尾随提示（仅在主消息中携带关键词）"""
     if len(body) <= DINGTALK_MAX_CHARS:
-        if send_dingtalk_message(body, title):
+        msg = body + trailing_hint
+        if send_dingtalk_message(msg, title):
             return
         logger.error(f"发送失败: {title}")
         return
 
     code_start = body.find("```")
     if code_start == -1:
-        _send_long_fallback(body, title)
+        _send_long_fallback(body, title, trailing_hint)
         return
 
     before = body[:code_start].rstrip()
-    after_start = body[code_start+3:]
+    after_start = body[code_start + 3:]
     code_end = after_start.find("```")
     if code_end == -1:
-        _send_long_fallback(body, title)
+        _send_long_fallback(body, title, trailing_hint)
         return
 
     code_content = after_start[:code_end].strip()
-    after_code = after_start[code_end+3:].strip()
+    after_code = after_start[code_end + 3:].strip()
 
     if before:
         if not send_dingtalk_message(before + "\n\n*（详细内容见下一条）*", title):
@@ -165,27 +161,27 @@ def _send_long_with_code_block(body: str, title: str) -> None:
             return
         time.sleep(0.6)
 
-    _send_codeblock_split(code_content, after_code, title)
+    _send_codeblock_split(code_content, after_code, title, trailing_hint)
 
 
-def _send_codeblock_split(code_content: str, after_text: str, title: str) -> None:
+def _send_codeblock_split(
+    code_content: str, after_text: str, title: str, trailing_hint: str = ""
+) -> None:
     page_footer = "\n\n*（推演 {}/{}）*"
-    # 预留长度给页脚和提示，确保最终消息不超限
-    footer_len = len(page_footer.format(99, 99)) + len(DISPLAY_HINT)
-    max_chunk = DINGTALK_MAX_CHARS - footer_len - 10  # 再减一些安全余量
+    footer_len = len(page_footer.format(99, 99))
+    # trailing_hint 只在第一条消息中附加，用于通过关键词校验
+    max_chunk = DINGTALK_MAX_CHARS - footer_len - len(trailing_hint) - 10
 
-    # 构造完整代码块
     full_block = f"```\n{code_content}\n```"
     if after_text:
         full_block += f"\n{after_text}"
-    if len(full_block) + len(DISPLAY_HINT) <= DINGTALK_MAX_CHARS:
-        msg = full_block + DISPLAY_HINT
+    if len(full_block) + len(trailing_hint) <= DINGTALK_MAX_CHARS:
+        msg = full_block + trailing_hint
         if send_dingtalk_message(msg, title):
             return
         logger.error(f"发送代码块失败: {title}")
         return
 
-    # 分片切割代码内容
     chunks = []
     remaining = code_content
     while remaining:
@@ -202,22 +198,24 @@ def _send_codeblock_split(code_content: str, after_text: str, title: str) -> Non
 
     total = len(chunks)
     for i, chunk in enumerate(chunks, 1):
-        msg = f"```\n{chunk}\n```" + page_footer.format(i, total) + DISPLAY_HINT
-        # 最后一片才需要附加 after_text
+        msg = f"```\n{chunk}\n```" + page_footer.format(i, total)
+        # 第一条消息附加 trailing_hint，确保关键词出现在消息体中
+        if i == 1 and trailing_hint:
+            msg += trailing_hint
         if i == total and after_text:
             candidate = msg + f"\n{after_text}"
             if len(candidate) <= DINGTALK_MAX_CHARS:
                 msg = candidate
             else:
-                # 若加上 after_text 会超限，则 after_text 单独发送
                 if not send_dingtalk_message(msg, f"{title}({i}/{total})"):
                     logger.error(f"发送分片 {i}/{total} 失败: {title}")
                     return
                 time.sleep(0.6)
-                # 单独发送 after_text，包裹在代码块中保持格式
-                final_msg = f"```\n{after_text}\n```" + DISPLAY_HINT
-                if not send_dingtalk_message(final_msg, f"{title}(附)"):
-                    logger.error(f"发送附加文本失败: {title}")
+                # 单独发送 after_text，附上 trailing_hint 以免关键词丢失
+                final_msg = f"```\n{after_text}\n```" + trailing_hint
+                if final_msg.strip():
+                    if not send_dingtalk_message(final_msg, f"{title}(附)"):
+                        logger.error(f"发送附加文本失败: {title}")
                 return
 
         if not send_dingtalk_message(msg, f"{title}({i}/{total})"):
@@ -227,9 +225,9 @@ def _send_codeblock_split(code_content: str, after_text: str, title: str) -> Non
             time.sleep(0.6)
 
 
-def _send_long_fallback(body: str, title: str) -> None:
+def _send_long_fallback(body: str, title: str, trailing_hint: str = "") -> None:
     page_footer = "\n\n*（续 {}/{}）*"
-    max_chunk = DINGTALK_MAX_CHARS - len(page_footer.format(99,99)) - len(DISPLAY_HINT) - 10
+    max_chunk = DINGTALK_MAX_CHARS - len(page_footer.format(99, 99)) - len(trailing_hint) - 10
     chunks = []
     remaining = body
     while remaining:
@@ -244,7 +242,9 @@ def _send_long_fallback(body: str, title: str) -> None:
         remaining = remaining[cut:].lstrip('\n')
     total = len(chunks)
     for i, chunk in enumerate(chunks, 1):
-        msg = chunk + page_footer.format(i, total) + DISPLAY_HINT
+        msg = chunk + page_footer.format(i, total)
+        if i == 1 and trailing_hint:
+            msg += trailing_hint
         if not send_dingtalk_message(msg, f"{title} ({i}/{total})"):
             logger.error(f"发送续文 {i}/{total} 失败: {title}")
             return
@@ -289,7 +289,9 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> None:
         f"**推演过程**\n"
         f"```\n{_safe_code_block(full_reasoning)}\n```"
     )
-    _send_long_with_code_block(body, f"首席交易员·{symbol}")
+    # 尾随提示，包含关键词相关的上下文文本
+    hint = "\n\n*（若手机端显示不全，请点开消息查看全文）*"
+    _send_long_with_code_block(body, f"首席交易员·{symbol}", trailing_hint=hint)
 
 
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> None:
@@ -313,7 +315,8 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
         f"**审计报告**\n"
         f"```\n{_safe_code_block(report)}\n```"
     )
-    _send_long_with_code_block(body, f"风控审计·{symbol}")
+    hint = "\n\n*（若手机端显示不全，请点开消息查看全文）*"
+    _send_long_with_code_block(body, f"风控审计·{symbol}", trailing_hint=hint)
 
 
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> None:
@@ -347,12 +350,10 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
 
     current = (data.get("mark_price", 0) or 0) if data else 0
 
-    # 判决显示：直接使用解析到的原始文本
+    # 判决显示
     verdict_raw = parsed.get("verdict_raw", "维持原判")
-    # 根据文本内容决定图标（包含“维持”用✅，否则用🔄）
     verdict_icon = "✅" if "维持" in verdict_raw else "🔄"
 
-    # 图标文字
     dir_icon = {"long": "🟢", "short": "🔴", "neutral": "⚪"}.get(final_direction, "⚪")
     dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(final_direction, "观望")
     size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(final_pos_size, "?")
@@ -377,7 +378,8 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         f"**裁决内容**\n"
         f"```\n{_safe_code_block(judge_full_text)}\n```"
     )
-    _send_long_with_code_block(body, f"最终裁决·{symbol}")
+    hint = "\n\n*（若手机端显示不全，请点开消息查看全文）*"
+    _send_long_with_code_block(body, f"最终裁决·{symbol}", trailing_hint=hint)
 
 
 # 兼容旧名

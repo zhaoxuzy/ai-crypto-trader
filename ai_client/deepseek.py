@@ -486,7 +486,7 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
 {json.dumps(key_data, ensure_ascii=False, indent=2)}
 
 【原策略】方向：{orig_dir}，入场：{entry_l}-{entry_h}，止损：{stop_l}，止盈：{tp_l}
-【推演过程】{original_strategy.get('reasoning', '无')[:1000]}  # 截断推演过程
+【推演过程】{original_strategy.get('reasoning', '无')[:1000]}
 【审计报告】{report}
 【裁决规则】
 1. **事实为上**：所有判断必须引用【市场数据】的具体字段和数值，不得凭感觉或记忆。
@@ -507,8 +507,7 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
       3) 新方向必须与清算池综合吸引力评分（liquidity_bias）在逻辑上自洽，若矛盾必须给出强证据链解释，否则必须采纳该锚点。
   c) 所有入场、止损、止盈价格必须基于ATR、清算池边界或期权关键位等客观数据，禁止凭感觉设定。
 
-【输出模板】
- 必须按照以下模板输出。
+【输出模板】：必须按照以下模板完整输出。
        
 📌 最终判决：[维持原判 / 修正参数 / 降级执行 / 推翻]
 🎯 执行指令：
@@ -565,6 +564,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             stop_loss = original_strategy.get("stop_loss", 0)
             take_profit = original_strategy.get("take_profit", 0)
             execution_plan = ""
+            current_price = data.get("mark_price", 0)
 
             # 提取最终判决
             verdict_match = re.search(r'📌\s*最终判决[：:]\s*(.*)', content)
@@ -575,9 +575,13 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             if exec_section:
                 exec_text = exec_section.group(1).strip()
                 # 1. 方向解析（兼容中英文）
-                dir_match = re.search(r'方向[：:]\s*(long|short|neutral)', exec_text)
+                dir_match = re.search(r'方向[：:]\s*(long|short|neutral|观望)', exec_text)
                 if dir_match:
-                    direction = dir_match.group(1)
+                    raw_dir = dir_match.group(1)
+                    if raw_dir == "观望":
+                        direction = "neutral"
+                    else:
+                        direction = raw_dir
                 else:
                     if re.search(r'方向[：:]\s*做多', exec_text):
                         direction = "long"
@@ -597,8 +601,6 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 price_match = re.search(r'现价[：:]\s*([\d.]+)', exec_text)
                 if price_match:
                     current_price = float(price_match.group(1))
-                else:
-                    current_price = data.get("mark_price", 0.0)
 
                 # 4. 入场区间
                 entry_match = re.search(r'入场区间[：:]\s*([\d.]+)\s*[-–]\s*([\d.]+)', exec_text)
@@ -622,8 +624,6 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     execution_plan = plan_match.group(1).strip()
                 else:
                     execution_plan = exec_text.replace('\n', ' ').strip()
-            else:
-                exec_text = ""
 
             # 简化判决：以 direction 为准
             if direction == "neutral":
@@ -673,7 +673,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     "exec_block": exec_section.group(0).strip() if exec_section else "",
                     "reasoning_block": reasoning_block,
                     "risk_block": risk_block,
-                    "current_price": current_price if 'current_price' in dir() else data.get("mark_price", 0)
+                    "current_price": current_price
                 }
             }
 
@@ -690,7 +690,6 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
 def _validate_execution_direction(s: dict):
     exec_plan = s.get("execution_plan", "")
     final_direction = s.get("direction", "")
-    # 避免因文本中提到“放弃做空，转向做多”而误判方向矛盾
     if final_direction == "long" and "做空" in exec_plan and "做多" not in exec_plan:
         logger.warning("输出矛盾：方向为long但执行指令包含做空且未提及做多，已自动将方向改为neutral")
         _force_neutral(s, "输出矛盾：方向与执行指令不一致")
@@ -726,8 +725,6 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
 
     if verdict == "维持原判":
         original_strategy["_judge_reasoning"] = _clean_reasoning(final.get("reasoning", ""))
-        return original_strategy
-
     elif verdict == "修正参数":
         original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
         original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
@@ -739,9 +736,6 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
         original_strategy["execution_plan"] = final.get("execution_plan", original_strategy.get("execution_plan", ""))
         original_strategy["risk_note"] = final.get("risk_note", original_strategy.get("risk_note", ""))
         original_strategy["_judge_reasoning"] = _clean_reasoning(final.get("reasoning", ""))
-        _validate_execution_direction(original_strategy)
-        return original_strategy
-
     elif verdict == "降级执行":
         original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
         original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
@@ -754,14 +748,9 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
         size_map = {"heavy": "medium", "medium": "light", "light": "light"}
         original_strategy["position_size"] = size_map.get(final.get("final_position_size", original_strategy.get("position_size", "light")), "light")
         original_strategy["_judge_reasoning"] = _clean_reasoning(final.get("reasoning", ""))
-        _validate_execution_direction(original_strategy)
-        return original_strategy
-
     elif verdict == "推翻改为观望":
         _force_neutral(original_strategy, f"交易委员会决议: {verdict}")
         original_strategy["_judge_reasoning"] = _clean_reasoning(final.get("reasoning", ""))
-        return original_strategy
-
     elif verdict == "推翻改为反向操作":
         original_strategy["direction"] = final.get("final_direction", original_strategy.get("direction"))
         original_strategy["confidence"] = final.get("final_confidence", original_strategy.get("confidence"))
@@ -773,7 +762,16 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
         original_strategy["execution_plan"] = final.get("execution_plan", "")
         original_strategy["risk_note"] = final.get("risk_note", "")
         original_strategy["_judge_reasoning"] = _clean_reasoning(final.get("reasoning", ""))
-        _validate_execution_direction(original_strategy)
-        return original_strategy
 
+    # 最终安全检查：neutral 时强制清空交易参数
+    if original_strategy.get("direction") == "neutral":
+        original_strategy["entry_price_low"] = 0
+        original_strategy["entry_price_high"] = 0
+        original_strategy["stop_loss"] = 0
+        original_strategy["take_profit"] = 0
+        original_strategy["position_size"] = "none"
+        if not original_strategy.get("execution_plan"):
+            original_strategy["execution_plan"] = "观望"
+
+    _validate_execution_direction(original_strategy)
     return original_strategy

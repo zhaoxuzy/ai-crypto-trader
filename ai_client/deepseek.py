@@ -543,7 +543,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
 
             # ---------- 纯文本解析 ----------
             original_dir = original_strategy.get("direction", "neutral")
-            direction = original_dir
+            direction = original_dir                # 最终方向，默认与原策略相同
             position_size = original_strategy.get("position_size", "none")
             entry_low = original_strategy.get("entry_price_low", 0)
             entry_high = original_strategy.get("entry_price_high", 0)
@@ -560,14 +560,12 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             exec_section = re.search(r'🎯\s*执行指令[：:]?\s*(.*?)(?=📋|⚠️|$)', content, re.DOTALL)
             if exec_section:
                 exec_text = exec_section.group(1).strip()
+
                 # 1. 方向解析（兼容中英文）
                 dir_match = re.search(r'方向[：:]\s*(long|short|neutral|观望)', exec_text)
                 if dir_match:
                     raw_dir = dir_match.group(1)
-                    if raw_dir == "观望":
-                        direction = "neutral"
-                    else:
-                        direction = raw_dir
+                    direction = "neutral" if raw_dir == "观望" else raw_dir
                 else:
                     if re.search(r'方向[：:]\s*做多', exec_text):
                         direction = "long"
@@ -611,24 +609,30 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 else:
                     execution_plan = exec_text.replace('\n', ' ').strip()
 
-            # 简化判决：以 direction 为准
-            if direction == "neutral":
+            # ========== 最终判决逻辑（直接信任AI裁决） ==========
+            # 1. 提取 📌 最终判决 中的关键词
+            verdict_text = verdict_match.group(1).strip() if verdict_match else ""
+            verdict_text_clean = re.sub(r'\*{1,2}', '', verdict_text).strip()  # 清理 Markdown 加粗符号
+
+            # 2. 根据最终方向和判决关键词，直接决定 verdict
+            if direction == "neutral" and direction != original_dir:
                 verdict = "推翻改为观望"
                 entry_low, entry_high, stop_loss, take_profit = 0, 0, 0, 0
                 position_size = "none"
-            elif direction != original_dir:
+            elif direction != original_dir and direction != "neutral":
                 verdict = "推翻改为反向操作"
+            elif "修正" in verdict_text_clean:
+                verdict = "修正参数"
+            elif "降级" in verdict_text_clean:
+                verdict = "降级执行"
+            elif "推翻" in verdict_text_clean:
+                # 文本写了推翻但方向未变，保守处理为推翻改为观望
+                verdict = "推翻改为观望"
+                direction = "neutral"
+                entry_low, entry_high, stop_loss, take_profit = 0, 0, 0, 0
+                position_size = "none"
             else:
-                if verdict_match:
-                    verdict_text = verdict_match.group(1).strip()
-                    if "修正" in verdict_text:
-                        verdict = "修正参数"
-                    elif "降级" in verdict_text:
-                        verdict = "降级执行"
-                    else:
-                        verdict = "维持原判"
-                else:
-                    verdict = "维持原判"
+                verdict = "维持原判"
 
             # 提取裁决理由块
             reasoning_block = ""

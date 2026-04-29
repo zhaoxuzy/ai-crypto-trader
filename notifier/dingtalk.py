@@ -1,4 +1,4 @@
-# notifier/dingtalk.py
+ # notifier/dingtalk.py
 import os
 import time
 import hmac
@@ -62,24 +62,19 @@ def _safe_code_block(text: str) -> str:
     return text.replace("```", "'''")
 
 
-# ===================== 裁决文本解析（强化版） =====================
+# ===================== 裁决文本解析 =====================
 def _parse_judge_execution(text: str) -> dict:
-    """
-    强制从裁决文本中提取最终判决和执行指令。
-    提取失败时返回空字典，由上层决定默认值。
-    """
     result = {}
     if not text:
         return result
 
-    # ----- 1. 提取最终判决（支持跨行） -----
     lines = text.split('\n')
     verdict_raw = ""
     for i, line in enumerate(lines):
         m = re.search(r'(?:📌\s*)?最终判决[：:]\s*(.*)', line)
         if m:
             verdict_raw = m.group(1).strip()
-            if not verdict_raw:  # 冒号后为空，取下一非空行
+            if not verdict_raw:
                 for j in range(i + 1, len(lines)):
                     nxt = lines[j].strip()
                     if nxt:
@@ -88,7 +83,6 @@ def _parse_judge_execution(text: str) -> dict:
             break
 
     if not verdict_raw:
-        # 尝试模糊匹配整段
         m2 = re.search(r'最终判决[：:]\s*([^\n]*)', text)
         if m2:
             verdict_raw = m2.group(1).strip()
@@ -99,13 +93,11 @@ def _parse_judge_execution(text: str) -> dict:
         result["verdict_raw"] = ""
         result["verdict"] = ""
 
-    # ----- 2. 定位执行指令块 -----
     exec_start = re.search(r'🎯\s*执行指令', text)
     if not exec_start:
         return result
     exec_text = text[exec_start.start():]
 
-    # ----- 2.1 方向 -----
     m_dir = re.search(r'方向[：:]\s*([^\n，,]+)', exec_text)
     if m_dir:
         raw_dir = m_dir.group(1).strip()
@@ -122,7 +114,6 @@ def _parse_judge_execution(text: str) -> dict:
             d = m_dir2.group(1)
             result["direction"] = {"做多": "long", "做空": "short", "观望": "neutral"}[d]
 
-    # ----- 2.2 仓位 -----
     m_pos = re.search(r'仓位[：:]\s*([^\n，,]+)', exec_text)
     if m_pos:
         raw_pos = m_pos.group(1).strip()
@@ -135,7 +126,6 @@ def _parse_judge_execution(text: str) -> dict:
         elif "无" in raw_pos:
             result["position_size"] = "none"
 
-    # ----- 2.3 入场区间 -----
     m_entry = re.search(r'入场区间[：:]\s*([\d.,]+)\s*[-~至]+?\s*([\d.,]+)', exec_text)
     if m_entry:
         try:
@@ -144,7 +134,6 @@ def _parse_judge_execution(text: str) -> dict:
         except ValueError:
             pass
 
-    # ----- 2.4 止损 -----
     m_sl = re.search(r'止损[：:]\s*([\d.,]+)', exec_text)
     if m_sl:
         try:
@@ -152,7 +141,6 @@ def _parse_judge_execution(text: str) -> dict:
         except ValueError:
             pass
 
-    # ----- 2.5 止盈 -----
     m_tp = re.search(r'止盈[：:]\s*([\d.,]+)', exec_text)
     if m_tp:
         try:
@@ -163,20 +151,8 @@ def _parse_judge_execution(text: str) -> dict:
     return result
 
 
-# ===================== 发送（无分块，直接完整发送） =====================
-def _send_full_message(body: str, title: str) -> None:
-    """直接发送完整消息，记录日志，并确保内容非空"""
-    if not body or not body.strip():
-        logger.error(f"消息体为空，取消发送: title={title}")
-        return
-    if len(body) > 4000:
-        logger.warning(f"消息长度 {len(body)} 超过4000字符，钉钉可能会截断显示")
-    if not send_dingtalk_message(body, title):
-        logger.error(f"发送失败: {title}")
-
-
-# ===================== 消息构建 =====================
-def format_strategy_message(symbol: str, strategy: dict, data: dict) -> None:
+# ===================== 消息构建 (返回消息体，不发送) =====================
+def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -212,10 +188,10 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> None:
         f"**推演过程**\n"
         f"```\n{_safe_code_block(full_reasoning)}\n```"
     )
-    _send_full_message(body, f"首席交易员·{symbol}")
+    return body
 
 
-def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> None:
+def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -236,24 +212,21 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
         f"**审计报告**\n"
         f"```\n{_safe_code_block(report)}\n```"
     )
-    _send_full_message(body, f"风控审计·{symbol}")
+    return body
 
 
-def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> None:
+def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
-    # 获取裁决全文
     judge_full_text = ""
     if isinstance(judge_result, dict):
         judge_full_text = judge_result.get("content", "") or judge_result.get("full_report", "") or ""
     if not judge_full_text:
         judge_full_text = strategy.get("_judge_reasoning", "")
 
-    # 解析裁决内容
     parsed = _parse_judge_execution(judge_full_text) if judge_full_text else {}
 
-    # ----- 必须从裁决内容中提取的字段，缺失时使用安全默认值 -----
     verdict_raw = parsed.get("verdict_raw", "")
     final_direction = parsed.get("direction", "neutral")
     final_pos_size = parsed.get("position_size", "none")
@@ -262,7 +235,6 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     final_stop_loss = parsed.get("stop_loss", 0)
     final_take_profit = parsed.get("take_profit", 0)
 
-    # 如果关键字段完全缺失，尝试用 strategy 兜底（但只在解析完全失败时）
     if not verdict_raw:
         verdict_raw = "维持原判"
         final_direction = strategy.get("direction", final_direction)
@@ -300,9 +272,9 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         f"**裁决内容**\n"
         f"```\n{_safe_code_block(judge_full_text)}\n```"
     )
-    _send_full_message(body, f"最终裁决·{symbol}")
+    return body
 
 
 # 兼容旧名
-def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> None:
-    format_final_decision(symbol, strategy, judge_result, data)
+def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
+    return format_final_decision(symbol, strategy, judge_result, data)

@@ -659,7 +659,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
 
             # 提取裁决理由块
             reasoning_block = ""
-            reason_section = re.search(r'📋\s*裁决理由[：:]?\s*(.*?)(?=⚠️|$)', content, re.DOTALL)
+            reason_section = re.search(r'📋\s*(裁决说明|裁决理由)[：:]?\s*(.*?)(?=⚠️|$)', content, re.DOTALL)
             if reason_section:
                 reasoning_block = reason_section.group(0).strip()
 

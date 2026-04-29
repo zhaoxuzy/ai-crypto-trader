@@ -155,12 +155,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         f"止盈：{take_profit:.0f}  "
     )
 
-    judge_content = (
-        strategy.get("_title_line", "") + "\n" +
-        strategy.get("_exec_block_raw", "") + "\n" +
-        strategy.get("_reasoning_block_raw", "") + "\n" +
-        strategy.get("_risk_block_raw", "")
-    )
+    judge_content = strategy.get("_judge_reasoning", "")
     judge_content = _safe_truncate(judge_content.strip(), max_len=15000)
 
     body = (

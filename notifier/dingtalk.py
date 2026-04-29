@@ -73,7 +73,6 @@ def _parse_judge_execution(text: str) -> dict:
         return result
 
     # ----- 1. 提取最终判决（支持跨行） -----
-    # 找到包含“最终判决”的行，并获取其后的文本
     lines = text.split('\n')
     verdict_raw = ""
     for i, line in enumerate(lines):
@@ -97,7 +96,6 @@ def _parse_judge_execution(text: str) -> dict:
         result["verdict_raw"] = verdict_raw
         result["verdict"] = "推翻" if "推翻" in verdict_raw else "维持原判"
     else:
-        # 完全提取不到，标记为空
         result["verdict_raw"] = ""
         result["verdict"] = ""
 
@@ -107,11 +105,10 @@ def _parse_judge_execution(text: str) -> dict:
         return result
     exec_text = text[exec_start.start():]
 
-    # ----- 2.1 方向：提取“做多/做空/观望”关键词，容错 -----
+    # ----- 2.1 方向 -----
     m_dir = re.search(r'方向[：:]\s*([^\n，,]+)', exec_text)
     if m_dir:
         raw_dir = m_dir.group(1).strip()
-        # 从原始文本中匹配关键词
         if "做多" in raw_dir or "多" in raw_dir:
             result["direction"] = "long"
         elif "做空" in raw_dir or "空" in raw_dir:
@@ -119,7 +116,6 @@ def _parse_judge_execution(text: str) -> dict:
         elif "观望" in raw_dir:
             result["direction"] = "neutral"
 
-    # 如果没有提取到，但可能方向写在另一行，做兜底
     if "direction" not in result:
         m_dir2 = re.search(r'(做多|做空|观望)', exec_text)
         if m_dir2:
@@ -167,11 +163,14 @@ def _parse_judge_execution(text: str) -> dict:
     return result
 
 
-# ===================== 发送（不再分块，直接发送完整消息） =====================
+# ===================== 发送（无分块，直接完整发送） =====================
 def _send_full_message(body: str, title: str) -> None:
-    """直接发送完整消息，记录日志"""
+    """直接发送完整消息，记录日志，并确保内容非空"""
+    if not body or not body.strip():
+        logger.error(f"消息体为空，取消发送: title={title}")
+        return
     if len(body) > 4000:
-        logger.warning(f"消息长度 {len(body)} 超过4000字符，钉钉可能会截断显示，完整内容请查看日志或源数据")
+        logger.warning(f"消息长度 {len(body)} 超过4000字符，钉钉可能会截断显示")
     if not send_dingtalk_message(body, title):
         logger.error(f"发送失败: {title}")
 
@@ -265,9 +264,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
 
     # 如果关键字段完全缺失，尝试用 strategy 兜底（但只在解析完全失败时）
     if not verdict_raw:
-        verdict_raw = "维持原判"  # 最终默认
-        # 此时也不用 strategy 的方向等，因为可能是裁决内容缺失
-        # 但仍然用 strategy 的价格信息以防极特殊情况
+        verdict_raw = "维持原判"
         final_direction = strategy.get("direction", final_direction)
         final_pos_size = strategy.get("position_size", final_pos_size)
         final_entry_low = final_entry_low or strategy.get("entry_price_low", 0) or 0
@@ -277,10 +274,8 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
 
     current = (data.get("mark_price", 0) or 0) if data else 0
 
-    # 判决图标
     verdict_icon = "✅" if "维持" in verdict_raw else "🔄"
 
-    # 方向、仓位、置信度显示
     dir_icon = {"long": "🟢", "short": "🔴", "neutral": "⚪"}.get(final_direction, "⚪")
     dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(final_direction, "观望")
     size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(final_pos_size, "?")

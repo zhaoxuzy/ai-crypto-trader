@@ -685,7 +685,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     "execution_plan": execution_plan,
                     "reasoning": content,
                     "risk_note": risk_note,
-                    "title_line": verdict_match.group(0).strip() if verdict_match else "",
+                   "title_line": f"📌 最终判决: {verdict}",
                     "exec_block": exec_section.group(0).strip() if exec_section else "",
                     "reasoning_block": reasoning_block,
                     "risk_block": risk_block,

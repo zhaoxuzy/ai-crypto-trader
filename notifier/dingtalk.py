@@ -58,42 +58,36 @@ def _safe_code_block(text: str) -> str:
     return text.replace("```", "'''")
 
 
-# ===================== 裁决文本解析（改进） =====================
+# ===================== 裁决文本解析 =====================
 def _parse_judge_execution(text: str) -> dict:
-    """
-    从裁决全文中提取最终判决和交易指令。
-    返回值包含：verdict, direction, position_size, entry_low, entry_high, stop_loss, take_profit
-    """
     result = {}
     if not text:
         return result
 
-    # 1. 提取最终判决
-    # 支持：📌 最终判决：推翻 / 维持原判
+    # 提取最终判决（保留原始文本）
     m = re.search(r'(?:📌\s*)?最终判决[：:]\s*(.*?)(?:\n|$)', text)
     if m:
         raw = m.group(1).strip()
+        result["verdict_raw"] = raw
         result["verdict"] = "推翻" if "推翻" in raw else "维持原判"
     else:
         result["verdict"] = "维持原判"
+        result["verdict_raw"] = "维持原判"
 
-    # 2. 定位执行指令块（🎯 执行指令 之后的部分）
+    # 定位执行指令块
     exec_start = re.search(r'🎯\s*执行指令', text)
     if not exec_start:
         return result
     exec_text = text[exec_start.start():]
 
-    # 提取方向（仅允许：做多、做空、观望）
     m_dir = re.search(r'方向[：:]\s*(做多|做空|观望)', exec_text)
     if m_dir:
         result["direction"] = m_dir.group(1)
 
-    # 提取仓位（轻仓/中仓/重仓/无仓位）
     m_pos = re.search(r'仓位[：:]\s*(轻仓|中仓|重仓|无仓位)', exec_text)
     if m_pos:
         result["position_size"] = m_pos.group(1)
 
-    # 入场区间：支持 入场区间：65000-66000，入场区间：65000~66000，入场区间：65000至66000
     m_entry = re.search(r'入场区间[：:]\s*([\d.,]+)\s*[-~至]+?\s*([\d.,]+)', exec_text)
     if m_entry:
         try:
@@ -102,7 +96,6 @@ def _parse_judge_execution(text: str) -> dict:
         except ValueError:
             pass
 
-    # 止损
     m_sl = re.search(r'止损[：:]\s*([\d.,]+)', exec_text)
     if m_sl:
         try:
@@ -110,7 +103,6 @@ def _parse_judge_execution(text: str) -> dict:
         except ValueError:
             pass
 
-    # 止盈
     m_tp = re.search(r'止盈[：:]\s*([\d.,]+)', exec_text)
     if m_tp:
         try:
@@ -125,7 +117,6 @@ def _parse_judge_execution(text: str) -> dict:
 DINGTALK_MAX_CHARS = 4000
 
 def _send_long_with_code_block(body: str, title: str) -> None:
-    """发送长消息，处理代码块，不返回布尔值，直接记录日志"""
     if len(body) <= DINGTALK_MAX_CHARS:
         if send_dingtalk_message(body, title):
             return
@@ -224,7 +215,6 @@ def _send_long_fallback(body: str, title: str) -> None:
 
 # ===================== 消息构建 =====================
 def format_strategy_message(symbol: str, strategy: dict, data: dict) -> None:
-    """首席交易员推送：推演过程（完整 reasoning）"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -250,7 +240,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> None:
         f"止盈 {take_profit:.0f}"
     )
 
-    # 改用完整 reasoning
     full_reasoning = strategy.get("reasoning", "")
     if not full_reasoning:
         full_reasoning = "无推演内容"
@@ -265,7 +254,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> None:
 
 
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> None:
-    """风控审计官推送"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -290,21 +278,19 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
 
 
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> None:
-    """交易委员会最终裁决推送，摘要数据直接从裁决文本解析"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
-    # ----- 获取裁决全文 -----
+    # 获取裁决全文
     judge_full_text = ""
     if isinstance(judge_result, dict):
         judge_full_text = judge_result.get("content", "") or judge_result.get("full_report", "") or ""
     if not judge_full_text:
         judge_full_text = strategy.get("_judge_reasoning", "")
 
-    # ----- 解析执行指令 -----
     parsed = _parse_judge_execution(judge_full_text) if judge_full_text else {}
 
-    # 优先使用解析值，否则回退到 strategy
+    # 提取指令参数（同之前逻辑）
     final_direction = parsed.get("direction") or strategy.get("direction", "neutral")
     final_pos_size = parsed.get("position_size") or strategy.get("position_size", "none")
     final_entry_low = parsed.get("entry_low")
@@ -322,21 +308,17 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
 
     current = (data.get("mark_price", 0) or 0) if data else 0
 
-    # 判决结果
-    verdict = parsed.get("verdict", "维持原判")
-    if verdict not in ("维持原判", "推翻"):
-        verdict = "维持原判"
+    # 判决显示：直接使用“最终判决：”后的原始文本
+    verdict_raw = parsed.get("verdict_raw", "维持原判")
+    verdict_icon = "✅" if "维持" in verdict_raw else "🔄"
 
-    # 图标与文字
+    # 图标文字
     dir_icon = {"long": "🟢", "short": "🔴", "neutral": "⚪"}.get(final_direction, "⚪")
     dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(final_direction, "观望")
     size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(final_pos_size, "?")
     conf_icon = "🟢" if strategy.get("confidence") == "high" else ("🟡" if strategy.get("confidence") == "medium" else "🔴")
 
-    verdict_text = "✅维持原判" if verdict == "维持原判" else "🔄推翻"
-    verdict_icon = "✅" if verdict == "维持原判" else "🔄"
-
-    header = f"### 📋 交易委员会 · 最终裁决 | {symbol} | {verdict_icon} {verdict_text} | {now}"
+    header = f"### 📋 交易委员会 · 最终裁决 | {symbol} | {verdict_icon} {verdict_raw} | {now}"
     decision_line = f"{dir_icon} {dir_text} | {size_text} | 置信度{conf_icon}"
     price_block = (
         f"现价 {current:.1f}  |  "
@@ -358,6 +340,6 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     _send_long_with_code_block(body, f"最终裁决·{symbol}")
 
 
-# 兼容旧名，保持接口不变但不返回布尔值
+# 兼容旧名
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> None:
     format_final_decision(symbol, strategy, judge_result, data)

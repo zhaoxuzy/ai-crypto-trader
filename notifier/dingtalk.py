@@ -1,4 +1,3 @@
-# notifier/dingtalk.py
 import os
 import time
 import hmac
@@ -10,8 +9,9 @@ import re
 from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 
+# 单个代码块最大行数（经验值，钉钉通常在20行左右开始折叠，我们设为10行更安全）
+MAX_CODE_LINES = 10
 
-# ========== 基础推送 ==========
 def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     webhook = os.getenv("DINGTALK_WEBHOOK_URL", "")
     secret = os.getenv("DINGTALK_SECRET", "")
@@ -36,16 +36,21 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         return False
 
 
-# ========== 长度保护 ==========
-def _safe_truncate(text: str, max_len: int = 15000) -> str:
-    """截断过长的文本，防止超出钉钉消息上限"""
-    if len(text) <= max_len:
-        return text
-    hint = "\n\n... (内容过长已截断，完整信息见运行日志)"
-    return text[:max_len - len(hint)] + hint
+def split_code_block(text: str, max_lines: int = MAX_CODE_LINES) -> list:
+    """将大段文本拆分成多个小代码块，每个不超过指定行数"""
+    lines = text.split('\n')
+    chunks = []
+    current_chunk = []
+    for line in lines:
+        current_chunk.append(line)
+        if len(current_chunk) >= max_lines:
+            chunks.append('\n'.join(current_chunk))
+            current_chunk = []
+    if current_chunk:
+        chunks.append('\n'.join(current_chunk))
+    return chunks
 
 
-# ========== 1. 首席交易员初步信号 ==========
 def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
@@ -73,19 +78,52 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     )
 
     reasoning = strategy.get("reasoning", "无推演过程")
-    reasoning = _safe_truncate(reasoning)
+    
+    # 最终策略优先从 final_strategy 字段提取，否则从 reasoning 里兜底
+    final_strategy = strategy.get("final_strategy", "")
+    if not final_strategy:
+        match = re.search(r'最终合约策略[：:]\s*(.*?)(?=主动证伪|微观盘口确认|\n\s*\n|$)', reasoning, re.DOTALL)
+        if match:
+            final_strategy = match.group(1).strip()
 
-    body = (
-        f"{line_title}\n"
-        f"{line_decision}\n"
-        f"{line_price}\n\n"
-        f"**推演过程**\n"
-        f"```\n{reasoning}\n```"
-    )
-    return body
+    # 构建输出内容
+    body_parts = [line_title, line_decision, line_price]
+
+    # 如果有最终策略，用引用格式展示
+    if final_strategy:
+        strategy_text = "> " + final_strategy.replace('\n', '\n> ')
+        body_parts.append(f"**最终策略**\n{strategy_text}")
+
+    # 推演过程：按步骤拆分成多个小代码块，每个不超过 MAX_CODE_LINES 行
+    steps = re.split(r'(?=第[一二三四五六七]步)', reasoning)
+    if len(steps) > 1:
+        body_parts.append("**推演过程**")
+        for step in steps:
+            step = step.strip()
+            if not step:
+                continue
+            # 提取步骤标题
+            m = re.match(r'(第[一二三四五六七]步[^：:]*[：:])', step)
+            step_title = m.group(1) if m else ""
+            step_content = step[len(step_title):].strip() if step_title else step
+            
+            # 将步骤内容拆分成多个小代码块
+            chunks = split_code_block(step_content, MAX_CODE_LINES)
+            for i, chunk in enumerate(chunks):
+                if i == 0 and step_title:
+                    body_parts.append(f"**{step_title}**\n```\n{chunk}\n```")
+                else:
+                    body_parts.append(f"```\n{chunk}\n```")
+    else:
+        # 无法按步骤分割，直接分块
+        chunks = split_code_block(reasoning, MAX_CODE_LINES)
+        body_parts.append("**推演过程**")
+        for chunk in chunks:
+            body_parts.append(f"```\n{chunk}\n```")
+
+    return '\n'.join(body_parts)
 
 
-# ========== 2. 风控审计报告 ==========
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
@@ -107,19 +145,15 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     line_severity = f"🔴严重 {high}  🟡中等 {medium}  ⚪轻微 {low}  "
 
     report = reviewer_report.get("full_report", "无审查报告")
-    report = _safe_truncate(report)
+    # 审计报告也进行分块
+    chunks = split_code_block(report, MAX_CODE_LINES)
+    body_parts = [line_title, line_conclusion, line_severity, "**审计报告**"]
+    for chunk in chunks:
+        body_parts.append(f"```\n{chunk}\n```")
 
-    body = (
-        f"{line_title}\n"
-        f"{line_conclusion}\n"
-        f"{line_severity}\n\n"
-        f"**审计报告**\n"
-        f"```\n{report}\n```"
-    )
-    return body
+    return '\n'.join(body_parts)
 
 
-# ========== 3. 交易委员会最终裁决 ==========
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
@@ -156,18 +190,25 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     )
 
     judge_content = strategy.get("_judge_reasoning", "")
-    judge_content = _safe_truncate(judge_content.strip(), max_len=15000)
+    if not judge_content:
+        judge_content = strategy.get("_judge_data", {}).get("reasoning", "")
 
-    body = (
-        f"{line_title}\n"
-        f"{line_decision}\n"
-        f"{line_price}\n\n"
-        f"**裁决内容**\n"
-        f"```\n{judge_content}\n```"
-    )
-    return body
+    body_parts = [line_title, line_decision, line_price]
+    if judge_content:
+        body_parts.append("**裁决内容**")
+        # 按“一、”“二、”等段落拆分裁决内容
+        sections = re.split(r'(?=^[一二三四五六七八九十]、)', judge_content, flags=re.MULTILINE)
+        for section in sections:
+            section = section.strip()
+            if not section:
+                continue
+            chunks = split_code_block(section, MAX_CODE_LINES)
+            for chunk in chunks:
+                body_parts.append(f"```\n{chunk}\n```")
+
+    return '\n'.join(body_parts)
 
 
-# ========== 兼容旧版 ==========
+# 兼容旧版调用
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> str:
     return format_final_decision(symbol, strategy, judge_result, data)

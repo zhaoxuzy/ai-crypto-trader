@@ -140,7 +140,9 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 
 第二步：猎物定位
 分析数据：上下方清算池距离/强度、综合吸引力评分、比值、订单簿买卖盘量、失衡率。
-定位规则：“猎物距离”必须是触发距，即价格到清算区最近边界的距离。价格仅需触碰该边界，即可引爆该侧流动性。
+定位规则：
+- “猎物距离”默认为触发距（价格到清算区最近边界的距离），但在自我质疑中你必须额外计算“有效引爆距离”：即考虑该侧订单簿卖/买单的累积厚度。计算方式：有效引爆距离 = 触发距 + 该侧订单簿前0.5%深度内挂单所能推动的价格反向缓冲区间（估算为：该侧挂单总量 / 当前价格附近平均分钟成交量 × ATR_15m ）。
+  若有效引爆距离 > 触发距的1.5倍，则该猎物视为“有厚度保护”，需审慎评估其可被真实引爆的概率。
 推演要求：你需要基于上述规则，独立完成对第一段运动方向和幅度的战术推演。推演应围绕以下维度展开，最终自然得出你的判断：
 - 攻击成本：基于触发距，哪个方向的猎物是阻力最小的路径？
 - 盘口阻力：订单簿失衡率和CVD斜率是在助推还是阻挠该方向？如果两者矛盾，你需要做出裁决并说明依据。
@@ -170,7 +172,8 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 最终结论：
 
 第六步：跨币种验证
-分析数据：完成以下三项强制对比，每项写出具体数值，基于此三组客观对比，深度分析两币种整体方向是一致还是矛盾，并解释共振或背离的市场含义.
+分析数据：
+完成以下三项强制对比，每项写出具体数值，基于此三组客观对比，深度分析两币种整体方向是一致还是矛盾，并解释共振或背离的市场含义.
 ① 清算池比值方向对比：[ ] vs [ ]，两者方向是否一致？
 ② CVD斜率方向对比：[ ] vs [ ]，资金流向是否共振？
 ③ 顶级多空比分位对比：[ ]% vs [ ]%，哪个币种的机构空头更极端？
@@ -179,9 +182,8 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 最终结论：
 跨币种反馈：基于以上对比，我的单币种结论被如何修正？有无新增风险点？如果有，我必须回到第三步或第五步的自我质疑中重新审视。
 
-第七步：制定交易计划（必须输出）
-基于前六步的分析，做出一份专业的合约交易计划。
-价格路径推演：必须综合运用流动性猎杀理论（清算池位置/强度）、行为金融学（对手盘心理、恐慌/贪婪、顶级多空比极端值）以及博弈论（做市商与散户的短期博弈策略）进行推演，价格最可能如何测试并触发关键流动性区域？触发后会产生何种连锁强平或踩踏？
+第七步：制定交易计划（必须按照以下格式输出）
+价格路径推演：必须综合运用流动性猎杀理论（清算池位置/强度）、行为金融学（对手盘心理、恐慌/贪婪、顶级多空比极端值）以及博弈论（做市商与散户的短期博弈策略）进行推演，价格最有可能的走势。
 最终合约策略：（基于前六步综合分析，必须按照以下格式输出策略，否则视为无效输出）
    - 币种：{symbol}
    - 方向：[做多 / 做空 / 观望]
@@ -270,16 +272,34 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
             json_str = extract_json(final_content)
             s = json.loads(json_str)
 
-            # 从“最终合约策略”文本中提取真正的最终方向，纠正JSON可能的填充错误
-            reasoning_text = s.get("reasoning", "")
-            final_decision_match = re.search(r'我决定(?:输出)?【(long|short|neutral)】', reasoning_text)
-            if final_decision_match:
-                corrected_direction = final_decision_match.group(1)
-                if s.get("direction") != corrected_direction:
-                    logger.warning(f"方向纠正：推理文本明确写为“{corrected_direction}”，JSON中为“{s.get('direction')}”，已自动修正")
-                    s["direction"] = corrected_direction
+            # ========== 标准化 A 的输出 ==========
+            # 方向标准化（兼容中英文）
+            dir_map = {"做多": "long", "做空": "short", "观望": "neutral",
+                       "long": "long", "short": "short", "neutral": "neutral"}
+            raw_dir = s.get("direction", "")
+            if raw_dir in dir_map:
+                s["direction"] = dir_map[raw_dir]
+            else:
+                # 尝试从 reasoning 的最终策略文本中提取
+                reasoning_text = s.get("reasoning", "")
+                final_decision_match = re.search(r'方向[：:]\s*(做多|做空|观望|long|short|neutral)', reasoning_text)
+                if final_decision_match:
+                    s["direction"] = dir_map.get(final_decision_match.group(1), "neutral")
+                else:
+                    s["direction"] = "neutral"
 
-            s.setdefault("position_size", "none")
+            # 仓位标准化
+            pos_map = {"轻仓": "light", "中仓": "medium", "重仓": "heavy", "无": "none",
+                       "light": "light", "medium": "medium", "heavy": "heavy", "none": "none"}
+            raw_pos = s.get("position_size", "")
+            s["position_size"] = pos_map.get(raw_pos, "none")
+
+            # 置信度标准化
+            conf_map = {"高": "high", "中": "medium", "低": "low",
+                        "high": "high", "medium": "medium", "low": "low"}
+            raw_conf = s.get("confidence", "")
+            s["confidence"] = conf_map.get(raw_conf, "medium")
+
             s.setdefault("execution_plan", "")
             s.setdefault("reasoning", "")
             s.setdefault("risk_note", "")
@@ -567,9 +587,9 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             if not content.strip():
                 raise ValueError("交易委员会响应为空")
 
-            # ---------- 纯文本解析 ----------
+            # ---------- 采集执行指令块 ----------
             original_dir = original_strategy.get("direction", "neutral")
-            direction = original_dir                # 最终方向，默认与原策略相同
+            direction = original_dir
             position_size = original_strategy.get("position_size", "none")
             entry_low = original_strategy.get("entry_price_low", 0)
             entry_high = original_strategy.get("entry_price_high", 0)
@@ -578,69 +598,57 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             execution_plan = ""
             current_price = data.get("mark_price", 0)
 
-            # 提取最终判决
-            verdict_match = re.search(r'📌\s*最终判决[：:]\s*(.*)', content)
-            title_line = verdict_match.group(0).strip() if verdict_match else "📌 最终判决：维持原判"
-
             # 提取执行指令块
             exec_section = re.search(r'🎯\s*执行指令[：:]?\s*(.*?)(?=📋|⚠️|$)', content, re.DOTALL)
             if exec_section:
                 exec_text = exec_section.group(1).strip()
 
-                # 1. 方向解析（兼容中英文）
-                dir_match = re.search(r'方向[：:]\s*(long|short|neutral|观望)', exec_text)
+                # 1. 方向解析并标准化
+                dir_match = re.search(r'方向[：:]\s*(做多|做空|观望|long|short|neutral)', exec_text)
                 if dir_match:
                     raw_dir = dir_match.group(1)
-                    direction = "neutral" if raw_dir == "观望" else raw_dir
-                else:
-                    if re.search(r'方向[：:]\s*做多', exec_text):
-                        direction = "long"
-                    elif re.search(r'方向[：:]\s*做空', exec_text):
-                        direction = "short"
-                    elif re.search(r'方向[：:]\s*(观望|中性)', exec_text):
-                        direction = "neutral"
+                    dir_map = {"做多": "long", "做空": "short", "观望": "neutral",
+                               "long": "long", "short": "short", "neutral": "neutral"}
+                    direction = dir_map.get(raw_dir, original_dir)
 
-                # 2. 仓位解析（兼容中英文）
-                pos_match = re.search(r'仓位[：:]\s*(light|medium|heavy|none|轻仓|中仓|重仓|无仓位)', exec_text)
+                # 2. 仓位解析并标准化
+                pos_match = re.search(r'仓位[：:]\s*(轻仓|中仓|重仓|无|无仓位|light|medium|heavy|none)', exec_text)
                 if pos_match:
                     raw_pos = pos_match.group(1)
-                    pos_map = {'轻仓': 'light', '中仓': 'medium', '重仓': 'heavy', '无仓位': 'none'}
-                    position_size = pos_map.get(raw_pos, raw_pos)
+                    pos_map = {"轻仓": "light", "中仓": "medium", "重仓": "heavy", "无": "none", "无仓位": "none",
+                               "light": "light", "medium": "medium", "heavy": "heavy", "none": "none"}
+                    position_size = pos_map.get(raw_pos, position_size)
 
-                # 3. 提取现价
+                # 3-6. 价格提取
                 price_match = re.search(r'现价[：:]\s*([\d.]+)', exec_text)
                 if price_match:
                     current_price = float(price_match.group(1))
 
-                # 4. 入场区间
                 entry_match = re.search(r'入场区间[：:]\s*([\d.]+)\s*[-–]\s*([\d.]+)', exec_text)
                 if entry_match:
                     entry_low = float(entry_match.group(1))
                     entry_high = float(entry_match.group(2))
 
-                # 5. 止损
                 stop_match = re.search(r'止损[：:]\s*([\d.]+)', exec_text)
                 if stop_match:
                     stop_loss = float(stop_match.group(1))
 
-                # 6. 止盈
                 tp_match = re.search(r'止盈[：:]\s*([\d.]+)', exec_text)
                 if tp_match:
                     take_profit = float(tp_match.group(1))
 
-                # 7. 说明/执行指令
+                # 7. 说明
                 plan_match = re.search(r'说明[：:]\s*(.*)', exec_text)
                 if plan_match:
                     execution_plan = plan_match.group(1).strip()
                 else:
                     execution_plan = exec_text.replace('\n', ' ').strip()
 
-            # ========== 最终判决逻辑（直接信任AI裁决） ==========
-            # 1. 提取 📌 最终判决 中的关键词
+            # 确定判决类型：直接根据最终方向与原方向的关系，结合判决文本
+            verdict_match = re.search(r'📌\s*最终判决[：:]\s*(.*)', content)
             verdict_text = verdict_match.group(1).strip() if verdict_match else ""
-            verdict_text_clean = re.sub(r'\*{1,2}', '', verdict_text).strip()  # 清理 Markdown 加粗符号
+            verdict_text_clean = re.sub(r'\*{1,2}', '', verdict_text).strip()
 
-            # 2. 根据最终方向和判决关键词，直接决定 verdict
             if direction == "neutral" and direction != original_dir:
                 verdict = "推翻改为观望"
                 entry_low, entry_high, stop_loss, take_profit = 0, 0, 0, 0
@@ -652,7 +660,6 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             elif "降级" in verdict_text_clean:
                 verdict = "降级执行"
             elif "推翻" in verdict_text_clean:
-                # 文本写了推翻但方向未变，保守处理为推翻改为观望
                 verdict = "推翻改为观望"
                 direction = "neutral"
                 entry_low, entry_high, stop_loss, take_profit = 0, 0, 0, 0
@@ -660,13 +667,12 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             else:
                 verdict = "维持原判"
 
-            # 提取裁决理由块
+            # 提取裁决理由和风险说明
             reasoning_block = ""
             reason_section = re.search(r'📋\s*(裁决说明|裁决理由)[：:]?\s*(.*?)(?=⚠️|$)', content, re.DOTALL)
             if reason_section:
                 reasoning_block = reason_section.group(0).strip()
 
-            # 提取风险说明块
             risk_match = re.search(r'⚠️\s*风险说明[：:]\s*(.*)', content, re.DOTALL)
             risk_block = risk_match.group(0).strip() if risk_match else ""
             risk_note = risk_match.group(1).strip() if risk_match else ""
@@ -685,7 +691,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     "execution_plan": execution_plan,
                     "reasoning": content,
                     "risk_note": risk_note,
-                    "title_line": title_line,
+                    "title_line": verdict_match.group(0).strip() if verdict_match else "",
                     "exec_block": exec_section.group(0).strip() if exec_section else "",
                     "reasoning_block": reasoning_block,
                     "risk_block": risk_block,
@@ -702,6 +708,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
             else:
                 return {"judge_C": {"final_verdict": "维持原判", "verdict_level": "A"}}
+
 
 def _validate_execution_direction(s: dict):
     exec_plan = s.get("execution_plan", "")

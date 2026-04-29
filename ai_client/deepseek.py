@@ -553,7 +553,8 @@ def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dic
        反证风险评估：（高/中/低，证据及排除理由）
       2.
   -核心逻辑：说明裁决后制定的策略逻辑，必须提供站的住脚的证据或推论。
-📌 最终判决（必选）：[维持原判 / 推翻]（推翻时，你的执行指令方向必须与原策略方向相反，或直接写“观望”）
+📌 最终判决：[维持原判 / 推翻]
+（推翻意味着你不同意原方向，必须给出相反方向或明确输出“观望”）
 🎯 执行指令（基于裁决结果，结合交易员策略和审计结论，制定交易策略，**必须按照以下格式输出**，否则视为无效）：
    - 币种：{symbol}
    - 方向：[做多 / 做空 / 观望]
@@ -649,29 +650,16 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                     execution_plan = plan_match.group(1).strip()
                 else:
                     execution_plan = exec_text.replace('\n', ' ').strip()
-
-            # 确定判决类型：直接根据最终方向与原方向的关系，结合判决文本
-            verdict_match = re.search(r'📌\s*最终判决[：:]\s*(.*)', content)
-            verdict_text = verdict_match.group(1).strip() if verdict_match else ""
-            verdict_text_clean = re.sub(r'\*{1,2}', '', verdict_text).strip()
-
-            if direction == "neutral" and direction != original_dir:
+        
+           # 确定判决类型：只根据方向相对原方向的变化
+            if direction == original_dir:
+                verdict = "维持原判"
+            elif direction == "neutral":
                 verdict = "推翻改为观望"
-                entry_low, entry_high, stop_loss, take_profit = 0, 0, 0, 0
-                position_size = "none"
-            elif direction != original_dir and direction != "neutral":
-                verdict = "推翻改为反向操作"
-            elif "修正" in verdict_text_clean:
-                verdict = "修正参数"
-            elif "降级" in verdict_text_clean:
-                verdict = "降级执行"
-            elif "推翻" in verdict_text_clean:
-                verdict = "推翻改为观望"
-                direction = "neutral"
-                entry_low, entry_high, stop_loss, take_profit = 0, 0, 0, 0
+                entry_low = entry_high = stop_loss = take_profit = 0.0
                 position_size = "none"
             else:
-                verdict = "维持原判"
+                verdict = "推翻改为反向操作"
 
             # 提取裁决理由和风险说明
             reasoning_block = ""

@@ -51,81 +51,70 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         return False
 
 
-# ===================== 文本提取 =====================
-def _extract_final_step(text: str) -> str:
-    if not text:
-        return ""
-    pattern = r'第七步[：:]\s*[^\n]*\n(.*?)(?=\n第[一二三四五六七八九十]+\s*步|\Z)'
-    m = re.search(pattern, text, re.DOTALL)
-    if m and m.group(1).strip():
-        return m.group(1).strip()
-    m = re.search(r'(第七步[：:].*)', text, re.DOTALL)
-    if m and m.group(1).strip():
-        return m.group(1).strip()
-    return text[-2000:].lstrip('\n')
-
-
+# ===================== 文本清理 =====================
 def _safe_code_block(text: str) -> str:
     if not text:
         return ""
     return text.replace("```", "'''")
 
 
-# ===================== 裁决文本解析 =====================
+# ===================== 裁决文本解析（改进） =====================
 def _parse_judge_execution(text: str) -> dict:
+    """
+    从裁决全文中提取最终判决和交易指令。
+    返回值包含：verdict, direction, position_size, entry_low, entry_high, stop_loss, take_profit
+    """
     result = {}
     if not text:
         return result
 
     # 1. 提取最终判决
-    m = re.search(r'📌\s*最终判决[：:]\s*(.*?)(?:\n|$)', text)
-    if not m:
-        m = re.search(r'最终判决[：:]\s*(.*?)(?:\n|$)', text)
+    # 支持：📌 最终判决：推翻 / 维持原判
+    m = re.search(r'(?:📌\s*)?最终判决[：:]\s*(.*?)(?:\n|$)', text)
     if m:
         raw = m.group(1).strip()
         result["verdict"] = "推翻" if "推翻" in raw else "维持原判"
     else:
-        result["verdict"] = "维持原判"   # 默认
+        result["verdict"] = "维持原判"
 
-    # 2. 定位执行指令块
+    # 2. 定位执行指令块（🎯 执行指令 之后的部分）
     exec_start = re.search(r'🎯\s*执行指令', text)
     if not exec_start:
         return result
     exec_text = text[exec_start.start():]
 
-    # 辅助提取
-    def _extract(pattern, target, default=""):
-        m = re.search(pattern, target)
-        return m.group(1).strip() if m else default
+    # 提取方向（仅允许：做多、做空、观望）
+    m_dir = re.search(r'方向[：:]\s*(做多|做空|观望)', exec_text)
+    if m_dir:
+        result["direction"] = m_dir.group(1)
 
-    result["direction"] = _extract(r'方向[：:]\s*([做多空观望]+)', exec_text)
-    pos_raw = _extract(r'仓位[：:]\s*([^\n]+)', exec_text)
-    if pos_raw:
-        pos_raw = pos_raw.split("（")[0].split("(")[0].strip()
-    result["position_size"] = pos_raw
+    # 提取仓位（轻仓/中仓/重仓/无仓位）
+    m_pos = re.search(r'仓位[：:]\s*(轻仓|中仓|重仓|无仓位)', exec_text)
+    if m_pos:
+        result["position_size"] = m_pos.group(1)
 
-    # 入场区间
-    entry_match = re.search(r'入场区间[：:]\s*([\d.,]+)\s*[-~至]+\s*([\d.,]+)', exec_text)
-    if entry_match:
+    # 入场区间：支持 入场区间：65000-66000，入场区间：65000~66000，入场区间：65000至66000
+    m_entry = re.search(r'入场区间[：:]\s*([\d.,]+)\s*[-~至]+?\s*([\d.,]+)', exec_text)
+    if m_entry:
         try:
-            result["entry_low"] = float(entry_match.group(1).replace(",", ""))
-            result["entry_high"] = float(entry_match.group(2).replace(",", ""))
+            result["entry_low"] = float(m_entry.group(1).replace(",", ""))
+            result["entry_high"] = float(m_entry.group(2).replace(",", ""))
         except ValueError:
             pass
 
     # 止损
-    sl_match = re.search(r'止损[：:]\s*([\d.,]+)', exec_text)
-    if sl_match:
+    m_sl = re.search(r'止损[：:]\s*([\d.,]+)', exec_text)
+    if m_sl:
         try:
-            result["stop_loss"] = float(sl_match.group(1).replace(",", ""))
+            result["stop_loss"] = float(m_sl.group(1).replace(",", ""))
         except ValueError:
             pass
 
     # 止盈
-    tp_match = re.search(r'止盈[：:]\s*([\d.,]+)', exec_text)
-    if tp_match:
+    m_tp = re.search(r'止盈[：:]\s*([\d.,]+)', exec_text)
+    if m_tp:
         try:
-            result["take_profit"] = float(tp_match.group(1).replace(",", ""))
+            result["take_profit"] = float(m_tp.group(1).replace(",", ""))
         except ValueError:
             pass
 
@@ -135,32 +124,40 @@ def _parse_judge_execution(text: str) -> dict:
 # ===================== 超长拆分发送 =====================
 DINGTALK_MAX_CHARS = 4000
 
-def _send_long_with_code_block(body: str, title: str) -> bool:
+def _send_long_with_code_block(body: str, title: str) -> None:
+    """发送长消息，处理代码块，不返回布尔值，直接记录日志"""
     if len(body) <= DINGTALK_MAX_CHARS:
-        return send_dingtalk_message(body, title)
+        if send_dingtalk_message(body, title):
+            return
+        else:
+            logger.error(f"发送失败: {title}")
+            return
 
     code_start = body.find("```")
     if code_start == -1:
-        return _send_long_fallback(body, title)
+        _send_long_fallback(body, title)
+        return
 
     before = body[:code_start].rstrip()
     after_start = body[code_start+3:]
     code_end = after_start.find("```")
     if code_end == -1:
-        return _send_long_fallback(body, title)
+        _send_long_fallback(body, title)
+        return
 
     code_content = after_start[:code_end].strip()
     after_code = after_start[code_end+3:].strip()
 
     if before:
         if not send_dingtalk_message(before + "\n\n*（详细内容见下一条）*", title):
-            return False
+            logger.error(f"发送前置文本失败: {title}")
+            return
         time.sleep(0.6)
 
-    return _send_codeblock_split(code_content, after_code, title)
+    _send_codeblock_split(code_content, after_code, title)
 
 
-def _send_codeblock_split(code_content: str, after_text: str, title: str) -> bool:
+def _send_codeblock_split(code_content: str, after_text: str, title: str) -> None:
     page_footer = "\n\n*（推演 {}/{}）*"
     max_chunk = DINGTALK_MAX_CHARS - len(page_footer.format(99,99)) - 10
 
@@ -168,7 +165,11 @@ def _send_codeblock_split(code_content: str, after_text: str, title: str) -> boo
     if after_text:
         full_block += f"\n{after_text}"
     if len(full_block) <= DINGTALK_MAX_CHARS:
-        return send_dingtalk_message(full_block, title)
+        if send_dingtalk_message(full_block, title):
+            return
+        else:
+            logger.error(f"发送代码块失败: {title}")
+            return
 
     chunks = []
     remaining = code_content
@@ -190,13 +191,13 @@ def _send_codeblock_split(code_content: str, after_text: str, title: str) -> boo
         if i == total and after_text:
             msg += f"\n{after_text}"
         if not send_dingtalk_message(msg, f"{title}({i}/{total})"):
-            return False
+            logger.error(f"发送分片 {i}/{total} 失败: {title}")
+            return
         if i < total:
             time.sleep(0.6)
-    return True
 
 
-def _send_long_fallback(body: str, title: str) -> bool:
+def _send_long_fallback(body: str, title: str) -> None:
     page_footer = "\n\n*（续 {}/{}）*"
     max_chunk = DINGTALK_MAX_CHARS - len(page_footer.format(99,99)) - 10
     chunks = []
@@ -215,14 +216,15 @@ def _send_long_fallback(body: str, title: str) -> bool:
     for i, chunk in enumerate(chunks, 1):
         msg = chunk + page_footer.format(i, total)
         if not send_dingtalk_message(msg, f"{title} ({i}/{total})"):
-            return False
+            logger.error(f"发送续文 {i}/{total} 失败: {title}")
+            return
         if i < total:
             time.sleep(0.6)
-    return True
 
 
 # ===================== 消息构建 =====================
-def format_strategy_message(symbol: str, strategy: dict, data: dict) -> bool:
+def format_strategy_message(symbol: str, strategy: dict, data: dict) -> None:
+    """首席交易员推送：推演过程（完整 reasoning）"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -248,20 +250,22 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> bool:
         f"止盈 {take_profit:.0f}"
     )
 
-    final_step = _extract_final_step(strategy.get("reasoning", ""))
-    if not final_step:
-        final_step = "未解析到第七步"
+    # 改用完整 reasoning
+    full_reasoning = strategy.get("reasoning", "")
+    if not full_reasoning:
+        full_reasoning = "无推演内容"
 
     body = (
         f"{header}\n"
         f"{price_block}\n\n"
-        f"**第七步 · 交易计划**\n"
-        f"```\n{_safe_code_block(final_step)}\n```"
+        f"**推演过程**\n"
+        f"```\n{_safe_code_block(full_reasoning)}\n```"
     )
-    return _send_long_with_code_block(body, f"首席交易员·{symbol}")
+    _send_long_with_code_block(body, f"首席交易员·{symbol}")
 
 
-def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> bool:
+def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict) -> None:
+    """风控审计官推送"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -282,10 +286,11 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
         f"**审计报告**\n"
         f"```\n{_safe_code_block(report)}\n```"
     )
-    return _send_long_with_code_block(body, f"风控审计·{symbol}")
+    _send_long_with_code_block(body, f"风控审计·{symbol}")
 
 
-def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> bool:
+def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None, data: dict = None) -> None:
+    """交易委员会最终裁决推送，摘要数据直接从裁决文本解析"""
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
@@ -299,7 +304,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     # ----- 解析执行指令 -----
     parsed = _parse_judge_execution(judge_full_text) if judge_full_text else {}
 
-    # 最终参数优先级：解析出的 > 原始 strategy（fallback）
+    # 优先使用解析值，否则回退到 strategy
     final_direction = parsed.get("direction") or strategy.get("direction", "neutral")
     final_pos_size = parsed.get("position_size") or strategy.get("position_size", "none")
     final_entry_low = parsed.get("entry_low")
@@ -317,7 +322,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
 
     current = (data.get("mark_price", 0) or 0) if data else 0
 
-    # 裁决判决（仅两种）
+    # 判决结果
     verdict = parsed.get("verdict", "维持原判")
     if verdict not in ("维持原判", "推翻"):
         verdict = "维持原判"
@@ -340,7 +345,6 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         f"止盈 {final_take_profit:.0f}"
     )
 
-    # 裁决内容全文作为代码块
     if not judge_full_text:
         judge_full_text = "无裁决内容"
 
@@ -351,9 +355,9 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         f"**裁决内容**\n"
         f"```\n{_safe_code_block(judge_full_text)}\n```"
     )
-    return _send_long_with_code_block(body, f"最终裁决·{symbol}")
+    _send_long_with_code_block(body, f"最终裁决·{symbol}")
 
 
-# 兼容旧名
-def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> bool:
-    return format_final_decision(symbol, strategy, judge_result, data)
+# 兼容旧名，保持接口不变但不返回布尔值
+def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict) -> None:
+    format_final_decision(symbol, strategy, judge_result, data)

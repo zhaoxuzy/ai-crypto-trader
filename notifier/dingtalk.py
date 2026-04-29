@@ -6,7 +6,6 @@ import hashlib
 import base64
 import urllib.parse
 import requests
-import re
 from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 
@@ -18,18 +17,34 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     if not webhook:
         logger.error("未配置钉钉 Webhook")
         return False
+
     ts = str(round(time.time() * 1000))
     if secret and secret.lower() != "none":
-        sign_str = f"{ts}\n{secret}"
-        sign = urllib.parse.quote_plus(base64.b64encode(hmac.new(secret.encode(), sign_str.encode(), hashlib.sha256).digest()))
-        webhook = f"{webhook}&timestamp={ts}&sign={sign}"
+        try:
+            sign_str = f"{ts}\n{secret}"
+            sign = urllib.parse.quote_plus(
+                base64.b64encode(
+                    hmac.new(secret.encode(), sign_str.encode(), hashlib.sha256).digest()
+                )
+            )
+            # 使用 urllib.parse 安全添加参数，避免破坏原有 URL
+            url_parts = list(urllib.parse.urlparse(webhook))
+            query = dict(urllib.parse.parse_qsl(url_parts[4]))
+            query.update({"timestamp": ts, "sign": sign})
+            url_parts[4] = urllib.parse.urlencode(query)
+            webhook = urllib.parse.urlunparse(url_parts)
+        except Exception as e:
+            logger.error(f"钉钉签名生成失败: {e}")
+            return False
+
     try:
         payload = {"msgtype": "markdown", "markdown": {"title": title, "text": content}}
         resp = requests.post(webhook, json=payload, timeout=10)
-        if resp.json().get("errcode") == 0:
+        resp_data = resp.json()
+        if resp_data.get("errcode") == 0:
             logger.info("钉钉推送成功")
             return True
-        logger.error(f"钉钉失败: {resp.json()}")
+        logger.error(f"钉钉失败: {resp_data}")
         return False
     except Exception as e:
         logger.error(f"钉钉异常: {e}")
@@ -75,12 +90,13 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     reasoning = strategy.get("reasoning", "无推演过程")
     reasoning = _safe_truncate(reasoning)
 
+    # 使用四个反引号作为外层代码块，避免内层 ``` 提前闭合
     body = (
         f"{line_title}\n"
         f"{line_decision}\n"
         f"{line_price}\n\n"
         f"**推演过程**\n"
-        f"```\n{reasoning}\n```"
+        f"````\n{reasoning}\n````"
     )
     return body
 
@@ -109,12 +125,13 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     report = reviewer_report.get("full_report", "无审查报告")
     report = _safe_truncate(report)
 
+    # 同样使用四个反引号
     body = (
         f"{line_title}\n"
         f"{line_conclusion}\n"
         f"{line_severity}\n\n"
         f"**审计报告**\n"
-        f"```\n{report}\n```"
+        f"````\n{report}\n````"
     )
     return body
 
@@ -158,12 +175,13 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     judge_content = strategy.get("_judge_reasoning", "")
     judge_content = _safe_truncate(judge_content.strip(), max_len=15000)
 
+    # 同样使用四个反引号
     body = (
         f"{line_title}\n"
         f"{line_decision}\n"
         f"{line_price}\n\n"
         f"**裁决内容**\n"
-        f"```\n{judge_content}\n```"
+        f"````\n{judge_content}\n````"
     )
     return body
 

@@ -324,7 +324,7 @@ def _force_neutral(s: dict, reason: str):
     s["stop_loss"] = 0
     s["take_profit"] = 0
     s["execution_plan"] = ""
-    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[原始信号因校验规则被强制改为观望，原因：{reasoning}"]).strip()
+    s["reasoning"] = (s.get("reason", "") + f"\n\n[原始信号因校验规则被强制改为观望，原因：{reason}"]).strip()
     s["risk_note"] = f"观望。{reason}"
 
 

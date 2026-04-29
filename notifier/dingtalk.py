@@ -27,7 +27,6 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
                     hmac.new(secret.encode(), sign_str.encode(), hashlib.sha256).digest()
                 )
             )
-            # 使用 urllib.parse 安全添加参数，避免破坏原始 URL 结构
             url_parts = list(urllib.parse.urlparse(webhook))
             query = dict(urllib.parse.parse_qsl(url_parts[4]))
             query.update({"timestamp": ts, "sign": sign})
@@ -52,8 +51,11 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 # ========== 长度保护 ==========
-def _safe_truncate(text: str, max_len: int = 15000) -> str:
-    """截断过长的文本，防止超出钉钉消息上限"""
+def _safe_truncate(text: str, max_len: int = 800) -> str:
+    """
+    截断过长的文本，防止超出钉钉消息字节上限（2048字节，约680个中文）
+    默认 800 字符，可兼顾英文较多时的安全线
+    """
     if len(text) <= max_len:
         return text
     hint = "\n\n... (内容过长已截断，完整信息见运行日志)"
@@ -88,9 +90,9 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     )
 
     reasoning = strategy.get("reasoning", "无推演过程")
-    reasoning = _safe_truncate(reasoning)
+    reasoning = _safe_truncate(reasoning, max_len=800)   # 预留空间给标题、价格等
 
-    # ✅ 用四个反引号代替三个反引号，防止内容中的 ``` 提前闭合代码块
+    # 使用四个反引号防止内容中的 ``` 提前闭合
     body = (
         f"{line_title}\n"
         f"{line_decision}\n"
@@ -123,9 +125,8 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     line_severity = f"🔴严重 {high}  🟡中等 {medium}  ⚪轻微 {low}  "
 
     report = reviewer_report.get("full_report", "无审查报告")
-    report = _safe_truncate(report)
+    report = _safe_truncate(report, max_len=800)
 
-    # ✅ 同样使用四个反引号
     body = (
         f"{line_title}\n"
         f"{line_conclusion}\n"
@@ -173,9 +174,8 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     )
 
     judge_content = strategy.get("_judge_reasoning", "")
-    judge_content = _safe_truncate(judge_content.strip(), max_len=15000)
+    judge_content = _safe_truncate(judge_content, max_len=800)
 
-    # ✅ 同样使用四个反引号
     body = (
         f"{line_title}\n"
         f"{line_decision}\n"

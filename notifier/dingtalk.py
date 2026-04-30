@@ -13,6 +13,12 @@ from utils.logger import logger
 
 
 # ===================== 基础推送 =====================
+import re
+
+# 在文件头部加入常量
+DINGTALK_MAX_LENGTH = 18000  # 留一点余量，避免编码差异
+SPLIT_MARKER = "\n\n--- (续) {part}/{total} ---\n\n"
+
 def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
     if not content or not content.strip():
         logger.error(f"钉钉推送内容为空，已跳过: title={title}")
@@ -24,8 +30,42 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         logger.error("未配置钉钉 Webhook")
         return False
 
+    # ----- 新增：完整内容写入日志，方便回溯 -----
+    logger.info(f"完整消息内容 ({title}):\n{content}")
+
+    # ----- 新增：超长内容自动分段 -----
+    if len(content) <= DINGTALK_MAX_LENGTH:
+        return _send_single(webhook, secret, content, title)
+
+    # 按段落粗略分割（尽量不在代码块中间切断）
+    paragraphs = re.split(r'(\n\n)', content)
+    segments = []
+    current = ""
+    for p in paragraphs:
+        if len(current) + len(p) > DINGTALK_MAX_LENGTH and current:
+            segments.append(current)
+            current = p
+        else:
+            current += p
+    if current:
+        segments.append(current)
+
+    total = len(segments)
+    success = True
+    for i, seg in enumerate(segments, 1):
+        seg_title = f"{title} ({i}/{total})"
+        seg_content = seg
+        if i > 1:
+            seg_content = SPLIT_MARKER.format(part=i, total=total) + seg
+        if not _send_single(webhook, secret, seg_content, seg_title):
+            success = False
+            logger.error(f"分段 {i}/{total} 发送失败")
+    return success
+
+
+def _send_single(webhook: str, secret: str, content: str, title: str) -> bool:
+    """原有的单条发送逻辑（从原函数中提取）"""
     ts = str(round(time.time() * 1000))
-    # 更严格的签名判断
     if secret and secret.strip().lower() not in ("", "none"):
         try:
             sign_str = f"{ts}\n{secret}"
@@ -47,7 +87,7 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         resp = requests.post(webhook, json=payload, timeout=10)
         resp_data = resp.json()
         if resp_data.get("errcode") == 0:
-            logger.info("钉钉推送成功")
+            logger.info(f"钉钉推送成功: {title}")
             return True
         logger.error(f"钉钉失败: {resp_data}")
         return False

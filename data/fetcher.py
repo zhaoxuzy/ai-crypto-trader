@@ -154,26 +154,28 @@ class CoinGlassClient:
         base = base.split("-")[0]
         return f"{base}USDT"
 
-    # ========== 各数据接口（已根据官方文档修正） ==========
+    # ========== 各数据接口（交易所已改为 Binance）==========
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
 
     def get_oi_ohlc_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        # 改为 Binance 避免 Server Error
+        params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/open-interest/history", params, allow_backup=True, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
 
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
-        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "range": "3d"}
+        params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "range": "3d"}
         return self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
 
     def get_top_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=True, silent_fail=True)
+        # 固定使用 Binance，因为 OKX 不支持该交易对
+        params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=False, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC", interval: str = "1m", limit: int = 240):
         params = {"exchange": "Binance", "symbol": f"{symbol.upper()}USDT", "interval": interval, "limit": limit}
@@ -227,7 +229,8 @@ class CoinGlassClient:
 
     def get_orderbook_imbalance(self, symbol: str = "BTC") -> dict:
         try:
-            params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": "1m", "limit": 1}
+            # 固定使用 Binance，OKX 会报交易对不存在
+            params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "interval": "1m", "limit": 1}
             data = self._request("api/futures/orderbook/ask-bids-history", params, allow_backup=True, silent_fail=True)
             if isinstance(data, list) and len(data) > 0:
                 latest = data[0]
@@ -251,7 +254,7 @@ class CoinGlassClient:
         return {"total_btc": 0.0, "change_24h": 0.0}
 
     def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        # 已确认：不需要 exchange，只传 symbol（大写） + interval + limit
+        # 不需要 exchange，只传 symbol（大写） + interval + limit
         params = {
             "symbol": symbol.upper(),
             "interval": interval,
@@ -286,17 +289,16 @@ class CoinGlassClient:
     # ========== 新增接口（均已按文档修正参数） ==========
     def get_global_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {
-            "exchange": self.primary_exchange,
-            "symbol": self._get_symbol(symbol),          # BTCUSDT
+            "exchange": "Binance",
+            "symbol": self._get_symbol(symbol),
             "interval": interval,
             "limit": limit
         }
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=False, silent_fail=True)
 
     def get_aggregated_taker_buy_sell_volume_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
-        # 注意：参数名是 exchange_list，symbol 用大写基础币种（如 BTC），不拼接 USDT
         params = {
-            "exchange_list": self.primary_exchange,
+            "exchange_list": "Binance",
             "symbol": symbol.upper(),
             "interval": interval,
             "limit": limit
@@ -305,15 +307,14 @@ class CoinGlassClient:
 
     def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20):
         params = {
-            "exchange": self.primary_exchange,
+            "exchange": "Binance",
             "symbol": f"{symbol.upper()}USDT",
-            "state": 1,                                  # 已完成/活跃订单
+            "state": 1,
             "limit": limit
         }
         return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True)
 
     def get_cgdi_index_history(self, limit: int = 90):
-        # 已确认：不需要 exchange，只需 limit
         params = {"limit": limit}
         data = self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True)
         if isinstance(data, list):
@@ -322,7 +323,7 @@ class CoinGlassClient:
 
     def get_liquidation_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
         params = {
-            "exchange": self.primary_exchange,
+            "exchange": "Binance",
             "symbol": self._get_symbol(symbol),
             "interval": interval,
             "limit": limit

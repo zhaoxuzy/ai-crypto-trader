@@ -58,7 +58,9 @@ class CoinGlassClient:
                         logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}")
                         resp = requests.get(url, params=current_params, headers=headers, timeout=15)
                         data = resp.json()
-                        if data.get("code") in (0, "0"):
+                        # 修復：code 可能是 int 0 或 str "0"
+                        code = data.get("code")
+                        if code == 0 or code == "0":
                             return data.get("data", {})
                         else:
                             msg = f"CoinGlass API 错误: {data.get('msg', data)}"
@@ -299,6 +301,20 @@ class CoinGlassClient:
             return data
         return []
 
+    # ========== 🆕 爆仓数据接口 ==========
+    def get_liquidation_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
+        """
+        交易对爆仓历史数据。
+        返回字段：time, long_liquidation_usd, short_liquidation_usd
+        """
+        params = {
+            "exchange": self.primary_exchange,
+            "symbol": self._get_symbol(symbol),
+            "interval": interval,
+            "limit": limit
+        }
+        return self._request("api/futures/liquidation/history", params, allow_backup=True, silent_fail=True)
+
     # ========== 🆕 衍生计算工具函数 ==========
     def _calc_retail_whale_divergence(self, global_ls: float, top_ls_percentile: float) -> float:
         """
@@ -307,7 +323,6 @@ class CoinGlassClient:
         top_ls_percentile: 大户持仓多空比分位（0-100）
         返回标准化背离值，正值代表大户相对散户更看多
         """
-        # 将全球多空比映射到类似分位的思想：>1 偏多，<1 偏空，这里简单用 (global_ls - 1) 作为偏离度
         retail_signal = (global_ls - 1.0) * 100  # 大致映射到 -100 ~ +100
         whale_signal = (top_ls_percentile - 50.0)  # 分位偏离50的程度
         return (whale_signal - retail_signal) / 50.0  # 归一化到约[-2, 2]
@@ -356,6 +371,28 @@ class CoinGlassClient:
         rank = sum(1 for v in values if v < current_val)
         return round((rank / len(values)) * 100, 2)
 
+    def _calc_liq_bias(self, liq_data: list, hours: int = 1) -> dict:
+        """
+        计算最近N小时的爆仓偏空比
+        返回 dict: long_liq, short_liq, liq_bias (正值偏空，负值偏多，范围 -1 到 1)
+        """
+        if not liq_data:
+            return {"long_liq_1h": 0.0, "short_liq_1h": 0.0, "liq_bias_1h": 0.0}
+
+        total_long = 0.0
+        total_short = 0.0
+        for item in liq_data[-hours:]:  # 取最近 N 条数据
+            total_long += float(item.get("long_liquidation_usd", 0) or 0)
+            total_short += float(item.get("short_liquidation_usd", 0) or 0)
+
+        total = total_long + total_short
+        bias = ((total_short - total_long) / total) if total > 0 else 0.0
+        return {
+            "long_liq_1h": total_long,
+            "short_liq_1h": total_short,
+            "liq_bias_1h": bias  # 正值 => 空头爆得多 => 偏空
+        }
+
     # ========== 核心数据组装（重构） ==========
     def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
         base_symbol = symbol.upper()
@@ -377,9 +414,10 @@ class CoinGlassClient:
             "taker_bs": lambda: self.get_aggregated_taker_buy_sell_volume_history(base_symbol, "1h", 24),
             "large_orders": lambda: self.get_large_limit_order_history(base_symbol, 20),
             "cgdi": lambda: self.get_cgdi_index_history(90),
+            "liq_history": lambda: self.get_liquidation_history(base_symbol, "1h", 24),  # 🆕 爆仓历史
         }
         results = {}
-        with ThreadPoolExecutor(max_workers=12) as executor:  # 增加线程数以容纳新任务
+        with ThreadPoolExecutor(max_workers=16) as executor:  # 增加线程数以容纳新任务
             future_to_key = {executor.submit(task): key for key, task in tasks.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
@@ -413,11 +451,12 @@ class CoinGlassClient:
         taker_bs_data = results.get("taker_bs", [])
         large_orders_data = results.get("large_orders", [])
         cgdi_data = results.get("cgdi", [])
+        liq_history_data = results.get("liq_history", [])  # 🆕 爆仓历史
 
         # 数据质量标记
         data_quality = {}
         for key in ["kline", "oi", "funding", "heatmap", "top_ls", "cvd", "max_pain", "fg", "netflow",
-                    "orderbook", "exchange_btc", "agg_oi", "global_ls", "taker_bs", "large_orders", "cgdi"]:
+                    "orderbook", "exchange_btc", "agg_oi", "global_ls", "taker_bs", "large_orders", "cgdi", "liq_history"]:
             if key == "fg" or key == "exchange_btc":
                 data_quality[key] = "✅" if results.get(key) else "⚠️ 回退"
             else:
@@ -535,6 +574,12 @@ class CoinGlassClient:
             cgdi_current = float(cgdi_data[-1].get("cgdi_index_value", 1000) or 1000)
         cgdi_percentile = self._calc_cgdi_percentile(cgdi_data, cgdi_current)
 
+        # 🆕 爆仓偏空比
+        liq_bias_info = self._calc_liq_bias(liq_history_data if liq_history_data else [], hours=1)
+        long_liq_1h = liq_bias_info.get("long_liq_1h", 0.0)
+        short_liq_1h = liq_bias_info.get("short_liq_1h", 0.0)
+        liq_bias_1h = liq_bias_info.get("liq_bias_1h", 0.0)  # 正值偏空，负值偏多
+
         # ----- 方向综合评分 (Direction Bias Score) -----
         direction_bias = self._calc_direction_bias(
             above_liq, below_liq, above_trigger_val, below_trigger_val,
@@ -543,7 +588,8 @@ class CoinGlassClient:
             cvd_slope, taker_ratio_1h,
             netflow_dict,
             cgdi_percentile,
-            fear_greed
+            fear_greed,
+            liq_bias_1h,  # 🆕 传入爆仓偏空比
         )
 
         # 旧的 liquidity_bias 保留向后兼容，但主逻辑用 direction_bias
@@ -623,13 +669,18 @@ class CoinGlassClient:
             "large_sell_value": large_sell_value,
             "cgdi_current": cgdi_current,
             "cgdi_percentile": cgdi_percentile,
+            # 🆕 爆仓指标
+            "long_liq_1h": long_liq_1h,                  # 1h 多头爆仓总额
+            "short_liq_1h": short_liq_1h,                # 1h 空头爆仓总额
+            "liq_bias_1h": liq_bias_1h,                  # 爆仓偏空比
         }
 
     # ----- 🆕 方向综合评分 -----
     @staticmethod
     def _calc_direction_bias(above_liq, below_liq, above_trigger, below_trigger,
                              large_order_pressure, divergence, cvd_slope, taker_ratio,
-                             netflow_dict, cgdi_percentile, fear_greed):
+                             netflow_dict, cgdi_percentile, fear_greed,
+                             liq_bias_1h=0.0):  # 🆕 新增参数
         """
         计算综合方向评分 [-1, 1]
         正值偏向做多，负值偏向做空
@@ -688,6 +739,9 @@ class CoinGlassClient:
         elif fear_greed < 25:
             score += 0.05
 
+        # 🆕 8. 爆仓偏空比（5%）
+        score += -liq_bias_1h * 0.05  # liq_bias 正值偏空 => 减分
+
         return max(-1.0, min(1.0, score))
 
     # ----- 保留原有的 fetch_all_data 和 _build_cross_data（稍作调整加入新字段传递）-----
@@ -708,9 +762,11 @@ class CoinGlassClient:
         all_tasks["cross_cvd"] = lambda: self.get_cvd_history(cross_symbol, "1m", 240)
         all_tasks["cross_option"] = lambda: self.get_option_max_pain(cross_symbol)
         all_tasks["cross_price"] = lambda: get_current_price(f"{cross_symbol}-USDT-SWAP")
+        # 🆕 跨币种爆仓数据
+        all_tasks["cross_liq_history"] = lambda: self.get_liquidation_history(cross_symbol, "1h", 24)
 
         results = {}
-        with ThreadPoolExecutor(max_workers=6) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             future_to_key = {executor.submit(task): key for key, task in all_tasks.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
@@ -813,6 +869,17 @@ class CoinGlassClient:
         if option:
             data["put_call_ratio"] = option.get("put_call_ratio", 0.0)
             data["max_pain"] = option.get("max_pain", 0.0)
+
+        # 🆕 爆仓数据
+        liq_history = results.get("cross_liq_history")
+        if liq_history:
+            liq_bias_info = self._calc_liq_bias(liq_history, hours=1)
+            data["liq_bias_1h"] = liq_bias_info.get("liq_bias_1h", 0.0)
+            data["long_liq_1h"] = liq_bias_info.get("long_liq_1h", 0.0)
+            data["short_liq_1h"] = liq_bias_info.get("short_liq_1h", 0.0)
+        else:
+            data["liq_bias_1h"] = 0.0
+            complete = False
 
         data["_complete"] = complete  # 修复：之前缺少此字段
         return data

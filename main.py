@@ -26,6 +26,12 @@ def main():
         data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
+    # ---- 确保跨币种数据尽量完整 ----
+    # 如果跨币种数据标记为 incomplete，仍将其传给 prompt，由 build_prompt 根据现有数据生成。
+    # 在此不补全，以免引入额外延迟。若确实缺失，可在 build_prompt 中处理。
+    logger.info(f"跨币种数据完整性: {cross_data.get('_complete')}")
+    # ----
+
     # 构建 Prompt（跨币种数据传入 eth_data）
     prompt = build_prompt(data, symbol, eth_data=cross_data)
 
@@ -55,7 +61,6 @@ def main():
         # --- 审查官B ---
         try:
             reviewer_report = call_reviewer(strategy, data, symbol)
-            # 推送审查报告
             review_msg = format_review_message(symbol, strategy, reviewer_report, data)
             send_dingtalk_message(review_msg, title=f"{symbol} 策略推送 (风控审计)")
         except Exception as e:
@@ -67,7 +72,6 @@ def main():
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
             strategy = apply_final_verdict(strategy, judge_result)
-            # 推送最终裁决（使用新模板，展示原始块并加粗关键字）
             judge_msg = format_final_decision(symbol, strategy, judge_result, data)
             send_dingtalk_message(judge_msg, title=f"{symbol} 策略推送 (交易委员会裁决)")
         except Exception as e:
@@ -75,22 +79,19 @@ def main():
             strategy["_reviewed"] = False
             return
 
-        # 存储审查报告和法官裁决理由供后续使用（可选）
         strategy["_reviewer_report"] = reviewer_report.get("full_report", "")
         strategy["_judge_reasoning"] = judge_result.get("judge_C", {}).get("reasoning", "")
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()
-    review_thread.join(timeout=600)  # 总超时 10分钟，足够 B 和 C 完成
+    review_thread.join(timeout=600)
 
-    # 4. 超时保护：如果线程仍未结束，降级执行原始策略
     if review_thread.is_alive():
         logger.warning("审查超时，按原策略降级执行")
         strategy["_reviewed"] = False
         strategy["_review_timeout"] = True
         size_map = {"heavy": "medium", "medium": "light", "light": "light"}
         strategy["position_size"] = size_map.get(strategy.get("position_size", "light"), "light")
-        # 推送降级后的最终信号
         final_msg = format_strategy_message(symbol, strategy, data)
         final_msg = "> ⚠️ **审查超时，已按原策略降级执行**\n\n" + final_msg
         send_dingtalk_message(final_msg, title=f"{symbol} 策略推送 (最终)")

@@ -1,4 +1,4 @@
-# data/fetcher.py (原名 coinglass.py)
+# data/fetcher.py
 import os
 import time
 import requests
@@ -27,7 +27,6 @@ class RateLimiter:
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
-        # 保留原有代理地址
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
@@ -148,17 +147,14 @@ class CoinGlassClient:
             atrs.append(sum(trs[i-period+1:i+1]) / period)
         return atrs
 
-    # ===================== 核心修正：_get_symbol =====================
     def _get_symbol(self, base: str) -> str:
-        """
-        将基础货币转换为 CoinGlass 认可的合约交易对格式（例如 BTC → BTCUSDT）。
-        """
+        """转换为 CoinGlass 合约交易对格式（例：BTC → BTCUSDT）"""
         if base.endswith("USDT"):
             return base
         base = base.split("-")[0]
         return f"{base}USDT"
 
-    # ========== 原有接口（保持不变） ==========
+    # ========== 各数据接口（均已修正参数）==========
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
@@ -168,7 +164,7 @@ class CoinGlassClient:
         return self._request("api/futures/open-interest/history", params, allow_backup=True, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.primary_exchange, "symbol": symbol.upper(), "interval": interval, "limit": limit}
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
 
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
@@ -255,13 +251,13 @@ class CoinGlassClient:
         return {"total_btc": 0.0, "change_24h": 0.0}
 
     def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-    params = {
-        "exchange": self.primary_exchange,          # 补加
-        "symbol": symbol.upper(),                   # 原有，保持大写
-        "interval": interval,
-        "limit": limit
-    }
-    return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True)
+        params = {
+            "exchange": self.primary_exchange,
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "limit": limit
+        }
+        return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True)
 
     def get_eth_btc_ratio(self) -> dict:
         try:
@@ -287,53 +283,40 @@ class CoinGlassClient:
             logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
-    # ========== 🆕 新增数据获取接口 ==========
+    # ========== 新增接口 ==========
     def get_global_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-    params = {
-        "exchange": self.primary_exchange,          # 补加
-        "symbol": self._get_symbol(symbol),         # 改为 CoinGlass 格式 BTCUSDT
-        "interval": interval,
-        "limit": limit
-    }
-    return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=False, silent_fail=True)
+        params = {
+            "exchange": self.primary_exchange,
+            "symbol": self._get_symbol(symbol),
+            "interval": interval,
+            "limit": limit
+        }
+        return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=False, silent_fail=True)
 
     def get_aggregated_taker_buy_sell_volume_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
-    params = {
-        "exchange": self.primary_exchange,          # 补加
-        "symbol": self._get_symbol(symbol),         # 改为 BTCUSDT
-        "interval": interval,
-        "limit": limit
-    }
-    return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
+        params = {
+            "exchange": self.primary_exchange,
+            "symbol": self._get_symbol(symbol),
+            "interval": interval,
+            "limit": limit
+        }
+        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
 
     def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20):
-    params = {
-        "exchange": self.primary_exchange,          # 补加
-        "symbol": f"{symbol.upper()}USDT",          # 已是正确格式，不变
-        "limit": limit
-    }
-    return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True)
+        params = {
+            "exchange": self.primary_exchange,
+            "symbol": f"{symbol.upper()}USDT",
+            "limit": limit
+        }
+        return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True)
 
-  # 5. get_cgdi_index_history
     def get_cgdi_index_history(self, limit: int = 90):
-    params = {
-        "exchange": self.primary_exchange,          # 补加（如果接口需要）
-        "limit": limit
-    }
-    # 原端点: api/futures/cgdi-index/history
-    return self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True)
+        params = {"exchange": self.primary_exchange, "limit": limit}
+        data = self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True)
+        if isinstance(data, list):
+            return data
+        return []
 
-    # 6. get_weighted_funding_rate_history (已有 exchange 但 symbol 未统一)
-      def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-      params = {
-        "exchange": self.primary_exchange,
-        "symbol": self._get_symbol(symbol),         # 改为 BTCUSDT，避免大小写问题
-        "interval": interval,
-        "limit": limit
-    }
-    return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
-
-    # ========== 🆕 爆仓数据接口 ==========
     def get_liquidation_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
         params = {
             "exchange": self.primary_exchange,
@@ -343,7 +326,7 @@ class CoinGlassClient:
         }
         return self._request("api/futures/liquidation/history", params, allow_backup=True, silent_fail=True)
 
-    # ========== 🆕 衍生计算工具函数 ==========
+    # ----- 衍生计算函数 -----
     def _calc_retail_whale_divergence(self, global_ls: float, top_ls_percentile: float) -> float:
         retail_signal = (global_ls - 1.0) * 100
         whale_signal = (top_ls_percentile - 50.0)
@@ -361,11 +344,7 @@ class CoinGlassClient:
                 total_buy += value
         total = total_buy + total_sell
         pressure = ((total_sell - total_buy) / total) if total > 0 else 0.0
-        return {
-            "large_buy_value": total_buy,
-            "large_sell_value": total_sell,
-            "pressure": pressure
-        }
+        return {"large_buy_value": total_buy, "large_sell_value": total_sell, "pressure": pressure}
 
     def _calc_taker_ratio(self, taker_data: list, hours: int = 1) -> float:
         if not taker_data:
@@ -394,13 +373,9 @@ class CoinGlassClient:
             total_short += float(item.get("short_liquidation_usd", 0) or 0)
         total = total_long + total_short
         bias = ((total_short - total_long) / total) if total > 0 else 0.0
-        return {
-            "long_liq_1h": total_long,
-            "short_liq_1h": total_short,
-            "liq_bias_1h": bias
-        }
+        return {"long_liq_1h": total_long, "short_liq_1h": total_short, "liq_bias_1h": bias}
 
-    # ========== 核心数据组装 ==========
+    # ----- 数据组装 -----
     def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
         base_symbol = symbol.upper()
         tasks = {
@@ -437,7 +412,6 @@ class CoinGlassClient:
         return self._build_main_data(results, base_symbol, eth_btc_data, kline_limit)
 
     def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
-        # 提取各个数据
         kline_data = results.get("kline", [])
         oi_data = results.get("oi", [])
         funding_data = results.get("funding", [])
@@ -456,7 +430,6 @@ class CoinGlassClient:
         cgdi_data = results.get("cgdi", [])
         liq_history_data = results.get("liq_history", [])
 
-        # 数据质量
         data_quality = {}
         for key in ["kline", "oi", "funding", "heatmap", "top_ls", "cvd", "max_pain", "fg", "netflow",
                     "orderbook", "exchange_btc", "agg_oi", "global_ls", "taker_bs", "large_orders", "cgdi", "liq_history"]:
@@ -465,7 +438,6 @@ class CoinGlassClient:
             else:
                 data_quality[key] = "✅" if results.get(key) else "❌ 缺失"
 
-        # 价格
         mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
         closes = [self._get_close_from_candle(k) for k in kline_data]
         atr_4h = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
@@ -477,7 +449,6 @@ class CoinGlassClient:
         atr_1h_val = atr_4h * 0.5
         atr_1h_ratio = (atr_1h_val / mark_price) * 100 if mark_price > 0 else 0.0
 
-        # 清算热力图
         above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
         if heatmap_raw:
             y_axis = heatmap_raw.get("y_axis", [])
@@ -506,7 +477,6 @@ class CoinGlassClient:
         above_trigger_val = float(above_trigger_str) if above_trigger_str != 'N/A' else 0
         below_trigger_val = float(below_trigger_str) if below_trigger_str != 'N/A' else 0
 
-        # 持仓 OI
         oi_current = self._get_close_from_candle(oi_data[-1]) if oi_data else 0.0
         oi_percentile = self._calc_percentile(oi_data, oi_current)
         oi_change_24h = 0.0
@@ -544,7 +514,6 @@ class CoinGlassClient:
         funding_series = [self._get_close_from_candle(c) for c in funding_data] if funding_data else []
         funding_momentum = self._calc_momentum(funding_series[-30:]) if len(funding_series) >= 30 else 0.0
 
-        # 新指标计算
         global_ls_current = 0.0
         if global_ls_data and len(global_ls_data) > 0:
             latest_gls = global_ls_data[-1]

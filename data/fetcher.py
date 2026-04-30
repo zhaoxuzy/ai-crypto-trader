@@ -154,7 +154,7 @@ class CoinGlassClient:
         base = base.split("-")[0]
         return f"{base}USDT"
 
-    # ========== 各数据接口（均已修正参数）==========
+    # ========== 各数据接口（已根据官方文档修正） ==========
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
@@ -251,8 +251,8 @@ class CoinGlassClient:
         return {"total_btc": 0.0, "change_24h": 0.0}
 
     def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        # 已确认：不需要 exchange，只传 symbol（大写） + interval + limit
         params = {
-            "exchange": self.primary_exchange,
             "symbol": symbol.upper(),
             "interval": interval,
             "limit": limit
@@ -283,20 +283,21 @@ class CoinGlassClient:
             logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
-    # ========== 新增接口 ==========
+    # ========== 新增接口（均已按文档修正参数） ==========
     def get_global_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {
             "exchange": self.primary_exchange,
-            "symbol": self._get_symbol(symbol),
+            "symbol": self._get_symbol(symbol),          # BTCUSDT
             "interval": interval,
             "limit": limit
         }
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=False, silent_fail=True)
 
     def get_aggregated_taker_buy_sell_volume_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
+        # 注意：参数名是 exchange_list，symbol 用大写基础币种（如 BTC），不拼接 USDT
         params = {
-            "exchange": self.primary_exchange,
-            "symbol": self._get_symbol(symbol),
+            "exchange_list": self.primary_exchange,
+            "symbol": symbol.upper(),
             "interval": interval,
             "limit": limit
         }
@@ -306,12 +307,14 @@ class CoinGlassClient:
         params = {
             "exchange": self.primary_exchange,
             "symbol": f"{symbol.upper()}USDT",
+            "state": 1,                                  # 已完成/活跃订单
             "limit": limit
         }
         return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True)
 
     def get_cgdi_index_history(self, limit: int = 90):
-        params = {"exchange": self.primary_exchange, "limit": limit}
+        # 已确认：不需要 exchange，只需 limit
+        params = {"limit": limit}
         data = self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True)
         if isinstance(data, list):
             return data

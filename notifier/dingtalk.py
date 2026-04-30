@@ -122,7 +122,7 @@ def _parse_judge_execution(text: str) -> dict:
         result["verdict_raw"] = ""
         result["verdict"] = ""
 
-    exec_start = re.search(r'🎯\s*执行指令', text)
+    exec_start = re.search(r'🎯\s*合约策略', text)
     if not exec_start:
         return result
     exec_text = text[exec_start.start():]

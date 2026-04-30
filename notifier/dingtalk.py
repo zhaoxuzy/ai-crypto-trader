@@ -1,4 +1,4 @@
- # notifier/dingtalk.py
+# notifier/dingtalk.py
 import os
 import time
 import hmac
@@ -25,7 +25,8 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         return False
 
     ts = str(round(time.time() * 1000))
-    if secret and secret.lower() != "none":
+    # 优化：更严格的签名判断，避免空白字符或字符串 "none" 误判
+    if secret and secret.strip().lower() not in ("", "none"):
         try:
             sign_str = f"{ts}\n{secret}"
             signature = base64.b64encode(
@@ -57,9 +58,13 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 # ===================== 文本清理 =====================
 def _safe_code_block(text: str) -> str:
+    """
+    替换所有连续三个及以上的反引号，防止破坏 markdown 代码块。
+    优化：不再仅替换 ``` → '''，而是将 N 个连续 ` 替换为相同数量的 '
+    """
     if not text:
         return ""
-    return text.replace("```", "'''")
+    return re.sub(r'`{3,}', lambda m: "'" * len(m.group()), text)
 
 
 # ===================== 裁决文本解析 =====================
@@ -68,52 +73,39 @@ def _parse_judge_execution(text: str) -> dict:
     if not text:
         return result
 
-    lines = text.split('\n')
-    verdict_raw = ""
-    for i, line in enumerate(lines):
-        m = re.search(r'(?:📌\s*)?最终判决[：:]\s*(.*)', line)
-        if m:
-            verdict_raw = m.group(1).strip()
-            if not verdict_raw:
-                for j in range(i + 1, len(lines)):
-                    nxt = lines[j].strip()
-                    if nxt:
-                        verdict_raw = nxt
-                        break
-            break
-
-    if not verdict_raw:
-        m2 = re.search(r'最终判决[：:]\s*([^\n]*)', text)
-        if m2:
-            verdict_raw = m2.group(1).strip()
-    if verdict_raw:
+    # 1. 提取最终判决
+    m = re.search(r'(?:📌\s*)?最终判决[：:]\s*(.*)', text)
+    if m:
+        verdict_raw = m.group(1).strip()
+        if not verdict_raw:
+            # 尝试下一行非空行
+            rest = text[m.end():].strip().split('\n')
+            verdict_raw = rest[0].strip() if rest else ""
         result["verdict_raw"] = verdict_raw
         result["verdict"] = "推翻" if "推翻" in verdict_raw else "维持原判"
     else:
         result["verdict_raw"] = ""
         result["verdict"] = ""
 
+    # 2. 提取执行指令区块
     exec_start = re.search(r'🎯\s*执行指令', text)
     if not exec_start:
         return result
     exec_text = text[exec_start.start():]
 
+    # 方向：精确匹配 "做多"、"做空"、"观望"，避免 "多" 导致的误判
     m_dir = re.search(r'方向[：:]\s*([^\n，,]+)', exec_text)
     if m_dir:
         raw_dir = m_dir.group(1).strip()
-        if "做多" in raw_dir or "多" in raw_dir:
-            result["direction"] = "long"
-        elif "做空" in raw_dir or "空" in raw_dir:
-            result["direction"] = "short"
-        elif "观望" in raw_dir:
-            result["direction"] = "neutral"
-
+        dir_match = re.search(r'(做多|做空|观望)', raw_dir)
+        if dir_match:
+            result["direction"] = {"做多": "long", "做空": "short", "观望": "neutral"}[dir_match.group(1)]
     if "direction" not in result:
         m_dir2 = re.search(r'(做多|做空|观望)', exec_text)
         if m_dir2:
-            d = m_dir2.group(1)
-            result["direction"] = {"做多": "long", "做空": "short", "观望": "neutral"}[d]
+            result["direction"] = {"做多": "long", "做空": "short", "观望": "neutral"}[m_dir2.group(1)]
 
+    # 仓位
     m_pos = re.search(r'仓位[：:]\s*([^\n，,]+)', exec_text)
     if m_pos:
         raw_pos = m_pos.group(1).strip()
@@ -126,6 +118,7 @@ def _parse_judge_execution(text: str) -> dict:
         elif "无" in raw_pos:
             result["position_size"] = "none"
 
+    # 入场区间
     m_entry = re.search(r'入场区间[：:]\s*([\d.,]+)\s*[-~至]+?\s*([\d.,]+)', exec_text)
     if m_entry:
         try:
@@ -134,19 +127,15 @@ def _parse_judge_execution(text: str) -> dict:
         except ValueError:
             pass
 
-    m_sl = re.search(r'止损[：:]\s*([\d.,]+)', exec_text)
-    if m_sl:
-        try:
-            result["stop_loss"] = float(m_sl.group(1).replace(",", ""))
-        except ValueError:
-            pass
-
-    m_tp = re.search(r'止盈[：:]\s*([\d.,]+)', exec_text)
-    if m_tp:
-        try:
-            result["take_profit"] = float(m_tp.group(1).replace(",", ""))
-        except ValueError:
-            pass
+    # 止损 / 止盈
+    for key, regex in [("stop_loss", r'止损[：:]\s*([\d.,]+)'),
+                       ("take_profit", r'止盈[：:]\s*([\d.,]+)')]:
+        m = re.search(regex, exec_text)
+        if m:
+            try:
+                result[key] = float(m.group(1).replace(",", ""))
+            except ValueError:
+                pass
 
     return result
 
@@ -230,11 +219,12 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     verdict_raw = parsed.get("verdict_raw", "")
     final_direction = parsed.get("direction", "neutral")
     final_pos_size = parsed.get("position_size", "none")
-    final_entry_low = parsed.get("entry_low", 0)
-    final_entry_high = parsed.get("entry_high", 0)
-    final_stop_loss = parsed.get("stop_loss", 0)
-    final_take_profit = parsed.get("take_profit", 0)
+    final_entry_low = parsed.get("entry_low", 0) or 0
+    final_entry_high = parsed.get("entry_high", 0) or 0
+    final_stop_loss = parsed.get("stop_loss", 0) or 0
+    final_take_profit = parsed.get("take_profit", 0) or 0
 
+    # 如果完全没有判决内容，完全回退到原策略
     if not verdict_raw:
         verdict_raw = "维持原判"
         final_direction = strategy.get("direction", final_direction)
@@ -243,20 +233,37 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         final_entry_high = final_entry_high or strategy.get("entry_price_high", 0) or 0
         final_stop_loss = final_stop_loss or strategy.get("stop_loss", 0) or 0
         final_take_profit = final_take_profit or strategy.get("take_profit", 0) or 0
+    else:
+        # 有判决但部分字段缺失时，温和继承原策略内容
+        if final_direction == "neutral" and strategy.get("direction") != "neutral":
+            final_direction = strategy["direction"]
+        if final_pos_size == "none" and strategy.get("position_size") not in (None, "none"):
+            final_pos_size = strategy["position_size"]
+        if not final_entry_low:
+            final_entry_low = strategy.get("entry_price_low", 0) or 0
+        if not final_entry_high:
+            final_entry_high = strategy.get("entry_price_high", 0) or 0
+        if not final_stop_loss:
+            final_stop_loss = strategy.get("stop_loss", 0) or 0
+        if not final_take_profit:
+            final_take_profit = strategy.get("take_profit", 0) or 0
 
     current = (data.get("mark_price", 0) or 0) if data else 0
 
-    verdict_icon = "✅" if "维持" in verdict_raw else "🔄"
+    # 仅展示短结论
+    short_verdict = "维持原判" if "维持" in verdict_raw else ("推翻" if "推翻" in verdict_raw else verdict_raw)
+    verdict_icon = "✅" if "维持" in short_verdict else "🔄"
 
     dir_icon = {"long": "🟢", "short": "🔴", "neutral": "⚪"}.get(final_direction, "⚪")
     dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(final_direction, "观望")
     size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(final_pos_size, "?")
-    conf_icon = "🟢" if strategy.get("confidence") == "high" else ("🟡" if strategy.get("confidence") == "medium" else "🔴")
+    conf = strategy.get("confidence", "medium")
+    conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "?")
 
-    header = f"### 📋 交易委员会 · 最终裁决 | {symbol} | {verdict_icon} {verdict_raw} | {now}"
+    header = f"### 📋 交易委员会 · 最终裁决 | {symbol} | {verdict_icon} {short_verdict} | {now}"
     decision_line = f"{dir_icon} {dir_text} | {size_text} | 置信度{conf_icon}"
     price_block = (
-        f"现价 {current:.1f}  |  "
+        f"现价 {current:.0f}  |  "
         f"入场 {final_entry_low:.0f}-{final_entry_high:.0f}  |  "
         f"止损 {final_stop_loss:.0f}  |  "
         f"止盈 {final_take_profit:.0f}"

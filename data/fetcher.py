@@ -255,8 +255,13 @@ class CoinGlassClient:
         return {"total_btc": 0.0, "change_24h": 0.0}
 
     def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-        return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True)
+    params = {
+        "exchange": self.primary_exchange,          # 补加
+        "symbol": symbol.upper(),                   # 原有，保持大写
+        "interval": interval,
+        "limit": limit
+    }
+    return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True)
 
     def get_eth_btc_ratio(self) -> dict:
         try:
@@ -284,23 +289,49 @@ class CoinGlassClient:
 
     # ========== 🆕 新增数据获取接口 ==========
     def get_global_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-        return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=False, silent_fail=True)
+    params = {
+        "exchange": self.primary_exchange,          # 补加
+        "symbol": self._get_symbol(symbol),         # 改为 CoinGlass 格式 BTCUSDT
+        "interval": interval,
+        "limit": limit
+    }
+    return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=False, silent_fail=True)
 
     def get_aggregated_taker_buy_sell_volume_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
-        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
+    params = {
+        "exchange": self.primary_exchange,          # 补加
+        "symbol": self._get_symbol(symbol),         # 改为 BTCUSDT
+        "interval": interval,
+        "limit": limit
+    }
+    return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
 
     def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20):
-        params = {"symbol": f"{symbol.upper()}USDT", "limit": limit}
-        return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True)
+    params = {
+        "exchange": self.primary_exchange,          # 补加
+        "symbol": f"{symbol.upper()}USDT",          # 已是正确格式，不变
+        "limit": limit
+    }
+    return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True)
 
+  # 5. get_cgdi_index_history
     def get_cgdi_index_history(self, limit: int = 90):
-        params = {"limit": limit}
-        data = self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True)
-        if isinstance(data, list):
-            return data
-        return []
+    params = {
+        "exchange": self.primary_exchange,          # 补加（如果接口需要）
+        "limit": limit
+    }
+    # 原端点: api/futures/cgdi-index/history
+    return self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True)
+
+    # 6. get_weighted_funding_rate_history (已有 exchange 但 symbol 未统一)
+      def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+      params = {
+        "exchange": self.primary_exchange,
+        "symbol": self._get_symbol(symbol),         # 改为 BTCUSDT，避免大小写问题
+        "interval": interval,
+        "limit": limit
+    }
+    return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
 
     # ========== 🆕 爆仓数据接口 ==========
     def get_liquidation_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):

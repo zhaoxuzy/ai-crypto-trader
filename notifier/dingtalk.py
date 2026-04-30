@@ -25,7 +25,7 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         return False
 
     ts = str(round(time.time() * 1000))
-    # 优化：更严格的签名判断，避免空白字符或字符串 "none" 误判
+    # 更严格的签名判断
     if secret and secret.strip().lower() not in ("", "none"):
         try:
             sign_str = f"{ts}\n{secret}"
@@ -58,10 +58,7 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 # ===================== 文本清理 =====================
 def _safe_code_block(text: str) -> str:
-    """
-    替换所有连续三个及以上的反引号，防止破坏 markdown 代码块。
-    优化：不再仅替换 ``` → '''，而是将 N 个连续 ` 替换为相同数量的 '
-    """
+    """替换连续三个及以上反引号，防止破坏 markdown 代码块"""
     if not text:
         return ""
     return re.sub(r'`{3,}', lambda m: "'" * len(m.group()), text)
@@ -73,12 +70,10 @@ def _parse_judge_execution(text: str) -> dict:
     if not text:
         return result
 
-    # 1. 提取最终判决
     m = re.search(r'(?:📌\s*)?最终判决[：:]\s*(.*)', text)
     if m:
         verdict_raw = m.group(1).strip()
         if not verdict_raw:
-            # 尝试下一行非空行
             rest = text[m.end():].strip().split('\n')
             verdict_raw = rest[0].strip() if rest else ""
         result["verdict_raw"] = verdict_raw
@@ -87,13 +82,12 @@ def _parse_judge_execution(text: str) -> dict:
         result["verdict_raw"] = ""
         result["verdict"] = ""
 
-    # 2. 提取执行指令区块
     exec_start = re.search(r'🎯\s*执行指令', text)
     if not exec_start:
         return result
     exec_text = text[exec_start.start():]
 
-    # 方向：精确匹配 "做多"、"做空"、"观望"，避免 "多" 导致的误判
+    # 方向
     m_dir = re.search(r'方向[：:]\s*([^\n，,]+)', exec_text)
     if m_dir:
         raw_dir = m_dir.group(1).strip()
@@ -140,7 +134,7 @@ def _parse_judge_execution(text: str) -> dict:
     return result
 
 
-# ===================== 消息构建 (返回消息体，不发送) =====================
+# ===================== 消息构建 =====================
 def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
@@ -167,9 +161,14 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         f"止盈 {take_profit:.0f}"
     )
 
+    # ---- 修复1：确保推演内容是完整的多行文本 ----
     full_reasoning = strategy.get("reasoning", "")
     if not full_reasoning:
-        full_reasoning = "无推演内容"
+        # 尝试从其他可能字段获取
+        full_reasoning = strategy.get("full_reasoning") or strategy.get("raw") or "无推演内容"
+    # 如果内容只有一行且很长，可能是未换行，但保留原样
+    if isinstance(full_reasoning, str) and "\n" not in full_reasoning and len(full_reasoning) > 120:
+        logger.warning(f"策略推演内容疑似单行大段文本，建议检查 reasoning 字段是否包含换行: {symbol}")
 
     body = (
         f"{header}\n"
@@ -184,10 +183,28 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
-    severity = reviewer_report.get("severity_counts", {"高": 0, "中": 0, "低": 0})
-    high = severity.get("高", 0)
-    medium = severity.get("中", 0)
-    low = severity.get("低", 0)
+    # ---- 修复2：智能获取严重/中等/轻微统计 ----
+    high = medium = low = 0
+
+    # 方式1：标准 severity_counts 字典
+    if "severity_counts" in reviewer_report:
+        sev = reviewer_report["severity_counts"]
+        high = sev.get("高", sev.get("high", 0))
+        medium = sev.get("中", sev.get("medium", 0))
+        low = sev.get("低", sev.get("low", 0))
+    # 方式2：独立字段
+    elif "high" in reviewer_report or "严重" in reviewer_report:
+        high = reviewer_report.get("high", reviewer_report.get("严重", 0))
+        medium = reviewer_report.get("medium", reviewer_report.get("中等", 0))
+        low = reviewer_report.get("low", reviewer_report.get("轻微", 0))
+    # 方式3：从 full_report 文本中统计关键词
+    else:
+        report_text = reviewer_report.get("full_report", "")
+        if report_text:
+            high = report_text.count("严重")
+            medium = report_text.count("中等")
+            low = report_text.count("轻微")
+            logger.info(f"从审计报告文本中统计: 严重{high} 中等{medium} 轻微{low}")
 
     conclusion = "⛔ 驳回" if high > 0 else ("⚠️ 存疑" if medium > 0 or low > 0 else "✅ 通过")
 
@@ -224,7 +241,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     final_stop_loss = parsed.get("stop_loss", 0) or 0
     final_take_profit = parsed.get("take_profit", 0) or 0
 
-    # 如果完全没有判决内容，完全回退到原策略
+    # 回退逻辑：当解析不到有效字段时，继承原策略
     if not verdict_raw:
         verdict_raw = "维持原判"
         final_direction = strategy.get("direction", final_direction)
@@ -234,7 +251,6 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         final_stop_loss = final_stop_loss or strategy.get("stop_loss", 0) or 0
         final_take_profit = final_take_profit or strategy.get("take_profit", 0) or 0
     else:
-        # 有判决但部分字段缺失时，温和继承原策略内容
         if final_direction == "neutral" and strategy.get("direction") != "neutral":
             final_direction = strategy["direction"]
         if final_pos_size == "none" and strategy.get("position_size") not in (None, "none"):
@@ -250,7 +266,6 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
 
     current = (data.get("mark_price", 0) or 0) if data else 0
 
-    # 仅展示短结论
     short_verdict = "维持原判" if "维持" in verdict_raw else ("推翻" if "推翻" in verdict_raw else verdict_raw)
     verdict_icon = "✅" if "维持" in short_verdict else "🔄"
 

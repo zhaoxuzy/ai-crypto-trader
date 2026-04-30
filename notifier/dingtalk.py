@@ -251,18 +251,23 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         final_stop_loss = final_stop_loss or strategy.get("stop_loss", 0) or 0
         final_take_profit = final_take_profit or strategy.get("take_profit", 0) or 0
     else:
-        if final_direction == "neutral" and strategy.get("direction") != "neutral":
-            final_direction = strategy["direction"]
-        if final_pos_size == "none" and strategy.get("position_size") not in (None, "none"):
-            final_pos_size = strategy["position_size"]
-        if not final_entry_low:
-            final_entry_low = strategy.get("entry_price_low", 0) or 0
-        if not final_entry_high:
-            final_entry_high = strategy.get("entry_price_high", 0) or 0
-        if not final_stop_loss:
-            final_stop_loss = strategy.get("stop_loss", 0) or 0
-        if not final_take_profit:
-            final_take_profit = strategy.get("take_profit", 0) or 0
+    # 有判决但部分字段缺失时，温和继承原策略内容
+    if "direction" not in parsed or parsed.get("direction") is None:
+        final_direction = strategy.get("direction", final_direction)
+    
+    # 仓位：仅当裁决未给出有效仓位时才继承
+    if final_pos_size == "none" and strategy.get("position_size") not in (None, "none"):
+        final_pos_size = strategy["position_size"]
+    
+    # 价格字段：裁决未给出时继承原策略
+    if not final_entry_low:
+        final_entry_low = strategy.get("entry_price_low", 0) or 0
+    if not final_entry_high:
+        final_entry_high = strategy.get("entry_price_high", 0) or 0
+    if not final_stop_loss:
+        final_stop_loss = strategy.get("stop_loss", 0) or 0
+    if not final_take_profit:
+        final_take_profit = strategy.get("take_profit", 0) or 0
 
     current = (data.get("mark_price", 0) or 0) if data else 0
 

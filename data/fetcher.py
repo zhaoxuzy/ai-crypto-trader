@@ -158,12 +158,12 @@ class CoinGlassClient:
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         # 官方示例: /api/futures/price/history?exchange=Binance&symbol=BTCUSDT&interval=1h&limit=10
         params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
+        return self._request("api/futures/price/history", params, allow_backup=False, silent_fail=True)
 
     def get_oi_ohlc_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         # 官方示例: /api/futures/open-interest/history?exchange=Binance&symbol=BTCUSDT&interval=1d
         params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        return self._request("api/futures/open-interest/history", params, allow_backup=True, silent_fail=True)
+        return self._request("api/futures/open-interest/history", params, allow_backup=False, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
@@ -171,7 +171,7 @@ class CoinGlassClient:
 
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "range": "3d"}
-        return self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
+        return self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=False, silent_fail=True)
 
     def get_top_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         # 官方示例: /api/futures/top-long-short-account-ratio/history?exchange=Binance&symbol=BTCUSDT&interval=4h
@@ -233,7 +233,7 @@ class CoinGlassClient:
         # 官方示例: /api/futures/orderbook/ask-bids-history?exchange=Binance&symbol=BTCUSDT&interval=1d
         try:
             params = {"exchange": "Binance", "symbol": self._get_symbol(symbol), "interval": "1m", "limit": 1}
-            data = self._request("api/futures/orderbook/ask-bids-history", params, allow_backup=True, silent_fail=True)
+            data = self._request("api/futures/orderbook/ask-bids-history", params, allow_backup=False, silent_fail=True)
             if isinstance(data, list) and len(data) > 0:
                 latest = data[0]
                 bids_usd = float(latest.get("bids_usd", 0))
@@ -335,7 +335,7 @@ class CoinGlassClient:
             "interval": interval,
             "limit": limit
         }
-        return self._request("api/futures/liquidation/history", params, allow_backup=True, silent_fail=True)
+        return self._request("api/futures/liquidation/history", params, allow_backup=False, silent_fail=True)
 
     # ----- 衍生计算函数 -----
     def _calc_retail_whale_divergence(self, global_ls: float, top_ls_percentile: float) -> float:

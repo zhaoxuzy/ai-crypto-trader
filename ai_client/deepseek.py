@@ -25,10 +25,8 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     # 跨币种文本
     cross_context = ""
     if eth_data:
-        if not eth_data.get("_complete", False):
-            cross_context = "⚠️ 跨币种数据不完整，第六步跨币种验证无法进行，对主逻辑无增强也无削弱。"
-        else:
-            cross_context = f"""
+        # 始终构造跨币种数据展示（无论是否完整），缺失字段默认值仍会显示
+        cross_context = f"""
 【{cross_symbol} 跨币种数据 - 仅用于第六步】
 现价：{eth_data.get('mark_price', 0):.2f}
 清算：上方{eth_data.get('above_liq', 0)/1e9:.2f}B / 下方{eth_data.get('below_liq', 0)/1e9:.2f}B (比值{eth_data.get('liq_ratio', 0):.2f})
@@ -39,6 +37,8 @@ CVD斜率：{eth_data.get('cvd_slope', 0):.4f}
 爆仓偏空比：{eth_data.get('liq_bias_1h', 0):.3f}
 期权：P/C比{eth_data.get('put_call_ratio', 0):.4f}　最大痛点{eth_data.get('max_pain', 0):.2f}
 """
+        if not eth_data.get("_complete", False):
+            cross_context += "\n⚠️ 以上部分数据可能缺失，请基于可用数据完成跨币种验证。"
     else:
         cross_context = "⚠️ 无跨币种数据"
 
@@ -49,6 +49,8 @@ CVD斜率：{eth_data.get('cvd_slope', 0):.4f}
     constraint_note = ""
     if missing_core:
         constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(missing_core)}。你必须将最终置信度设为 'low'；若清算数据缺失，则必须输出 'neutral'。\n"
+
+    # 其余部分原样保留...
 
     prompt = f"""你是加密货币交易团队的首席交易员，负责分析市场数据并制定交易计划草案。你没有裁决权，但必须给出最完整、最清晰的推演供审计和委员会复核。
 

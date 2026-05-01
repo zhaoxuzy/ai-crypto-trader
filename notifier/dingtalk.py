@@ -188,9 +188,9 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     dir_icon = {"long": "🟢", "short": "🔴", "neutral": "⚪"}.get(direction, "⚪")
     dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(direction, "观望")
     size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(pos_size, "?")
-    conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "?")
+    conf_text = {"high": "高", "medium": "中", "low": "低"}.get(conf, "?")
 
-    header = f"### 🧠 首席交易员 · 提交审计 | {symbol} | {dir_icon} {dir_text} | {size_text} | 置信度{conf_icon} | {now}"
+    header = f"### 🧠 首席交易员 · 提交审计 | {symbol} | {dir_icon} {dir_text} | {size_text} | 置信度{conf_text} | {now}"
     price_block = (
         f"现价 {current:.0f}  |  "
         f"入场 {entry_low:.0f}-{entry_high:.0f}  |  "
@@ -281,7 +281,6 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         final_take_profit = parsed.get("take_profit", strategy.get("take_profit", 0) or 0)
 
     # ---------- 标题图标和文字 ----------
-    # 精确判断：只有当判决字符串完全为“维持原判”时才显示✅维持原判，否则都视为推翻
     if verdict == "维持原判":
         short_verdict = "维持原判"
         verdict_icon = "✅"
@@ -294,12 +293,12 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(final_direction, "观望")
     size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(final_pos_size, "?")
     conf = strategy.get("confidence", "medium")
-    conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "?")
+    conf_text = {"high": "高", "medium": "中", "low": "低"}.get(conf, "?")
 
     current = (data.get("mark_price", 0) or 0) if data else 0
 
     header = f"### 📋 交易委员会 · 最终裁决 | {symbol} | {verdict_icon} {short_verdict} | {now}"
-    decision_line = f"{dir_icon} {dir_text} | {size_text} | 置信度{conf_icon}"
+    decision_line = f"{dir_icon} {dir_text} | {size_text} | 置信度{conf_text}"
     price_block = (
         f"现价 {current:.0f}  |  "
         f"入场 {final_entry_low:.0f}-{final_entry_high:.0f}  |  "

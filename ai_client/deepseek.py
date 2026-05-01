@@ -12,7 +12,7 @@ RETRY_BASE_WAIT = 2
 TIMEOUT_SECONDS = 180
 
 # 模型定义
-FAST_MODEL = "deepseek-v4-flash"          # 交易员 & 审计官
+FAST_MODEL = "deepseek-v4-pro"          # 交易员 & 审计官
 REASONING_MODEL = "deepseek-v4-pro"       # 交易委员会 (深度思考)
 
 # ------------------- 首席交易员：生成最初计划 -------------------

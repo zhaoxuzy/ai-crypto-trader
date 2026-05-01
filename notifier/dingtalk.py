@@ -190,13 +190,8 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(pos_size, "?")
     conf_text = {"high": "高", "medium": "中", "low": "低"}.get(conf, "?")
 
-    header = f"### 🧠 首席交易员 · 提交审计 | {symbol} | {dir_icon} {dir_text} | {size_text} | 置信度{conf_text} | {now}"
-    price_block = (
-        f"现价 {current:.0f}  |  "
-        f"入场 {entry_low:.0f}-{entry_high:.0f}  |  "
-        f"止损 {stop_loss:.0f}  |  "
-        f"止盈 {take_profit:.0f}"
-    )
+    header = f"### 策略｜{symbol} 🧠 建议 {dir_icon}{dir_text} {now}"
+    first_line = f"现价 {current:.0f} | 入场 {entry_low:.0f}-{entry_high:.0f} | 止损 {stop_loss:.0f} | 止盈 {take_profit:.0f} | 置信度 {conf_text} | 仓位 {size_text}"
 
     full_reasoning = strategy.get("reasoning", "")
     if not full_reasoning:
@@ -206,7 +201,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     body = (
         f"{header}\n"
-        f"{price_block}\n\n"
+        f"{first_line}\n\n"
         f"**推演过程**\n"
         f"```\n{_safe_code_block(full_reasoning)}\n```"
     )
@@ -234,14 +229,16 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
             medium = report_text.count("中等")
             low = report_text.count("轻微")
 
-    conclusion = "⛔ 驳回" if high > 0 else ("⚠️ 存疑" if medium > 0 or low > 0 else "✅ 通过")
-    header = f"### ⚡ 风控审计官 · 审计完成 | {symbol} | {conclusion} | {now}"
-    sev_line = f"严重 {high}  中等 {medium}  轻微 {low}"
+    conclusion_icon = "⛔" if high > 0 else ("⚠️" if medium > 0 or low > 0 else "✅")
+    conclusion_text = "驳回" if high > 0 else ("存疑" if medium > 0 or low > 0 else "通过")
+
+    header = f"### 策略｜{symbol} ⚡ 审计 {conclusion_icon}{conclusion_text} {now}"
+    first_line = f"严重 {high} | 中等 {medium} | 轻微 {low}"
     report = reviewer_report.get("full_report", "无审查报告")
 
     body = (
         f"{header}\n"
-        f"{sev_line}\n\n"
+        f"{first_line}\n\n"
         f"**审计报告**\n"
         f"```\n{_safe_code_block(report)}\n```"
     )
@@ -280,15 +277,15 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
         final_stop_loss = parsed.get("stop_loss", strategy.get("stop_loss", 0) or 0)
         final_take_profit = parsed.get("take_profit", strategy.get("take_profit", 0) or 0)
 
-    # ---------- 标题图标和文字 ----------
+    # ---------- 标题 ----------
     if verdict == "维持原判":
-        short_verdict = "维持原判"
         verdict_icon = "✅"
     else:
-        short_verdict = "推翻"
         verdict_icon = "🔄"
 
-    # ---------- 方向/仓位/价格显示 ----------
+    header = f"### 策略｜{symbol} 📋 裁决 {verdict_icon}{verdict} {now}"
+
+    # ---------- 方向/仓位/置信度 ----------
     dir_icon = {"long": "🟢", "short": "🔴", "neutral": "⚪"}.get(final_direction, "⚪")
     dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(final_direction, "观望")
     size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(final_pos_size, "?")
@@ -297,22 +294,43 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
 
     current = (data.get("mark_price", 0) or 0) if data else 0
 
-    header = f"### 📋 交易委员会 · 最终裁决 | {symbol} | {verdict_icon} {short_verdict} | {now}"
-    decision_line = f"{dir_icon} {dir_text} | {size_text} | 置信度{conf_text}"
-    price_block = (
-        f"现价 {current:.0f}  |  "
-        f"入场 {final_entry_low:.0f}-{final_entry_high:.0f}  |  "
-        f"止损 {final_stop_loss:.0f}  |  "
-        f"止盈 {final_take_profit:.0f}"
-    )
+    # ---------- 首行：根据维持/推翻显示不同内容 ----------
+    if verdict == "维持原判":
+        first_line = (
+            f"{dir_icon}{dir_text} | "
+            f"现价 {current:.0f} | "
+            f"入场 {final_entry_low:.0f}-{final_entry_high:.0f} | "
+            f"止损 {final_stop_loss:.0f} | "
+            f"止盈 {final_take_profit:.0f} | "
+            f"置信度 {conf_text} | "
+            f"仓位 {size_text}"
+        )
+    else:
+        # 推翻时根据最终方向是否观望决定是否显示价格字段
+        if final_direction == "neutral":
+            first_line = (
+                f"{dir_icon}{dir_text} | "
+                f"现价 {current:.0f} | "
+                f"置信度 {conf_text} | "
+                f"仓位 {size_text}"
+            )
+        else:
+            first_line = (
+                f"{dir_icon}{dir_text} | "
+                f"现价 {current:.0f} | "
+                f"入场 {final_entry_low:.0f}-{final_entry_high:.0f} | "
+                f"止损 {final_stop_loss:.0f} | "
+                f"止盈 {final_take_profit:.0f} | "
+                f"置信度 {conf_text} | "
+                f"仓位 {size_text}"
+            )
 
     if not judge_full_text:
         judge_full_text = "无裁决内容"
 
     body = (
         f"{header}\n"
-        f"{decision_line}\n"
-        f"{price_block}\n\n"
+        f"{first_line}\n\n"
         f"**裁决内容**\n"
         f"```\n{_safe_code_block(judge_full_text)}\n```"
     )

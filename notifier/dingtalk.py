@@ -13,9 +13,6 @@ from utils.logger import logger
 
 
 # ===================== 基础推送 =====================
-import re
-
-# 在文件头部加入常量
 DINGTALK_MAX_LENGTH = 18000  # 留一点余量，避免编码差异
 SPLIT_MARKER = "\n\n--- (续) {part}/{total} ---\n\n"
 
@@ -30,10 +27,10 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         logger.error("未配置钉钉 Webhook")
         return False
 
-    # ----- 新增：完整内容写入日志，方便回溯 -----
+    # 完整内容写入日志，方便回溯
     logger.info(f"完整消息内容 ({title}):\n{content}")
 
-    # ----- 新增：超长内容自动分段 -----
+    # 超长内容自动分段
     if len(content) <= DINGTALK_MAX_LENGTH:
         return _send_single(webhook, secret, content, title)
 
@@ -64,7 +61,7 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 def _send_single(webhook: str, secret: str, content: str, title: str) -> bool:
-    """原有的单条发送逻辑（从原函数中提取）"""
+    """原有的单条发送逻辑"""
     ts = str(round(time.time() * 1000))
     if secret and secret.strip().lower() not in ("", "none"):
         try:
@@ -104,7 +101,7 @@ def _safe_code_block(text: str) -> str:
     return re.sub(r'`{3,}', lambda m: "'" * len(m.group()), text)
 
 
-# ===================== 裁决文本解析 =====================
+# ===================== 裁决文本解析（后备逻辑） =====================
 def _parse_judge_execution(text: str) -> dict:
     result = {}
     if not text:
@@ -201,12 +198,9 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         f"止盈 {take_profit:.0f}"
     )
 
-    # ---- 修复1：确保推演内容是完整的多行文本 ----
     full_reasoning = strategy.get("reasoning", "")
     if not full_reasoning:
-        # 尝试从其他可能字段获取
         full_reasoning = strategy.get("full_reasoning") or strategy.get("raw") or "无推演内容"
-    # 如果内容只有一行且很长，可能是未换行，但保留原样
     if isinstance(full_reasoning, str) and "\n" not in full_reasoning and len(full_reasoning) > 120:
         logger.warning(f"策略推演内容疑似单行大段文本，建议检查 reasoning 字段是否包含换行: {symbol}")
 
@@ -223,31 +217,24 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
-    # ---- 修复2：智能获取严重/中等/轻微统计 ----
     high = medium = low = 0
-
-    # 方式1：标准 severity_counts 字典
     if "severity_counts" in reviewer_report:
         sev = reviewer_report["severity_counts"]
         high = sev.get("高", sev.get("high", 0))
         medium = sev.get("中", sev.get("medium", 0))
         low = sev.get("低", sev.get("low", 0))
-    # 方式2：独立字段
     elif "high" in reviewer_report or "严重" in reviewer_report:
         high = reviewer_report.get("high", reviewer_report.get("严重", 0))
         medium = reviewer_report.get("medium", reviewer_report.get("中等", 0))
         low = reviewer_report.get("low", reviewer_report.get("轻微", 0))
-    # 方式3：从 full_report 文本中统计关键词
     else:
         report_text = reviewer_report.get("full_report", "")
         if report_text:
             high = report_text.count("严重")
             medium = report_text.count("中等")
             low = report_text.count("轻微")
-            logger.info(f"从审计报告文本中统计: 严重{high} 中等{medium} 轻微{low}")
 
     conclusion = "⛔ 驳回" if high > 0 else ("⚠️ 存疑" if medium > 0 or low > 0 else "✅ 通过")
-
     header = f"### ⚡ 风控审计官 · 审计完成 | {symbol} | {conclusion} | {now}"
     sev_line = f"严重 {high}  中等 {medium}  轻微 {low}"
     report = reviewer_report.get("full_report", "无审查报告")
@@ -265,61 +252,51 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict = None
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
 
-    judge_full_text = ""
-    if isinstance(judge_result, dict):
-        judge_full_text = judge_result.get("content", "") or judge_result.get("full_report", "") or ""
-    if not judge_full_text:
-        judge_full_text = strategy.get("_judge_reasoning", "")
-
-    parsed = _parse_judge_execution(judge_full_text) if judge_full_text else {}
-
-    verdict_raw = parsed.get("verdict_raw", "")
-    final_direction = parsed.get("direction", "neutral")
-    final_pos_size = parsed.get("position_size", "none")
-    final_entry_low = parsed.get("entry_low", 0) or 0
-    final_entry_high = parsed.get("entry_high", 0) or 0
-    final_stop_loss = parsed.get("stop_loss", 0) or 0
-    final_take_profit = parsed.get("take_profit", 0) or 0
-
-       # 回退逻辑：当解析不到有效字段时，继承原策略
-    if not verdict_raw:
-        verdict_raw = "维持原判"
-        final_direction = strategy.get("direction", final_direction)
-        final_pos_size = strategy.get("position_size", final_pos_size)
-        final_entry_low = final_entry_low or strategy.get("entry_price_low", 0) or 0
-        final_entry_high = final_entry_high or strategy.get("entry_price_high", 0) or 0
-        final_stop_loss = final_stop_loss or strategy.get("stop_loss", 0) or 0
-        final_take_profit = final_take_profit or strategy.get("take_profit", 0) or 0
+    # ---------- 优先从结构化字段提取 ----------
+    if isinstance(judge_result, dict) and "judge_C" in judge_result:
+        jc = judge_result["judge_C"]
+        verdict = jc.get("final_verdict", "")          # "维持原判" / "推翻"
+        final_direction = jc.get("final_direction", "neutral")
+        final_pos_size = jc.get("final_position_size", "none")
+        final_entry_low = jc.get("entry_price_low", 0) or 0
+        final_entry_high = jc.get("entry_price_high", 0) or 0
+        final_stop_loss = jc.get("stop_loss", 0) or 0
+        final_take_profit = jc.get("take_profit", 0) or 0
+        judge_full_text = jc.get("reasoning", "")
     else:
-        # 有判决但部分字段缺失时，温和继承原策略内容
-        # 方向：仅当裁决完全没有 direction 字段（未解析出）时才继承原方向
-        if "direction" not in parsed or parsed.get("direction") is None:
-            final_direction = strategy.get("direction", final_direction)
-        
-        # 仓位：仅当裁决未给出有效仓位时才继承
-        if final_pos_size == "none" and strategy.get("position_size") not in (None, "none"):
-            final_pos_size = strategy["position_size"]
-        
-        # 价格字段：裁决未给出时继承原策略
-        if not final_entry_low:
-            final_entry_low = strategy.get("entry_price_low", 0) or 0
-        if not final_entry_high:
-            final_entry_high = strategy.get("entry_price_high", 0) or 0
-        if not final_stop_loss:
-            final_stop_loss = strategy.get("stop_loss", 0) or 0
-        if not final_take_profit:
-            final_take_profit = strategy.get("take_profit", 0) or 0
+        # 回退到旧逻辑：从 judge_result 中提取文本再解析
+        judge_full_text = ""
+        if isinstance(judge_result, dict):
+            judge_full_text = judge_result.get("content") or judge_result.get("full_report") or ""
+        if not judge_full_text:
+            judge_full_text = strategy.get("_judge_reasoning", "")
 
-    current = (data.get("mark_price", 0) or 0) if data else 0
+        parsed = _parse_judge_execution(judge_full_text) if judge_full_text else {}
+        verdict = parsed.get("verdict", "维持原判")
+        final_direction = parsed.get("direction", strategy.get("direction", "neutral"))
+        final_pos_size = parsed.get("position_size", strategy.get("position_size", "none"))
+        final_entry_low = parsed.get("entry_low", strategy.get("entry_price_low", 0) or 0)
+        final_entry_high = parsed.get("entry_high", strategy.get("entry_price_high", 0) or 0)
+        final_stop_loss = parsed.get("stop_loss", strategy.get("stop_loss", 0) or 0)
+        final_take_profit = parsed.get("take_profit", strategy.get("take_profit", 0) or 0)
 
-    short_verdict = "维持原判" if "维持" in verdict_raw else ("推翻" if "推翻" in verdict_raw else verdict_raw)
-    verdict_icon = "✅" if "维持" in short_verdict else "🔄"
+    # ---------- 标题图标和文字 ----------
+    # 精确判断：只有当判决字符串完全为“维持原判”时才显示✅维持原判，否则都视为推翻
+    if verdict == "维持原判":
+        short_verdict = "维持原判"
+        verdict_icon = "✅"
+    else:
+        short_verdict = "推翻"
+        verdict_icon = "🔄"
 
+    # ---------- 方向/仓位/价格显示 ----------
     dir_icon = {"long": "🟢", "short": "🔴", "neutral": "⚪"}.get(final_direction, "⚪")
     dir_text = {"long": "做多", "short": "做空", "neutral": "观望"}.get(final_direction, "观望")
     size_text = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": "无仓位"}.get(final_pos_size, "?")
     conf = strategy.get("confidence", "medium")
     conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "?")
+
+    current = (data.get("mark_price", 0) or 0) if data else 0
 
     header = f"### 📋 交易委员会 · 最终裁决 | {symbol} | {verdict_icon} {short_verdict} | {now}"
     decision_line = f"{dir_icon} {dir_text} | {size_text} | 置信度{conf_icon}"

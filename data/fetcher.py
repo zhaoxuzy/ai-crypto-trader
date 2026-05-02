@@ -301,7 +301,7 @@ class CoinGlassClient:
     def get_futures_basis_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {
             "exchange": self.primary_exchange,
-            "symbol": f"{symbol.upper()}USDT",
+            "symbol": f"{symbol.upper()}USDT", 
             "interval": interval,
             "limit": limit
         }

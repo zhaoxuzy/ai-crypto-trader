@@ -671,20 +671,14 @@ class CoinGlassClient:
         sth_rp = 0.0
         if sth_rp_data and isinstance(sth_rp_data, list) and len(sth_rp_data) > 0:
             last_item = sth_rp_data[-1]
-            if isinstance(last_item, dict) and "value" in last_item:
-                try:
-                    sth_rp = float(last_item.get("sth_realized_price", 0) or 0)
-                except (ValueError, TypeError):
-                    sth_rp = 0.0
+            if isinstance(last_item, dict):
+                sth_rp = float(last_item.get("sth_realized_price", 0) or 0)
 
         lth_sopr = 1.0
         if lth_sopr_data and isinstance(lth_sopr_data, list) and len(lth_sopr_data) > 0:
             last_item = lth_sopr_data[-1]
-            if isinstance(last_item, dict) and "value" in last_item:
-                try:
-                    lth_sopr = float(last_item["value"])
-                except (ValueError, TypeError):
-                    lth_sopr = 1.0
+            if isinstance(last_item, dict):
+                lth_sopr = float(last_item.get("lth_sopr", last_item.get("value", 1.0)) or 1.0)
 
         sth_sopr = 1.0
         if sth_sopr_data and isinstance(sth_sopr_data, list) and len(sth_sopr_data) > 0:

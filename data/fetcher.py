@@ -284,21 +284,32 @@ class CoinGlassClient:
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True, silent_fail=True)
 
-    # ✅ 修复1：去掉 no_exchange，添加 exchange 参数
+    # ✅ 文档确认：使用 exchange_list，symbol 为基础币种（BTC），interval 必填
     def get_aggregated_taker_buy_sell_volume_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
         params = {
-            "exchange": self.primary_exchange,
+            "exchange_list": self.primary_exchange,
             "symbol": symbol.upper(),
             "interval": interval,
             "limit": limit
         }
-        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=True, silent_fail=True)
+        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
 
-    def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20):
-        params = {"symbol": f"{symbol.upper()}USDT", "limit": limit}
-        return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True, no_exchange=True)
+    # ✅ 文档确认：需 exchange、symbol（BTCUSDT 格式）、state、start_time、end_time
+    def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20, state: int = 1):
+        now_ms = int(time.time() * 1000)
+        start_time = now_ms - 24 * 60 * 60 * 1000  # 最近24小时
+        end_time = now_ms
+        params = {
+            "exchange": self.primary_exchange,
+            "symbol": f"{symbol.upper()}USDT",
+            "state": state,
+            "start_time": start_time,
+            "end_time": end_time,
+            "limit": limit
+        }
+        return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=True, silent_fail=True)
 
-    # ✅ 修复2：添加 interval 参数
+    # ✅ 文档确认：需要 interval 参数
     def get_cgdi_index_history(self, limit: int = 90):
         params = {"limit": limit, "interval": "1d"}
         data = self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
@@ -312,14 +323,14 @@ class CoinGlassClient:
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/basis/history", params, allow_backup=True, silent_fail=True)
 
-    # ✅ 修复3：添加 exchange_list 参数
+    # ✅ 文档确认：不需要任何参数
     def get_stablecoin_market_cap_history(self, limit: int = 30):
-        params = {"exchange_list": "USDT", "limit": limit}
-        data = self._request("api/index/stableCoin-marketCap-history", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/index/stableCoin-marketCap-history", {}, allow_backup=False, silent_fail=True, no_exchange=True)
         return data if isinstance(data, list) else []
 
+    # ✅ 文档确认：不需要任何参数
     def get_bitcoin_dominance_history(self, limit: int = 30):
-        data = self._request("api/index/bitcoin-dominance", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        data = self._request("api/index/bitcoin-dominance", {}, allow_backup=False, silent_fail=True, no_exchange=True)
         return data if isinstance(data, list) else []
 
     def get_lth_realized_price_history(self, limit: int = 30):
@@ -338,8 +349,15 @@ class CoinGlassClient:
         data = self._request("api/index/bitcoin-sth-sopr", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
         return data if isinstance(data, list) else []
 
+    # ✅ 文档确认：需要 exchange、symbol（基础币种）、interval
     def get_borrow_interest_rate_history(self, limit: int = 30):
-        data = self._request("api/borrow-interest-rate/history", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        params = {
+            "exchange": self.primary_exchange,
+            "symbol": "BTC",
+            "interval": "h1",
+            "limit": limit
+        }
+        data = self._request("api/borrow-interest-rate/history", params, allow_backup=True, silent_fail=True)
         return data if isinstance(data, list) else []
 
     def get_spot_netflow(self, symbol: str = "BTC") -> dict:

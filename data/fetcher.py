@@ -29,8 +29,8 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter(min_interval=2.0)   # 2秒一次，一分钟最多30次
-        self._semaphore = Semaphore(2)                       # 降低并发
+        self._rate_limiter = RateLimiter(min_interval=2.0)
+        self._semaphore = Semaphore(2)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 1,
                  allow_backup: bool = False, silent_fail: bool = False,
@@ -65,7 +65,6 @@ class CoinGlassClient:
                             return data.get("data", {})
                         else:
                             msg = f"CoinGlass API 错误: {data.get('msg', data)}"
-                            # 详细打印错误响应内容，方便排查
                             logger.error(f"[错误详情] endpoint={endpoint} | response={data}")
                             last_error = msg
                             if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
@@ -298,10 +297,10 @@ class CoinGlassClient:
         }
         return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
 
-    # ✅ 修复大额挂单：Binance + BTCUSDT 格式 + 最近30分钟
+    # ✅ 大额挂单：Binance + BTCUSDT 格式 + 最近30分钟
     def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20, state: int = 1):
         now_ms = int(time.time() * 1000)
-        start_time = now_ms - 30 * 60 * 1000   # 最近30分钟
+        start_time = now_ms - 30 * 60 * 1000
         end_time = now_ms
         params = {
             "exchange": "Binance",
@@ -326,7 +325,6 @@ class CoinGlassClient:
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/basis/history", params, allow_backup=False, silent_fail=True)
 
-    # ✅ 稳定币市值与比特币占比：官方文档无需任何参数
     def get_stablecoin_market_cap_history(self, limit: int = 30):
         data = self._request("api/index/stableCoin-marketCap-history", {}, allow_backup=False, silent_fail=True, no_exchange=True)
         return data if isinstance(data, list) else []
@@ -351,7 +349,6 @@ class CoinGlassClient:
         data = self._request("api/index/bitcoin-sth-sopr", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
         return data if isinstance(data, list) else []
 
-    # ✅ 借贷利率修正：exchange + symbol + interval 必填
     def get_borrow_interest_rate_history(self, limit: int = 30):
         params = {
             "exchange": self.primary_exchange,
@@ -455,7 +452,7 @@ class CoinGlassClient:
             "spot_netflow": lambda: self.get_spot_netflow(base_symbol),
         }
         results = {}
-        with ThreadPoolExecutor(max_workers=2) as executor:   # 降低并发
+        with ThreadPoolExecutor(max_workers=2) as executor:
             future_to_key = {executor.submit(task): key for key, task in tasks.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
@@ -469,9 +466,403 @@ class CoinGlassClient:
         return self._build_main_data(results, base_symbol, eth_btc_data, kline_limit)
 
     def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
-        # ...（此部分与之前保持不变，因篇幅省略，实际使用请保留完整的 _build_main_data 实现）
-        # 请确保将之前的 _build_main_data 方法完整复制在这里
-        pass
+        kline_data = results.get("kline", [])
+        oi_data = results.get("oi", [])
+        funding_data = results.get("funding", [])
+        top_ls_data = results.get("top_ls", [])
+        cvd_data = results.get("cvd", [])
+        heatmap_raw = results.get("heatmap", {})
+        max_pain_data = results.get("max_pain", {})
+        fg_data = results.get("fg", {"current": 50, "prev_7d": 50})
+        netflow_dict = results.get("netflow", {})
+        orderbook = results.get("orderbook", {})
+        exchange_btc = results.get("exchange_btc", {})
+        agg_oi_data = results.get("agg_oi", [])
+        global_ls_data = results.get("global_ls", [])
+        taker_bs_data = results.get("taker_bs", [])
+        large_orders_data = results.get("large_orders", [])
+        cgdi_data = results.get("cgdi", [])
+        liq_history_data = results.get("liq_history", [])
+        basis_data = results.get("basis", [])
+        stablecoin_mcap_data = results.get("stablecoin_mcap", [])
+        btc_dom_data = results.get("btc_dominance", [])
+        lth_rp_data = results.get("lth_rp", [])
+        sth_rp_data = results.get("sth_rp", [])
+        lth_sopr_data = results.get("lth_sopr", [])
+        sth_sopr_data = results.get("sth_sopr", [])
+        borrow_rate_data = results.get("borrow_rate", [])
+        spot_netflow_data = results.get("spot_netflow", {})
+
+        data_quality = {key: "✅" if results.get(key) else "❌ 缺失" for key in results.keys()}
+
+        mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
+        closes = [self._get_close_from_candle(k) for k in kline_data]
+        atr_4h = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
+        atr_list = self._calc_atr_list(closes, 14)
+        avg_atr_7d = sum(atr_list) / len(atr_list) if atr_list else 0.0
+        vol_factor = atr_4h / avg_atr_7d if avg_atr_7d > 0 else 1.0
+        price_percentile = self._calc_percentile(kline_data, mark_price)
+        atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
+        atr_1h_val = atr_4h * 0.5
+        atr_1h_ratio = (atr_1h_val / mark_price) * 100 if mark_price > 0 else 0.0
+
+        above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
+        if heatmap_raw:
+            y_axis = heatmap_raw.get("y_axis", [])
+            liq_data = heatmap_raw.get("liquidation_leverage_data", [])
+            pain_map = {}
+            for item in liq_data:
+                if isinstance(item, list) and len(item) >= 3:
+                    price = float(y_axis[int(item[1])]) if int(item[1]) < len(y_axis) else 0
+                    intensity = float(item[2])
+                    if price > mark_price: above_liq += intensity
+                    elif price < mark_price: below_liq += intensity
+                    pain_map[price] = intensity
+            liq_ratio = above_liq / below_liq if below_liq > 0 else 0.0
+            if pain_map:
+                above_prices = [p for p in pain_map if p > mark_price]
+                below_prices = [p for p in pain_map if p < mark_price]
+                if above_prices:
+                    max_above = max(above_prices, key=lambda p: pain_map[p])
+                    above_cluster = f"{max_above*0.99:.0f}-{max_above*1.01:.0f}"
+                if below_prices:
+                    max_below = max(below_prices, key=lambda p: pain_map[p])
+                    below_cluster = f"{max_below*0.99:.0f}-{max_below*1.01:.0f}"
+
+        above_trigger_str = f"{float(above_cluster.split('-')[0]) - mark_price:+.0f}" if above_cluster != 'N/A' and '-' in above_cluster else "N/A"
+        below_trigger_str = f"{mark_price - float(below_cluster.split('-')[1]):+.0f}" if below_cluster != 'N/A' and '-' in below_cluster else "N/A"
+        above_trigger_val = float(above_trigger_str) if above_trigger_str != 'N/A' else 0
+        below_trigger_val = float(below_trigger_str) if below_trigger_str != 'N/A' else 0
+
+        oi_current = self._get_close_from_candle(oi_data[-1]) if oi_data else 0.0
+        oi_percentile = self._calc_percentile(oi_data, oi_current)
+        oi_change_24h = 0.0
+        if len(oi_data) >= 6:
+            oi_24h_ago = self._get_close_from_candle(oi_data[-6])
+            oi_change_24h = (oi_current - oi_24h_ago) / oi_24h_ago * 100 if oi_24h_ago > 0 else 0.0
+
+        funding_current = self._get_close_from_candle(funding_data[-1]) if funding_data else 0.0
+        funding_percentile = self._calc_percentile(funding_data, funding_current)
+
+        top_ls_current = 0.0
+        if top_ls_data and isinstance(top_ls_data, list) and len(top_ls_data) > 0:
+            latest = top_ls_data[-1]
+            if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
+                top_ls_current = float(latest.get("top_position_long_short_ratio", 0))
+            else:
+                top_ls_current = self._get_close_from_candle(latest)
+        top_ls_percentile = self._calc_percentile(top_ls_data, top_ls_current) if top_ls_data else 50.0
+
+        cvd_series = [self._get_close_from_candle(c) for c in cvd_data] if cvd_data else []
+        cvd_slope = self._calc_slope(cvd_series)
+
+        agg_oi_current = self._get_close_from_candle(agg_oi_data[-1]) if agg_oi_data else 0.0
+        agg_oi_change_24h = 0.0
+        if len(agg_oi_data) >= 6:
+            agg_oi_24h_ago = self._get_close_from_candle(agg_oi_data[-6])
+            agg_oi_change_24h = (agg_oi_current - agg_oi_24h_ago) / agg_oi_24h_ago * 100 if agg_oi_24h_ago > 0 else 0.0
+
+        fear_greed = fg_data.get("current", 50)
+        fear_greed_prev_7d = fg_data.get("prev_7d", 50)
+
+        cvd_acceleration = self._calc_momentum(cvd_series[-60:]) if len(cvd_series) >= 60 else 0.0
+        oi_series = [self._get_close_from_candle(c) for c in oi_data] if oi_data else []
+        oi_acceleration = self._calc_momentum(oi_series[-30:]) if len(oi_series) >= 30 else 0.0
+        funding_series = [self._get_close_from_candle(c) for c in funding_data] if funding_data else []
+        funding_momentum = self._calc_momentum(funding_series[-30:]) if len(funding_series) >= 30 else 0.0
+
+        global_ls_current = 0.0
+        if global_ls_data and isinstance(global_ls_data, list) and len(global_ls_data) > 0:
+            latest_gls = global_ls_data[-1]
+            if isinstance(latest_gls, dict):
+                global_ls_current = float(latest_gls.get("long_short_ratio", 1.0))
+            elif isinstance(latest_gls, list):
+                global_ls_current = self._get_close_from_candle(latest_gls)
+            else:
+                global_ls_current = 1.0
+        retail_whale_divergence = self._calc_retail_whale_divergence(global_ls_current, top_ls_percentile)
+
+        taker_ratio_1h = self._calc_taker_ratio(taker_bs_data, hours=1)
+
+        large_order_info = self._calc_large_order_pressure(large_orders_data if large_orders_data else [])
+        large_order_pressure = large_order_info.get("pressure", 0.0)
+        large_buy_value = large_order_info.get("large_buy_value", 0.0)
+        large_sell_value = large_order_info.get("large_sell_value", 0.0)
+
+        cgdi_current = 0.0
+        if cgdi_data and len(cgdi_data) > 0:
+            cgdi_current = float(cgdi_data[-1].get("cgdi_index_value", 1000) or 1000)
+        cgdi_percentile = self._calc_cgdi_percentile(cgdi_data, cgdi_current)
+
+        liq_bias_info = self._calc_liq_bias(liq_history_data if liq_history_data else [], hours=1)
+        long_liq_1h = liq_bias_info.get("long_liq_1h", 0.0)
+        short_liq_1h = liq_bias_info.get("short_liq_1h", 0.0)
+        liq_bias_1h = liq_bias_info.get("liq_bias_1h", 0.0)
+
+        # 新增指標計算
+        basis_current = 0.0
+        basis_percentile = 50.0
+        if basis_data and len(basis_data) > 0:
+            basis_values = [self._get_close_from_candle(b) for b in basis_data]
+            basis_current = basis_values[-1]
+            basis_percentile = self._calc_percentile(basis_data, basis_current)
+
+        stablecoin_trend = 0.0
+        stablecoin_mcap_current = 0.0
+        if stablecoin_mcap_data and len(stablecoin_mcap_data) > 0:
+            mcap_values = [float(d.get("value", 0) or 0) for d in stablecoin_mcap_data]
+            stablecoin_mcap_current = mcap_values[-1]
+            if len(mcap_values) >= 7:
+                stablecoin_trend = (mcap_values[-1] - mcap_values[-7]) / (mcap_values[-7] + 1) * 100
+
+        btc_dom_current = 0.0
+        btc_dom_trend = 0.0
+        if btc_dom_data and len(btc_dom_data) > 0:
+            dom_values = [float(d.get("value", 0) or 0) for d in btc_dom_data]
+            btc_dom_current = dom_values[-1]
+            if len(dom_values) >= 7:
+                btc_dom_trend = (dom_values[-1] - dom_values[-7]) / (dom_values[-7] + 1) * 100
+
+        lth_rp = 0.0
+        if lth_rp_data and len(lth_rp_data) > 0:
+            lth_rp = float(lth_rp_data[-1].get("value", 0) or 0)
+
+        sth_rp = 0.0
+        if sth_rp_data and len(sth_rp_data) > 0:
+            sth_rp = float(sth_rp_data[-1].get("value", 0) or 0)
+
+        lth_sopr = 1.0
+        if lth_sopr_data and len(lth_sopr_data) > 0:
+            lth_sopr = float(lth_sopr_data[-1].get("value", 1.0) or 1.0)
+
+        sth_sopr = 1.0
+        if sth_sopr_data and len(sth_sopr_data) > 0:
+            sth_sopr = float(sth_sopr_data[-1].get("value", 1.0) or 1.0)
+
+        borrow_rate_current = 0.0
+        if borrow_rate_data and len(borrow_rate_data) > 0:
+            borrow_rate_current = float(borrow_rate_data[-1].get("value", 0) or 0)
+
+        spot_netflow_24h = spot_netflow_data.get("24h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
+        spot_netflow_1h = spot_netflow_data.get("1h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
+
+        spot_vs_futures_divergence = self._calc_spot_vs_futures_divergence(
+            netflow_dict.get("24h", 0.0), spot_netflow_24h
+        )
+
+        direction_bias = self._calc_direction_bias(
+            above_liq, below_liq, above_trigger_val, below_trigger_val,
+            large_order_pressure,
+            retail_whale_divergence,
+            cvd_slope, taker_ratio_1h,
+            netflow_dict,
+            cgdi_percentile,
+            fear_greed,
+            liq_bias_1h,
+            spot_vs_futures_divergence,
+            basis_current, basis_percentile,
+            stablecoin_trend,
+            btc_dom_trend,
+            mark_price, sth_rp, lth_rp, sth_sopr, lth_sopr,
+            borrow_rate_current,
+        )
+
+        liquidity_bias = self._calc_liquidity_bias(above_liq, below_liq, above_trigger_val, below_trigger_val, orderbook.get("imbalance", 0.0))
+
+        lure_risk_factor = 0.0
+        try:
+            if orderbook.get("imbalance", 0) < -0.1 and below_trigger_val < above_trigger_val:
+                lure_risk_factor = 0.6
+            elif orderbook.get("imbalance", 0) > 0.1 and above_trigger_val < below_trigger_val:
+                lure_risk_factor = 0.6
+        except:
+            pass
+
+        eth_btc_ratio = eth_btc_data.get("current", 0.0)
+        eth_btc_ma_7d = eth_btc_data.get("ma_7d", 0.0)
+        eth_btc_percentile = eth_btc_data.get("percentile_7d", 50.0)
+
+        return {
+            "mark_price": mark_price,
+            "atr": atr_4h,
+            "atr_15m": atr_15m,
+            "atr_1h": atr_1h_val,
+            "atr_1h_ratio": round(atr_1h_ratio, 2),
+            "vol_factor": vol_factor,
+            "price_percentile": price_percentile,
+            "above_liq": above_liq,
+            "below_liq": below_liq,
+            "liq_ratio": liq_ratio,
+            "above_cluster": above_cluster,
+            "below_cluster": below_cluster,
+            "above_trigger": above_trigger_str,
+            "below_trigger": below_trigger_str,
+            "max_pain": max_pain_data.get("max_pain", 0.0),
+            "put_call_ratio": max_pain_data.get("put_call_ratio", 0.0),
+            "top_ls_ratio": top_ls_current,
+            "top_ls_percentile": top_ls_percentile,
+            "funding_rate": funding_current,
+            "funding_percentile": funding_percentile,
+            "oi": oi_current,
+            "oi_percentile": oi_percentile,
+            "oi_change_24h": oi_change_24h,
+            "agg_oi": agg_oi_current,
+            "agg_oi_change_24h": agg_oi_change_24h,
+            "cvd_mean": sum(cvd_series) / len(cvd_series) / 1e6 if cvd_series else 0.0,
+            "cvd_slope": cvd_slope,
+            "cvd_acceleration": cvd_acceleration,
+            "oi_acceleration": oi_acceleration,
+            "funding_momentum": funding_momentum,
+            "fear_greed": fear_greed,
+            "fear_greed_prev_7d": fear_greed_prev_7d,
+            "eth_btc_ratio": eth_btc_ratio,
+            "eth_btc_ma_7d": eth_btc_ma_7d,
+            "eth_btc_percentile": eth_btc_percentile,
+            "netflow": netflow_dict.get("24h", 0.0),
+            "netflow_5m": netflow_dict.get("5m", 0.0),
+            "netflow_1h": netflow_dict.get("1h", 0.0),
+            "netflow_24h": netflow_dict.get("24h", 0.0),
+            "orderbook_bids": orderbook.get("bids_usd", 0.0),
+            "orderbook_asks": orderbook.get("asks_usd", 0.0),
+            "orderbook_imbalance": orderbook.get("imbalance", 0.0),
+            "exchange_btc_total": exchange_btc.get("total_btc", 0.0),
+            "exchange_btc_change_24h": exchange_btc.get("change_24h", 0.0),
+            "data_quality": data_quality,
+            "liquidity_bias": liquidity_bias,
+            "lure_risk_factor": lure_risk_factor,
+            "direction_bias": direction_bias,
+            "retail_whale_divergence": retail_whale_divergence,
+            "global_ls_ratio": global_ls_current,
+            "taker_ratio_1h": taker_ratio_1h,
+            "large_order_pressure": large_order_pressure,
+            "large_buy_value": large_buy_value,
+            "large_sell_value": large_sell_value,
+            "cgdi_current": cgdi_current,
+            "cgdi_percentile": cgdi_percentile,
+            "long_liq_1h": long_liq_1h,
+            "short_liq_1h": short_liq_1h,
+            "liq_bias_1h": liq_bias_1h,
+            "basis_current": basis_current,
+            "basis_percentile": basis_percentile,
+            "stablecoin_mcap": stablecoin_mcap_current,
+            "stablecoin_trend_7d": stablecoin_trend,
+            "btc_dominance": btc_dom_current,
+            "btc_dominance_trend_7d": btc_dom_trend,
+            "lth_realized_price": lth_rp,
+            "sth_realized_price": sth_rp,
+            "lth_sopr": lth_sopr,
+            "sth_sopr": sth_sopr,
+            "borrow_rate": borrow_rate_current,
+            "spot_netflow_1h": spot_netflow_1h,
+            "spot_netflow_24h": spot_netflow_24h,
+            "spot_vs_futures_divergence": spot_vs_futures_divergence,
+        }
+
+    @staticmethod
+    def _calc_direction_bias(above_liq, below_liq, above_trigger, below_trigger,
+                             large_order_pressure, divergence, cvd_slope, taker_ratio,
+                             netflow_dict, cgdi_percentile, fear_greed,
+                             liq_bias_1h, spot_vs_futures_divergence,
+                             basis_current, basis_percentile,
+                             stablecoin_trend, btc_dom_trend,
+                             mark_price, sth_rp, lth_rp, sth_sopr, lth_sopr,
+                             borrow_rate):
+        score = 0.0
+
+        if above_trigger > 0 and below_trigger > 0:
+            above_score = above_liq / above_trigger
+            below_score = below_liq / below_trigger
+            diff = below_score - above_score
+            score += max(-1, min(1, diff / (abs(above_score) + abs(below_score) + 1e-8))) * 0.25
+
+        score += -large_order_pressure * 0.15
+        score += max(-1, min(1, divergence)) * 0.15
+
+        flow_signal = 0.0
+        if cvd_slope > 0 and taker_ratio > 1.02:
+            flow_signal = 0.10
+        elif cvd_slope < 0 and taker_ratio < 0.98:
+            flow_signal = -0.10
+        score += flow_signal
+
+        netflow_1h = netflow_dict.get("1h", 0)
+        netflow_4h = netflow_dict.get("4h", 0)
+        if netflow_4h != 0:
+            acc = (netflow_1h - netflow_4h/4) / (abs(netflow_4h)/4 + 1e-8)
+            score += max(-0.05, min(0.05, acc))
+        else:
+            if netflow_1h > 0:
+                score += 0.03
+            elif netflow_1h < 0:
+                score -= 0.03
+
+        if cgdi_percentile > 80:
+            score -= 0.05
+        elif cgdi_percentile < 20:
+            score += 0.05
+
+        if fear_greed > 75:
+            score -= 0.05
+        elif fear_greed < 25:
+            score += 0.05
+
+        score += -liq_bias_1h * 0.05
+        score += spot_vs_futures_divergence * 0.05
+
+        if basis_percentile > 80:
+            score -= 0.05
+        elif basis_percentile < 20:
+            score += 0.05
+
+        if stablecoin_trend > 2:
+            score += 0.05
+        elif stablecoin_trend < -2:
+            score -= 0.05
+
+        if btc_dom_trend > 2:
+            score -= 0.05
+        elif btc_dom_trend < -2:
+            score += 0.05
+
+        if sth_rp > 0 and mark_price > sth_rp and sth_sopr > 1.0:
+            score += 0.05
+        elif sth_rp > 0 and mark_price < sth_rp and sth_sopr < 1.0:
+            score -= 0.05
+
+        if borrow_rate > 0.05:
+            score -= 0.03
+        elif borrow_rate < 0.01:
+            score += 0.02
+
+        return max(-1.0, min(1.0, score))
+
+    @staticmethod
+    def _calc_momentum(series: list, window: int = 6) -> float:
+        if len(series) < window:
+            return 0.0
+        recent = series[-window:]
+        n = len(recent)
+        x_mean = (n - 1) / 2
+        y_mean = sum(recent) / n
+        num = sum((i - x_mean) * (recent[i] - y_mean) for i in range(n))
+        den = sum((i - x_mean) ** 2 for i in range(n))
+        return num / den if den != 0 else 0.0
+
+    @staticmethod
+    def _calc_liquidity_bias(above_liq, below_liq, above_trigger, below_trigger, orderbook_imbalance):
+        try:
+            at = float(above_trigger) if above_trigger != 'N/A' else 0
+            bt = float(below_trigger) if below_trigger != 'N/A' else 0
+            above_score = (above_liq / at) if at > 0 else 0
+            below_score = (below_liq / bt) if bt > 0 else 0
+            if above_score > below_score * 1.2:
+                return 'long'
+            elif below_score > above_score * 1.2:
+                return 'short'
+            else:
+                return 'neutral'
+        except:
+            return 'neutral'
 
     # ========== 跨币种数据 ==========
     def fetch_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> tuple:
@@ -490,7 +881,7 @@ class CoinGlassClient:
             "cross_liq_history": lambda: self.get_liquidation_history(cross_symbol, "1h", 24),
         }
         results = {}
-        with ThreadPoolExecutor(max_workers=2) as executor:   # 降低并发
+        with ThreadPoolExecutor(max_workers=2) as executor:
             future_to_key = {executor.submit(task): key for key, task in tasks.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]

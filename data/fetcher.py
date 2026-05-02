@@ -286,15 +286,21 @@ class CoinGlassClient:
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True, silent_fail=True)
 
     def get_aggregated_taker_buy_sell_volume_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
-        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
+        params = {
+        "exchange": self.primary_exchange,
+        "symbol": symbol.upper(),
+        "interval": interval,
+        "limit": limit
+    }
+    return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=True, silent_fail=True)
 
     def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20):
         params = {"symbol": f"{symbol.upper()}USDT", "limit": limit}
         return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
     def get_cgdi_index_history(self, limit: int = 90):
-        data = self._request("api/futures/cgdi-index/history", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        params = {"limit": limit, "interval": "1d"}
+        data = self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
         return data if isinstance(data, list) else []
 
     def get_liquidation_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
@@ -307,7 +313,8 @@ class CoinGlassClient:
         return self._request("api/futures/basis/history", params, allow_backup=True, silent_fail=True)
 
     def get_stablecoin_market_cap_history(self, limit: int = 30):
-        data = self._request("api/index/stableCoin-marketCap-history", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        params = {"exchange_list": "USDT", "limit": limit}
+        data = self._request("api/index/stableCoin-marketCap-history", params, allow_backup=False, silent_fail=True)
         return data if isinstance(data, list) else []
 
     def get_bitcoin_dominance_history(self, limit: int = 30):

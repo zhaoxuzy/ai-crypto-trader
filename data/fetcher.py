@@ -35,7 +35,7 @@ class CoinGlassClient:
         self._rate_limiter = RateLimiter(min_interval=0.1)
         self._semaphore = Semaphore(8)
 
-    def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
+def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
              allow_backup: bool = True, silent_fail: bool = False,
              no_exchange: bool = False) -> dict:
     url = f"{self.base_url}/{endpoint.lstrip('/')}"

@@ -9,7 +9,7 @@ from utils.logger import logger
 
 class RateLimiter:
     """线程安全的限速器（2秒间隔，确保每分钟≤30次）"""
-    def __init__(self, min_interval: float = 1.0):
+    def __init__(self, min_interval: float = 0.1):
         self.min_interval = min_interval
         self._last_request_time = 0.0
         self._lock = threading.Lock()
@@ -299,8 +299,9 @@ class CoinGlassClient:
         return self._request("api/futures/liquidation/history", params, allow_backup=True, silent_fail=True)
 
     def get_futures_basis_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        return self._request("api/futures/basis/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
+    # 基差接口使用标准交易对格式（如 ETHUSDT），而不是 ETH-USDT-SWAP
+    params = {"symbol": f"{symbol.upper()}USDT", "interval": interval, "limit": limit}
+    return self._request("api/futures/basis/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
     def get_stablecoin_market_cap_history(self, limit: int = 30):
         data = self._request("api/index/stableCoin-marketCap-history", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)

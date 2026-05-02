@@ -465,7 +465,7 @@ class CoinGlassClient:
         eth_btc_data = self.get_eth_btc_ratio()
         return self._build_main_data(results, base_symbol, eth_btc_data, kline_limit)
 
-    def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
+        def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
         kline_data = results.get("kline", [])
         oi_data = results.get("oi", [])
         funding_data = results.get("funding", [])
@@ -599,7 +599,7 @@ class CoinGlassClient:
         short_liq_1h = liq_bias_info.get("short_liq_1h", 0.0)
         liq_bias_1h = liq_bias_info.get("liq_bias_1h", 0.0)
 
-        # 新增指標計算
+        # 新增指标计算
         basis_current = 0.0
         basis_percentile = 50.0
         if basis_data and len(basis_data) > 0:
@@ -607,21 +607,25 @@ class CoinGlassClient:
             basis_current = basis_values[-1]
             basis_percentile = self._calc_percentile(basis_data, basis_current)
 
+        # ✅ 稳定币市值修正
         stablecoin_trend = 0.0
         stablecoin_mcap_current = 0.0
-        if stablecoin_mcap_data and len(stablecoin_mcap_data) > 0:
-            mcap_values = [float(d.get("value", 0) or 0) for d in stablecoin_mcap_data]
-            stablecoin_mcap_current = mcap_values[-1]
-            if len(mcap_values) >= 7:
-                stablecoin_trend = (mcap_values[-1] - mcap_values[-7]) / (mcap_values[-7] + 1) * 100
+        if stablecoin_mcap_data and isinstance(stablecoin_mcap_data, list) and len(stablecoin_mcap_data) > 0:
+            first_item = stablecoin_mcap_data[0]
+            data_list = first_item.get("data_list", [])
+            if data_list:
+                stablecoin_mcap_current = float(data_list[-1])
+                if len(data_list) >= 7:
+                    stablecoin_trend = (data_list[-1] - data_list[-7]) / (data_list[-7] + 1e-8) * 100
 
+        # ✅ 比特币占比修正
         btc_dom_current = 0.0
         btc_dom_trend = 0.0
         if btc_dom_data and len(btc_dom_data) > 0:
-            dom_values = [float(d.get("value", 0) or 0) for d in btc_dom_data]
+            dom_values = [float(d.get("bitcoin_dominance", 0)) for d in btc_dom_data]
             btc_dom_current = dom_values[-1]
             if len(dom_values) >= 7:
-                btc_dom_trend = (dom_values[-1] - dom_values[-7]) / (dom_values[-7] + 1) * 100
+                btc_dom_trend = (dom_values[-1] - dom_values[-7]) / (dom_values[-7] + 1e-8) * 100
 
         lth_rp = 0.0
         if lth_rp_data and len(lth_rp_data) > 0:
@@ -639,9 +643,11 @@ class CoinGlassClient:
         if sth_sopr_data and len(sth_sopr_data) > 0:
             sth_sopr = float(sth_sopr_data[-1].get("value", 1.0) or 1.0)
 
+        # ✅ 借贷利率修正
         borrow_rate_current = 0.0
         if borrow_rate_data and len(borrow_rate_data) > 0:
-            borrow_rate_current = float(borrow_rate_data[-1].get("value", 0) or 0)
+            rates = [float(d.get("interest_rate", 0)) for d in borrow_rate_data]
+            borrow_rate_current = rates[-1]
 
         spot_netflow_24h = spot_netflow_data.get("24h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
         spot_netflow_1h = spot_netflow_data.get("1h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0

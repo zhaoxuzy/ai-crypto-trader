@@ -1,10 +1,10 @@
 """
-deepseek.py — 完整修正版
-- 透明化缺失数据，AI 可见“缺失”而非虚假默认值
-- 修正数据缺失时约束提示
-- 增强策略校验：致命缺失直接 neutral
+deepseek.py — 最终版
+- 缺失数据透明化（显示"缺失"而非虚假默认值）
+- 增强 JSON 提取容错能力（修补未闭合的 JSON）
+- 策略校验增强（致命缺失强制 neutral）
 - 清理 call_judge 冗余代码
-- 需要同步修改 CoinGlassClient._build_main_data 中的稳定币、BTC占比、借贷利率提取（见末尾注释）
+- 完整的首席交易员、风控审计官、交易委员会调用链
 """
 
 import os
@@ -48,16 +48,21 @@ def _log_response(prompt: str, content: str, reasoning: str = None):
 
 
 def extract_json(content: str) -> str:
+    """增强的 JSON 提取器，自动修补未闭合的 JSON"""
+    # 尝试从代码块中提取
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
     if m:
         return m.group(1).strip()
     m = re.search(r'```\s*([\s\S]*?)\s*```', content)
     if m:
         return m.group(1).strip()
+
     start = content.find('{')
     if start == -1:
         raise ValueError("未找到 JSON")
+
     count = 0
+    last_valid_end = -1
     for i, c in enumerate(content[start:], start):
         if c == '{':
             count += 1
@@ -65,7 +70,21 @@ def extract_json(content: str) -> str:
             count -= 1
             if count == 0:
                 return content[start:i+1].strip()
-    raise ValueError("JSON 未闭合")
+            if count < 0:
+                break
+        if count == 0:
+            last_valid_end = i
+
+    # 如果未闭合，尝试修补
+    if last_valid_end != -1:
+        partial = content[start:last_valid_end+1] + '}'
+        logger.warning("JSON 未正确闭合，已尝试自动修补")
+        return partial
+
+    # 最后手段：暴力修补
+    patched = content[start:] + '}}'
+    logger.warning("JSON 严重损坏，尝试暴力修补")
+    return patched
 
 
 def round_to_tick(price: float) -> float:
@@ -98,7 +117,7 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         direction_bias = data.get("direction_bias", 0.0)
 
         # 致命缺失 → neutral
-        if (not below_liq or below_liq <= 0) and (not above_liq or above_liq <= 0) and direction != "neutral":
+        if (not above_liq or above_liq <= 0) and (not below_liq or below_liq <= 0) and direction != "neutral":
             _force_neutral(s, "清算数据缺失，强制 neutral")
             return True, "已自动修正为观望"
         if atr_15m <= 0 or mark_price <= 0:
@@ -172,7 +191,6 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
 
     # ---------- 辅助：安全取值并标记缺失 ----------
     def safe_val(key, default=0.0, scale=1.0, fmt=".2f", null_val=None):
-        """返回 (显示字符串, 是否为缺失)"""
         raw = data.get(key, null_val)
         if raw is None or raw == null_val:
             return ("缺失", True)
@@ -182,7 +200,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
         except (ValueError, TypeError):
             return ("缺失", True)
 
-    # 跨币种上下文
+    # 跨币种数据
     cross_context = ""
     if eth_data:
         cross_mark = eth_data.get('mark_price', 0)
@@ -503,7 +521,8 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
                 model=FAST_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=8192,
-                timeout=TIMEOUT_SECONDS
+                timeout=TIMEOUT_SECONDS,
+                stop=["}\n```"]  # 防止模型输出多余代码块标记
             )
             logger.info(f"实际调用的模型: {resp.model}")
             content = resp.choices[0].message.content or ""
@@ -514,8 +533,12 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
             if not final_content:
                 raise ValueError("响应内容为空")
 
-            json_str = extract_json(final_content)
-            s = json.loads(json_str)
+            try:
+                json_str = extract_json(final_content)
+                s = json.loads(json_str)
+            except Exception as e:
+                logger.error(f"JSON 解析失败: {e}\n原始内容前500字符: {final_content[:500]}")
+                raise ValueError(f"JSON 解析失败: {e}")
 
             # 方向标准化
             dir_map = {"做多": "long", "做空": "short", "观望": "neutral",
@@ -952,31 +975,3 @@ def apply_final_verdict(original_strategy: dict, judge_result: dict, reviewer_re
             original_strategy["execution_plan"] = "观望"
 
     return original_strategy
-
-
-# ====================================================
-# 需要同步修改 CoinGlassClient._build_main_data 的代码片段
-# (请复制到 CoinGlassClient 类中的 _build_main_data 方法对应位置)
-# ====================================================
-"""
-1) 稳定币市值（替换原 stablecoin_mcap_data 处理块）
-if stablecoin_mcap_data and isinstance(stablecoin_mcap_data, list) and len(stablecoin_mcap_data) > 0:
-    first_item = stablecoin_mcap_data[0]
-    data_list = first_item.get("data_list", [])
-    if data_list:
-        stablecoin_mcap_current = float(data_list[-1])
-        if len(data_list) >= 7:
-            stablecoin_trend = (data_list[-1] - data_list[-7]) / (data_list[-7] + 1e-8) * 100
-
-2) 比特币占比（替换原 btc_dom_data 处理块）
-if btc_dom_data and len(btc_dom_data) > 0:
-    dom_values = [float(d.get("bitcoin_dominance", 0)) for d in btc_dom_data]
-    btc_dom_current = dom_values[-1]
-    if len(dom_values) >= 7:
-        btc_dom_trend = (dom_values[-1] - dom_values[-7]) / (dom_values[-7] + 1e-8) * 100
-
-3) 借贷利率（替换原 borrow_rate_data 处理块）
-if borrow_rate_data and len(borrow_rate_data) > 0:
-    rates = [float(d.get("interest_rate", 0)) for d in borrow_rate_data]
-    borrow_rate_current = rates[-1]
-"""

@@ -8,8 +8,8 @@ from utils.logger import logger
 
 
 class RateLimiter:
-    """线程安全的简单限速器"""
-    def __init__(self, min_interval: float = 3.0):
+    """线程安全的简单限速器（保留原有 0.1 秒间隔）"""
+    def __init__(self, min_interval: float = 0.1):
         self.min_interval = min_interval
         self._last_request_time = 0.0
         self._lock = threading.Lock()
@@ -34,12 +34,16 @@ class CoinGlassClient:
         self._semaphore = Semaphore(8)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
-                 allow_backup: bool = True, silent_fail: bool = False) -> dict:
+                 allow_backup: bool = True, silent_fail: bool = False,
+                 no_exchange: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {"accept": "application/json", "X-Api-Key": self.api_key}
         base_params = params.copy() if params else {}
 
-        if allow_backup and "exchange" in base_params:
+        # 如果接口不需要交易所参数，直接传 None
+        if no_exchange:
+            exchanges_to_try = [None]
+        elif allow_backup and "exchange" in base_params:
             exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
         else:
             exchanges_to_try = [base_params.get("exchange", self.primary_exchange)]
@@ -48,6 +52,7 @@ class CoinGlassClient:
 
         for exchange in exchanges_to_try:
             current_params = base_params.copy()
+            # 当 no_exchange 为 True 时，exchange 为 None，不添加 exchange 参数
             if exchange is not None and "exchange" in current_params:
                 current_params["exchange"] = exchange
 
@@ -193,14 +198,15 @@ class CoinGlassClient:
         return {"max_pain": 0.0, "put_call_ratio": 0.0}
 
     def get_fear_and_greed_index(self) -> dict:
-        data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
+        data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True, no_exchange=True)
         if data and isinstance(data, list) and len(data) >= 8:
             return {"current": int(data[0].get("value", 50)), "prev_7d": int(data[7].get("value", 50))}
         return {"current": 50, "prev_7d": 50}
 
     def get_netflow(self, symbol: str = "BTC") -> float:
+        """返回24h净流入，保留向后兼容"""
         params = {"symbol": symbol.upper()}
-        data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, dict):
             val = data.get("net_flow_usd_24h")
             if val is not None:
@@ -208,8 +214,9 @@ class CoinGlassClient:
         return 0.0
 
     def get_netflow_dict(self, symbol: str = "BTC") -> dict:
+        """返回多周期净流入字典"""
         params = {"symbol": symbol.upper()}
-        data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, dict):
             return {
                 "5m": float(data.get("net_flow_usd_5m", 0) or 0),
@@ -238,7 +245,7 @@ class CoinGlassClient:
             return {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0}
 
     def get_exchange_btc_balance(self) -> dict:
-        data = self._request("api/exchange/balance/list", {"symbol": "BTC"}, allow_backup=False, silent_fail=True)
+        data = self._request("api/exchange/balance/list", {"symbol": "BTC"}, allow_backup=False, silent_fail=True, no_exchange=True)
         if data and isinstance(data, list):
             total = sum(float(ex.get("balance", 0)) for ex in data)
             change_24h = sum(float(ex.get("balance_change_1d", 0)) for ex in data)
@@ -247,7 +254,7 @@ class CoinGlassClient:
 
     def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-        return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True)
+        return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
     def get_eth_btc_ratio(self) -> dict:
         try:
@@ -273,22 +280,22 @@ class CoinGlassClient:
             logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
-    # ========== 🆕 已接入接口 ==========
+    # ========== 🆕 已接入的新接口（统一使用 no_exchange=True 处理不需要交易所的接口） ==========
     def get_global_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-        return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=False, silent_fail=True)
+        return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
     def get_aggregated_taker_buy_sell_volume_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
         params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
+        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
     def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20):
         params = {"symbol": f"{symbol.upper()}USDT", "limit": limit}
-        return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True)
+        return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
     def get_cgdi_index_history(self, limit: int = 90):
         params = {"limit": limit}
-        data = self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, list):
             return data
         return []
@@ -302,63 +309,63 @@ class CoinGlassClient:
         }
         return self._request("api/futures/liquidation/history", params, allow_backup=True, silent_fail=True)
 
-    # ========== 🆕 本次优化新增接口 ==========
+    # ========== 🆕 本次优化新增接口（全部使用 no_exchange=True，避免传错参数） ==========
     def get_futures_basis_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        return self._request("api/futures/basis/history", params, allow_backup=False, silent_fail=True)
+        return self._request("api/futures/basis/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
     def get_stablecoin_market_cap_history(self, limit: int = 30):
         params = {"limit": limit}
-        data = self._request("api/index/stableCoin-marketCap-history", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/index/stableCoin-marketCap-history", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, list):
             return data
         return []
 
     def get_bitcoin_dominance_history(self, limit: int = 30):
         params = {"limit": limit}
-        data = self._request("api/index/bitcoin-dominance", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/index/bitcoin-dominance", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, list):
             return data
         return []
 
     def get_lth_realized_price_history(self, limit: int = 30):
         params = {"limit": limit}
-        data = self._request("api/index/bitcoin-lth-realized-price", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/index/bitcoin-lth-realized-price", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, list):
             return data
         return []
 
     def get_sth_realized_price_history(self, limit: int = 30):
         params = {"limit": limit}
-        data = self._request("api/index/bitcoin-sth-realized-price", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/index/bitcoin-sth-realized-price", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, list):
             return data
         return []
 
     def get_lth_sopr_history(self, limit: int = 30):
         params = {"limit": limit}
-        data = self._request("api/index/bitcoin-lth-sopr", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/index/bitcoin-lth-sopr", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, list):
             return data
         return []
 
     def get_sth_sopr_history(self, limit: int = 30):
         params = {"limit": limit}
-        data = self._request("api/index/bitcoin-sth-sopr", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/index/bitcoin-sth-sopr", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, list):
             return data
         return []
 
     def get_borrow_interest_rate_history(self, limit: int = 30):
         params = {"limit": limit}
-        data = self._request("api/borrow-interest-rate/history", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/borrow-interest-rate/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, list):
             return data
         return []
 
     def get_spot_netflow(self, symbol: str = "BTC") -> dict:
         params = {"symbol": symbol.upper()}
-        data = self._request("api/spot/coin/netflow", params, allow_backup=False, silent_fail=True)
+        data = self._request("api/spot/coin/netflow", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, dict):
             return {
                 "5m": float(data.get("net_flow_usd_5m", 0) or 0),
@@ -371,7 +378,7 @@ class CoinGlassClient:
     def _calc_retail_whale_divergence(self, global_ls: float, top_ls_percentile: float) -> float:
         retail_signal = (global_ls - 1.0) * 100
         whale_signal = (top_ls_percentile - 50.0)
-        return (whale_signal - retail_signal) / 50.0
+        return (whale_signal - retail_signal) / 50.0 if retail_signal != 0 else 0.0
 
     def _calc_large_order_pressure(self, orders: list) -> dict:
         total_buy = 0.0
@@ -467,7 +474,8 @@ class CoinGlassClient:
             "spot_netflow": lambda: self.get_spot_netflow(base_symbol),
         }
         results = {}
-        with ThreadPoolExecutor(max_workers=16) as executor:
+        # 并发控制：max_workers=6，配合 0.1 秒间隔，26 个请求可在 3-4 秒内完成，不触发限频
+        with ThreadPoolExecutor(max_workers=6) as executor:
             future_to_key = {executor.submit(task): key for key, task in tasks.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
@@ -481,7 +489,6 @@ class CoinGlassClient:
         return self._build_main_data(results, base_symbol, eth_btc_data, kline_limit)
 
     def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
-        # 基本数据提取
         kline_data = results.get("kline", [])
         oi_data = results.get("oi", [])
         funding_data = results.get("funding", [])
@@ -499,7 +506,7 @@ class CoinGlassClient:
         large_orders_data = results.get("large_orders", [])
         cgdi_data = results.get("cgdi", [])
         liq_history_data = results.get("liq_history", [])
-        # 🆕 新数据
+        # 新数据
         basis_data = results.get("basis", [])
         stablecoin_mcap_data = results.get("stablecoin_mcap", [])
         btc_dom_data = results.get("btc_dominance", [])
@@ -510,7 +517,6 @@ class CoinGlassClient:
         borrow_rate_data = results.get("borrow_rate", [])
         spot_netflow_data = results.get("spot_netflow", {})
 
-        # 数据质量标记
         data_quality = {}
         for key in ["kline", "oi", "funding", "heatmap", "top_ls", "cvd", "max_pain", "fg", "netflow",
                     "orderbook", "exchange_btc", "agg_oi", "global_ls", "taker_bs", "large_orders", "cgdi",
@@ -518,7 +524,6 @@ class CoinGlassClient:
                     "lth_sopr", "sth_sopr", "borrow_rate", "spot_netflow"]:
             data_quality[key] = "✅" if results.get(key) else "❌ 缺失"
 
-        # ----- 基础价格与波动率 -----
         mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
         closes = [self._get_close_from_candle(k) for k in kline_data]
         atr_4h = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
@@ -530,7 +535,6 @@ class CoinGlassClient:
         atr_1h_val = atr_4h * 0.5
         atr_1h_ratio = (atr_1h_val / mark_price) * 100 if mark_price > 0 else 0.0
 
-        # ----- 清算热力图 -----
         above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
         if heatmap_raw:
             y_axis = heatmap_raw.get("y_axis", [])
@@ -556,11 +560,9 @@ class CoinGlassClient:
 
         above_trigger_str = f"{float(above_cluster.split('-')[0]) - mark_price:+.0f}" if above_cluster != 'N/A' and '-' in above_cluster else "N/A"
         below_trigger_str = f"{mark_price - float(below_cluster.split('-')[1]):+.0f}" if below_cluster != 'N/A' and '-' in below_cluster else "N/A"
-
         above_trigger_val = float(above_trigger_str) if above_trigger_str != 'N/A' else 0
         below_trigger_val = float(below_trigger_str) if below_trigger_str != 'N/A' else 0
 
-        # ----- 持仓与资金费率 -----
         oi_current = self._get_close_from_candle(oi_data[-1]) if oi_data else 0.0
         oi_percentile = self._calc_percentile(oi_data, oi_current)
         oi_change_24h = 0.0
@@ -598,7 +600,6 @@ class CoinGlassClient:
         funding_series = [self._get_close_from_candle(c) for c in funding_data] if funding_data else []
         funding_momentum = self._calc_momentum(funding_series[-30:]) if len(funding_series) >= 30 else 0.0
 
-        # ----- 🆕 新增衍生指标计算 -----
         global_ls_current = 0.0
         if global_ls_data and isinstance(global_ls_data, list) and len(global_ls_data) > 0:
             latest_gls = global_ls_data[-1]
@@ -627,7 +628,7 @@ class CoinGlassClient:
         short_liq_1h = liq_bias_info.get("short_liq_1h", 0.0)
         liq_bias_1h = liq_bias_info.get("liq_bias_1h", 0.0)
 
-        # --- 🆕 新增指标 ---
+        # 新增指标计算
         basis_current = 0.0
         basis_percentile = 50.0
         if basis_data and len(basis_data) > 0:
@@ -641,7 +642,7 @@ class CoinGlassClient:
             mcap_values = [float(d.get("value", 0) or 0) for d in stablecoin_mcap_data]
             stablecoin_mcap_current = mcap_values[-1]
             if len(mcap_values) >= 7:
-                stablecoin_trend = (mcap_values[-1] - mcap_values[-7]) / mcap_values[-7] * 100
+                stablecoin_trend = (mcap_values[-1] - mcap_values[-7]) / (mcap_values[-7] + 1) * 100
 
         btc_dom_current = 0.0
         btc_dom_trend = 0.0
@@ -649,7 +650,7 @@ class CoinGlassClient:
             dom_values = [float(d.get("value", 0) or 0) for d in btc_dom_data]
             btc_dom_current = dom_values[-1]
             if len(dom_values) >= 7:
-                btc_dom_trend = (dom_values[-1] - dom_values[-7]) / dom_values[-7] * 100
+                btc_dom_trend = (dom_values[-1] - dom_values[-7]) / (dom_values[-7] + 1) * 100
 
         lth_rp = 0.0
         if lth_rp_data and len(lth_rp_data) > 0:
@@ -770,7 +771,7 @@ class CoinGlassClient:
             "long_liq_1h": long_liq_1h,
             "short_liq_1h": short_liq_1h,
             "liq_bias_1h": liq_bias_1h,
-            # 🆕 新增字段
+            # 新增字段
             "basis_current": basis_current,
             "basis_percentile": basis_percentile,
             "stablecoin_mcap": stablecoin_mcap_current,
@@ -787,7 +788,6 @@ class CoinGlassClient:
             "spot_vs_futures_divergence": spot_vs_futures_divergence,
         }
 
-    # ----- 方向综合评分 -----
     @staticmethod
     def _calc_direction_bias(above_liq, below_liq, above_trigger, below_trigger,
                              large_order_pressure, divergence, cvd_slope, taker_ratio,
@@ -798,21 +798,15 @@ class CoinGlassClient:
                              mark_price, sth_rp, lth_rp, sth_sopr, lth_sopr,
                              borrow_rate):
         score = 0.0
-
-        # 1. 清算吸引力（25%）
         if above_trigger > 0 and below_trigger > 0:
             above_score = above_liq / above_trigger
             below_score = below_liq / below_trigger
             diff = below_score - above_score
             score += max(-1, min(1, diff / (abs(above_score) + abs(below_score) + 1e-8))) * 0.25
 
-        # 2. 大单压迫（15%）
         score += -large_order_pressure * 0.15
-
-        # 3. 散户-顶级背离（15%）
         score += max(-1, min(1, divergence)) * 0.15
 
-        # 4. CVD+主动买卖共振（10%）
         flow_signal = 0.0
         if cvd_slope > 0 and taker_ratio > 1.02:
             flow_signal = 0.10
@@ -820,7 +814,6 @@ class CoinGlassClient:
             flow_signal = -0.10
         score += flow_signal
 
-        # 5. 资金流加速（5%）
         netflow_1h = netflow_dict.get("1h", 0)
         netflow_4h = netflow_dict.get("4h", 0)
         if netflow_4h != 0:
@@ -832,49 +825,39 @@ class CoinGlassClient:
             elif netflow_1h < 0:
                 score -= 0.03
 
-        # 6. CGDI 情绪（5%）
         if cgdi_percentile > 80:
             score -= 0.05
         elif cgdi_percentile < 20:
             score += 0.05
 
-        # 7. 恐慌贪婪（5%）
         if fear_greed > 75:
             score -= 0.05
         elif fear_greed < 25:
             score += 0.05
 
-        # 8. 爆仓偏空比（5%）
         score += -liq_bias_1h * 0.05
-
-        # 9. 现货/期货背离（5%）
         score += spot_vs_futures_divergence * 0.05
 
-        # 10. 基差环境（5%）
         if basis_percentile > 80:
             score -= 0.05
         elif basis_percentile < 20:
             score += 0.05
 
-        # 11. 稳定币趋势（5%）
         if stablecoin_trend > 2:
             score += 0.05
         elif stablecoin_trend < -2:
             score -= 0.05
 
-        # 12. BTC.D 趋势（5%）
         if btc_dom_trend > 2:
             score -= 0.05
         elif btc_dom_trend < -2:
             score += 0.05
 
-        # 13. 链上成本锚（5%）
         if sth_rp > 0 and mark_price > sth_rp and sth_sopr > 1.0:
             score += 0.05
         elif sth_rp > 0 and mark_price < sth_rp and sth_sopr < 1.0:
             score -= 0.05
 
-        # 14. 借贷利率约束（5%）
         if borrow_rate > 0.05:
             score -= 0.03
         elif borrow_rate < 0.01:

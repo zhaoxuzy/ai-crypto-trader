@@ -9,7 +9,7 @@ from utils.logger import logger
 
 class RateLimiter:
     """线程安全的轻量限速器（2.0秒间隔，适配30次/分钟）"""
-    def __init__(self, min_interval: float = 0.5):
+    def __init__(self, min_interval: float = 0.3):
         self.min_interval = min_interval
         self._last_request_time = 0.0
         self._lock = threading.Lock()
@@ -297,7 +297,6 @@ class CoinGlassClient:
         }
         return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
 
-    # ✅ 大额挂单：Binance + BTCUSDT 格式 + 最近30分钟
     def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20, state: int = 1):
         now_ms = int(time.time() * 1000)
         start_time = now_ms - 30 * 60 * 1000
@@ -465,7 +464,7 @@ class CoinGlassClient:
         eth_btc_data = self.get_eth_btc_ratio()
         return self._build_main_data(results, base_symbol, eth_btc_data, kline_limit)
 
-        def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
+    def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
         kline_data = results.get("kline", [])
         oi_data = results.get("oi", [])
         funding_data = results.get("funding", [])

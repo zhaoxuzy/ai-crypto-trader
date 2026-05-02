@@ -9,7 +9,7 @@ from utils.logger import logger
 
 class RateLimiter:
     """线程安全的轻量限速器（2.0秒间隔，适配30次/分钟）"""
-    def __init__(self, min_interval: float = 2.0):
+    def __init__(self, min_interval: float = 0.5):
         self.min_interval = min_interval
         self._last_request_time = 0.0
         self._lock = threading.Lock()

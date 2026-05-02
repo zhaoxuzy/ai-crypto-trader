@@ -605,48 +605,37 @@ class CoinGlassClient:
             basis_values = [self._get_close_from_candle(b) for b in basis_data]
             basis_current = basis_values[-1]
             basis_percentile = self._calc_percentile(basis_data, basis_current)
-
-        # ✅ 稳定币市值修正
+    
+       # ✅ 稳定币市值修正 (基于文档: data -> [ { data_list: [...] } ])
         stablecoin_trend = 0.0
         stablecoin_mcap_current = 0.0
         if stablecoin_mcap_data and isinstance(stablecoin_mcap_data, list) and len(stablecoin_mcap_data) > 0:
             first_item = stablecoin_mcap_data[0]
             data_list = first_item.get("data_list", [])
-            if data_list:
+            if data_list and len(data_list) > 0:
+                # data_list 是数值列表，获取最新值 (列表最后一个元素)
                 stablecoin_mcap_current = float(data_list[-1])
+                # 计算7日趋势 (如果数据够7个点)
                 if len(data_list) >= 7:
                     stablecoin_trend = (data_list[-1] - data_list[-7]) / (data_list[-7] + 1e-8) * 100
 
-        # ✅ 比特币占比修正
+        # ✅ 比特币占比修正 (基于文档: data -> [ { bitcoin_dominance: 94.3595 } ])
         btc_dom_current = 0.0
         btc_dom_trend = 0.0
         if btc_dom_data and len(btc_dom_data) > 0:
-            dom_values = [float(d.get("bitcoin_dominance", 0)) for d in btc_dom_data]
-            btc_dom_current = dom_values[-1]
-            if len(dom_values) >= 7:
-                btc_dom_trend = (dom_values[-1] - dom_values[-7]) / (dom_values[-7] + 1e-8) * 100
+            dom_values = [float(d.get("bitcoin_dominance", 0)) for d in btc_dom_data if d.get("bitcoin_dominance") is not None]
+            if dom_values:
+                btc_dom_current = dom_values[-1]
+                if len(dom_values) >= 7:
+                    btc_dom_trend = (dom_values[-1] - dom_values[-7]) / (dom_values[-7] + 1e-8) * 100
 
-        lth_rp = 0.0
-        if lth_rp_data and len(lth_rp_data) > 0:
-            lth_rp = float(lth_rp_data[-1].get("value", 0) or 0)
-
-        sth_rp = 0.0
-        if sth_rp_data and len(sth_rp_data) > 0:
-            sth_rp = float(sth_rp_data[-1].get("value", 0) or 0)
-
-        lth_sopr = 1.0
-        if lth_sopr_data and len(lth_sopr_data) > 0:
-            lth_sopr = float(lth_sopr_data[-1].get("value", 1.0) or 1.0)
-
-        sth_sopr = 1.0
-        if sth_sopr_data and len(sth_sopr_data) > 0:
-            sth_sopr = float(sth_sopr_data[-1].get("value", 1.0) or 1.0)
-
-        # ✅ 借贷利率修正
+   
+       # ✅ 借贷利率修正 (基于文档: data -> [ { interest_rate: 0.002989 } ])
         borrow_rate_current = 0.0
         if borrow_rate_data and len(borrow_rate_data) > 0:
-            rates = [float(d.get("interest_rate", 0)) for d in borrow_rate_data]
-            borrow_rate_current = rates[-1]
+            rates = [float(d.get("interest_rate", 0)) for d in borrow_rate_data if d.get("interest_rate") is not None]
+            if rates:
+                borrow_rate_current = rates[-1]
 
         spot_netflow_24h = spot_netflow_data.get("24h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
         spot_netflow_1h = spot_netflow_data.get("1h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
@@ -663,13 +652,78 @@ class CoinGlassClient:
             netflow_dict,
             cgdi_percentile,
             fear_greed,
-            liq_bias_1h,
-            spot_vs_futures_divergence,
-            basis_current, basis_percentile,
-            stablecoin_trend,
-            btc_dom_trend,
-            mark_price, sth_rp, lth_rp, sth_sopr, lth_sopr,
-            borrow_rate_current,
+                    # 新增指标计算
+        basis_current = 0.0
+        basis_percentile = 50.0
+        if basis_data and len(basis_data) > 0:
+            basis_values = [self._get_close_from_candle(b) for b in basis_data]
+            basis_current = basis_values[-1]
+            basis_percentile = self._calc_percentile(basis_data, basis_current)
+
+        # ✅ 稳定币市值修正 (基于文档: data -> [ { data_list: [...] } ])
+        stablecoin_trend = 0.0
+        stablecoin_mcap_current = 0.0
+        if stablecoin_mcap_data and isinstance(stablecoin_mcap_data, list) and len(stablecoin_mcap_data) > 0:
+            first_item = stablecoin_mcap_data[0]
+            data_list = first_item.get("data_list", [])
+            if data_list and len(data_list) > 0:
+                stablecoin_mcap_current = float(data_list[-1])
+                if len(data_list) >= 7:
+                    stablecoin_trend = (data_list[-1] - data_list[-7]) / (data_list[-7] + 1e-8) * 100
+
+        # ✅ 比特币占比修正 (基于文档: data -> [ { bitcoin_dominance: 94.3595 } ])
+        btc_dom_current = 0.0
+        btc_dom_trend = 0.0
+        if btc_dom_data and len(btc_dom_data) > 0:
+            dom_values = [float(d.get("bitcoin_dominance", 0)) for d in btc_dom_data if d.get("bitcoin_dominance") is not None]
+            if dom_values:
+                btc_dom_current = dom_values[-1]
+                if len(dom_values) >= 7:
+                    btc_dom_trend = (dom_values[-1] - dom_values[-7]) / (dom_values[-7] + 1e-8) * 100
+
+        # ✅ 链上数据修正 (基于文档: data 是一个对象数组，每个对象有 "value" 字段)
+        lth_rp = 0.0
+        if lth_rp_data and isinstance(lth_rp_data, list) and len(lth_rp_data) > 0:
+            last_item = lth_rp_data[-1]
+            if isinstance(last_item, dict) and "value" in last_item:
+                try:
+                    lth_rp = float(last_item["value"])
+                except (ValueError, TypeError):
+                    lth_rp = 0.0
+
+        sth_rp = 0.0
+        if sth_rp_data and isinstance(sth_rp_data, list) and len(sth_rp_data) > 0:
+            last_item = sth_rp_data[-1]
+            if isinstance(last_item, dict) and "value" in last_item:
+                try:
+                    sth_rp = float(last_item["value"])
+                except (ValueError, TypeError):
+                    sth_rp = 0.0
+
+        lth_sopr = 1.0
+        if lth_sopr_data and isinstance(lth_sopr_data, list) and len(lth_sopr_data) > 0:
+            last_item = lth_sopr_data[-1]
+            if isinstance(last_item, dict) and "value" in last_item:
+                try:
+                    lth_sopr = float(last_item["value"])
+                except (ValueError, TypeError):
+                    lth_sopr = 1.0
+
+        sth_sopr = 1.0
+        if sth_sopr_data and isinstance(sth_sopr_data, list) and len(sth_sopr_data) > 0:
+            last_item = sth_sopr_data[-1]
+            if isinstance(last_item, dict) and "value" in last_item:
+                try:
+                    sth_sopr = float(last_item["value"])
+                except (ValueError, TypeError):
+                    sth_sopr = 1.0
+
+        # ✅ 借贷利率修正 (基于文档: data -> [ { interest_rate: 0.002989 } ])
+        borrow_rate_current = 0.0
+        if borrow_rate_data and len(borrow_rate_data) > 0:
+            rates = [float(d.get("interest_rate", 0)) for d in borrow_rate_data if d.get("interest_rate") is not None]
+            if rates:
+                borrow_rate_current = rates[-1]
         )
 
         liquidity_bias = self._calc_liquidity_bias(above_liq, below_liq, above_trigger_val, below_trigger_val, orderbook.get("imbalance", 0.0))

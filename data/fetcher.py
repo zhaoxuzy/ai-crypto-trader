@@ -30,7 +30,7 @@ class CoinGlassClient:
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
         self._rate_limiter = RateLimiter(min_interval=0.05)
-        self._semaphore = Semaphore(10)   # 支持10个并发
+        self._semaphore = Semaphore(10)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 1,
                  allow_backup: bool = False, silent_fail: bool = False,
@@ -368,6 +368,17 @@ class CoinGlassClient:
                 "24h": float(data.get("net_flow_usd_24h", 0) or 0),
             }
         return {"5m": 0.0, "1h": 0.0, "24h": 0.0}
+
+    # ========== 衍生计算 ==========
+    # (省略，请确保你的完整代码中包含原来的 _calc_retail_whale_divergence 等方法)
+
+    def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
+        # (省略，请保留你原来的 get_all_data 完整实现)
+        pass
+
+    def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
+        # (省略，请保留你原来的 _build_main_data 完整实现，并使用之前修正过的稳定币、BTC占比、借贷利率、链上数据解析逻辑)
+        pass
 
     # ========== 衍生计算 ==========
     def _calc_retail_whale_divergence(self, global_ls: float, top_ls_percentile: float) -> float:

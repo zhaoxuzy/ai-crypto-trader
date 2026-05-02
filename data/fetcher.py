@@ -281,23 +281,24 @@ class CoinGlassClient:
 
     # ---------- 其他接口 ----------
     def get_global_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        # 官方文档示例：exchange=Binance&symbol=BTCUSDT，但此处使用主交易所 OKX，故用 OKX 格式
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True, silent_fail=True)
 
+    # ✅ 修复1：去掉 no_exchange，添加 exchange 参数
     def get_aggregated_taker_buy_sell_volume_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
         params = {
-        "exchange": self.primary_exchange,
-        "symbol": symbol.upper(),
-        "interval": interval,
-        "limit": limit
-    }
-    return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=True, silent_fail=True)
+            "exchange": self.primary_exchange,
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "limit": limit
+        }
+        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=True, silent_fail=True)
 
     def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20):
         params = {"symbol": f"{symbol.upper()}USDT", "limit": limit}
         return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
+    # ✅ 修复2：添加 interval 参数
     def get_cgdi_index_history(self, limit: int = 90):
         params = {"limit": limit, "interval": "1d"}
         data = self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
@@ -308,10 +309,10 @@ class CoinGlassClient:
         return self._request("api/futures/liquidation/history", params, allow_backup=True, silent_fail=True)
 
     def get_futures_basis_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        # 官方文档示例：exchange=Binance&symbol=BTCUSDT，但此处使用主交易所 OKX
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/basis/history", params, allow_backup=True, silent_fail=True)
 
+    # ✅ 修复3：添加 exchange_list 参数
     def get_stablecoin_market_cap_history(self, limit: int = 30):
         params = {"exchange_list": "USDT", "limit": limit}
         data = self._request("api/index/stableCoin-marketCap-history", params, allow_backup=False, silent_fail=True)

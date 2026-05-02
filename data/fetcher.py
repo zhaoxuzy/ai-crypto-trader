@@ -636,7 +636,7 @@ class CoinGlassClient:
         basis_current = 0.0
         basis_percentile = 50.0
         if basis_data and len(basis_data) > 0:
-            basis_values = [self._get_close_from_candle(b) for b in basis_data]
+            basis_values = [float(b.get("close_basis", 0) or 0) for b in basis_data]
             basis_current = basis_values[-1]
             basis_percentile = self._calc_percentile(basis_data, basis_current)
 
@@ -665,18 +665,15 @@ class CoinGlassClient:
         lth_rp = 0.0
         if lth_rp_data and isinstance(lth_rp_data, list) and len(lth_rp_data) > 0:
             last_item = lth_rp_data[-1]
-            if isinstance(last_item, dict) and "value" in last_item:
-                try:
-                    lth_rp = float(last_item["value"])
-                except (ValueError, TypeError):
-                    lth_rp = 0.0
+            if isinstance(last_item, dict):
+                lth_rp = float(last_item.get("lth_realized_price", 0) or 0)
 
         sth_rp = 0.0
         if sth_rp_data and isinstance(sth_rp_data, list) and len(sth_rp_data) > 0:
             last_item = sth_rp_data[-1]
             if isinstance(last_item, dict) and "value" in last_item:
                 try:
-                    sth_rp = float(last_item["value"])
+                    sth_rp = float(last_item.get("sth_realized_price", 0) or 0)
                 except (ValueError, TypeError):
                     sth_rp = 0.0
 

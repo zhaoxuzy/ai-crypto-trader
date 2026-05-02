@@ -152,9 +152,9 @@ class CoinGlassClient:
             atrs.append(sum(trs[i-period+1:i+1]) / period)
         return atrs
 
-    # ✅ 修复：交易对格式改为 BTCUSDT / ETHUSDT
     def _get_symbol(self, base: str) -> str:
-        return f"{base}USDT"
+        """生成 OKX 永续合约格式的 symbol，如 ETH-USDT-SWAP"""
+        return f"{base}-USDT-SWAP"
 
     # ========== 原有接口 ==========
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
@@ -166,7 +166,7 @@ class CoinGlassClient:
         return self._request("api/futures/open-interest/history", params, allow_backup=True, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        # 文档中此接口用到的是 symbol=BTC 不带 USDT，根据用户原始代码保留
+        # 此接口文档中 symbol 格式为基础币种，如 BTC，无需 USDT 后缀
         params = {"exchange": self.primary_exchange, "symbol": symbol.upper(), "interval": interval, "limit": limit}
         return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
 
@@ -179,6 +179,7 @@ class CoinGlassClient:
         return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=True, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC", interval: str = "1m", limit: int = 240):
+        # Binance 专用的 CVD 接口，symbol 格式为 BTCUSDT
         params = {"exchange": "Binance", "symbol": f"{symbol.upper()}USDT", "interval": interval, "limit": limit}
         data = self._request("api/futures/cvd/history", params, allow_backup=False, silent_fail=True)
         if data is not None and isinstance(data, list):
@@ -279,14 +280,9 @@ class CoinGlassClient:
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
     # ---------- 其他接口 ----------
-    # ✅ 修复：加上 exchange 和 symbol 参数，symbol 格式改为 BTCUSDT
     def get_global_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {
-            "exchange": self.primary_exchange,
-            "symbol": self._get_symbol(symbol),
-            "interval": interval,
-            "limit": limit
-        }
+        # 官方文档示例：exchange=Binance&symbol=BTCUSDT，但此处使用主交易所 OKX，故用 OKX 格式
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True, silent_fail=True)
 
     def get_aggregated_taker_buy_sell_volume_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
@@ -301,31 +297,21 @@ class CoinGlassClient:
         data = self._request("api/futures/cgdi-index/history", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
         return data if isinstance(data, list) else []
 
-    # ✅ 修复：交易对格式改为 ETHUSDT
     def get_liquidation_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/liquidation/history", params, allow_backup=True, silent_fail=True)
 
-    # ✅ 修复：去掉 no_exchange=True，加上 exchange 参数
     def get_futures_basis_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {
-            "exchange": self.primary_exchange,
-            "symbol": self._get_symbol(symbol),
-            "interval": interval,
-            "limit": limit
-        }
+        # 官方文档示例：exchange=Binance&symbol=BTCUSDT，但此处使用主交易所 OKX
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/basis/history", params, allow_backup=True, silent_fail=True)
 
     def get_stablecoin_market_cap_history(self, limit: int = 30):
-        # 按官方文档：GET api/index/stableCoin-marketCap-history 无需 exchange 参数
-        data = self._request("api/index/stableCoin-marketCap-history", {"limit": limit},
-                             allow_backup=False, silent_fail=True, no_exchange=True)
+        data = self._request("api/index/stableCoin-marketCap-history", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
         return data if isinstance(data, list) else []
 
     def get_bitcoin_dominance_history(self, limit: int = 30):
-        # 按官方文档：GET api/index/bitcoin-dominance 无需 exchange 参数
-        data = self._request("api/index/bitcoin-dominance", {"limit": limit},
-                             allow_backup=False, silent_fail=True, no_exchange=True)
+        data = self._request("api/index/bitcoin-dominance", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
         return data if isinstance(data, list) else []
 
     def get_lth_realized_price_history(self, limit: int = 30):

@@ -716,27 +716,32 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
             if not content.strip():
                 raise ValueError("交易委员会响应为空")
 
-            # ========== 提取最终判决 ==========
-            verdict = "维持原判"
-            verdict_match = re.search(r'📌\s*最终判决[：:]\s*([^\n]{,30})', content)
+            # ========== 1. 提取最终判决，忽略 ** 等格式符号 ==========
+            verdict = "维持原判"          # 默认
+            verdict_match = re.search(r'📌\s*最终判决[：:]\s*(.*)', content)
             if verdict_match:
                 verdict_line = verdict_match.group(1).strip()
-                if "维持" in verdict_line:
+                # 去除可能存在的 Markdown 加粗符号 **
+                clean_line = verdict_line.replace('*', '').replace('`', '').strip()
+                if "维持" in clean_line:
                     verdict = "维持原判"
                 else:
                     verdict = "推翻"
             else:
-                if "推翻" in content[-500:]:
+                # 后备：在内容末尾搜索“维持原判”或“推翻”，同样忽略加粗符号
+                clean_tail = content[-500:].replace('*', '').replace('`', '')
+                if "推翻" in clean_tail and "维持" not in clean_tail:
                     verdict = "推翻"
                 logger.warning("未找到 📌 最终判决 行，从全文推断")
 
+            # ========== 2. 提取风险说明（无论判决） ==========
             risk_text = ""
             risk_match = re.search(r'⚠️\s*风险说明[：:]\s*(.*)', content, re.DOTALL)
             if risk_match:
                 risk_text = risk_match.group(1).strip().split('\n')[0]
 
+            # ========== 3. 如果是维持原判，沿用原策略 ==========
             if verdict == "维持原判":
-                updated_risk = risk_text if risk_text else original_strategy.get('risk_note', '')
                 judge_result = {
                     "judge_C": {
                         "final_verdict": "维持原判",
@@ -749,7 +754,7 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                         "take_profit": original_strategy.get("take_profit", 0) or 0,
                         "execution_plan": original_strategy.get("execution_plan", ""),
                         "reasoning": content,
-                        "risk_note": updated_risk,
+                        "risk_note": risk_text if risk_text else original_strategy.get('risk_note', ''),
                         "title_line": "📌 最终判决: 维持原判",
                         "current_price": data.get("mark_price", 0),
                         "_model_used": resp.model
@@ -757,6 +762,117 @@ def call_judge(original_strategy: dict, reviewer_report: dict, data: dict, symbo
                 }
                 logger.info(f"交易委员会裁决: 维持原判 (沿用原策略), 模型: {resp.model}")
                 return judge_result
+
+            # ========== 4. 推翻时，提取执行指令块 ==========
+            direction = "neutral"
+            position_size = "none"
+            entry_low = entry_high = stop_loss = take_profit = 0.0
+            execution_plan = ""
+            current_price = data.get("mark_price", 0)
+
+            # 匹配合约策略或执行指令块
+            exec_match = re.search(r'🎯\s*(?:合约策略|执行指令)[：:]\s*(.*?)(?=📋|📌|⚠️|$)', content, re.DOTALL)
+            exec_block = ""
+            if exec_match:
+                exec_block = exec_match.group(1).strip()
+                # 分离风险说明
+                risk_split = re.split(r'⚠️\s*风险说明[：:]', exec_block, maxsplit=1)
+                if len(risk_split) > 1:
+                    exec_block = risk_split[0].strip()
+                    if not risk_text:
+                        risk_text = risk_split[1].strip().split('\n')[0]
+
+            if exec_block:
+                # 去除行首星号和空格，方便匹配
+                clean_block = re.sub(r'^\s*\*\s*', '', exec_block, flags=re.MULTILINE)
+
+                # 方向
+                dir_match = re.search(r'方向[：:]\s*([^\s(（*\n]+)', clean_block)
+                if not dir_match:
+                    # 再次尝试在原块中匹配
+                    dir_match = re.search(r'方向[：:]\s*([^\s(（*\n]+)', exec_block)
+                if dir_match:
+                    raw_dir = dir_match.group(1).replace('*', '').strip()
+                    dir_map = {"做多": "long", "做空": "short", "观望": "neutral",
+                               "long": "long", "short": "short", "neutral": "neutral"}
+                    direction = dir_map.get(raw_dir, "neutral")
+                else:
+                    # 最后后备：搜索关键字
+                    first_200 = exec_block[:200].replace('*', '')
+                    if "做多" in first_200:
+                        direction = "long"
+                    elif "做空" in first_200:
+                        direction = "short"
+                    elif "观望" in first_200:
+                        direction = "neutral"
+
+                # 仓位
+                pos_match = re.search(r'仓位[：:]\s*([^\s(（*\n]+)', clean_block)
+                if pos_match:
+                    raw_pos = pos_match.group(1).replace('*', '').strip()
+                    pos_map = {"轻仓": "light", "中仓": "medium", "重仓": "heavy", "无": "none", "无仓位": "none"}
+                    position_size = pos_map.get(raw_pos, "none")
+
+                # 现价
+                price_match = re.search(r'现价[：:]\s*([\d.]+)', clean_block)
+                if price_match:
+                    current_price = float(price_match.group(1))
+
+                # 入场区间
+                entry_match = re.search(r'入场区间[：:]\s*([\d.]+)\s*[-–]\s*([\d.]+)', clean_block)
+                if entry_match:
+                    entry_low = float(entry_match.group(1))
+                    entry_high = float(entry_match.group(2))
+
+                # 止损
+                stop_match = re.search(r'止损[：:]\s*([\d.]+)', clean_block)
+                if stop_match:
+                    stop_loss = float(stop_match.group(1))
+
+                # 止盈
+                tp_match = re.search(r'止盈[：:]\s*([\d.]+)', clean_block)
+                if tp_match:
+                    take_profit = float(tp_match.group(1))
+
+                # 说明
+                plan_match = re.search(r'说明[：:]\s*(.*)', clean_block)
+                if plan_match:
+                    execution_plan = plan_match.group(1).strip()
+
+            # 推翻且方向为 neutral 时清空价格
+            if direction == "neutral":
+                entry_low = entry_high = stop_loss = take_profit = 0.0
+                position_size = "none"
+                if not execution_plan:
+                    execution_plan = "观望"
+
+            judge_result = {
+                "judge_C": {
+                    "final_verdict": "推翻",
+                    "final_direction": direction,
+                    "final_confidence": "medium",
+                    "final_position_size": position_size,
+                    "entry_price_low": entry_low,
+                    "entry_price_high": entry_high,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                    "execution_plan": execution_plan,
+                    "reasoning": content,
+                    "risk_note": risk_text if risk_text else "",
+                    "title_line": "📌 最终判决: 推翻",
+                    "current_price": current_price,
+                    "_model_used": resp.model
+                }
+            }
+            logger.info(f"交易委员会裁决: 推翻, 方向: {direction}, 模型: {resp.model}")
+            return judge_result
+
+        except Exception as e:
+            logger.warning(f"交易委员会调用失败: {e}")
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
+            else:
+                return {"judge_C": {"final_verdict": "维持原判", "verdict_level": "A", "_model_used": "fallback"}}
 
             # 推翻时解析执行指令
             direction = "neutral"

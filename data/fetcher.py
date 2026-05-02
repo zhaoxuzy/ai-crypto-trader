@@ -8,8 +8,8 @@ from utils.logger import logger
 
 
 class RateLimiter:
-    """线程安全的轻量限速器（2.0秒间隔，适配30次/分钟）"""
-    def __init__(self, min_interval: float = 0.1):
+    """线程安全的轻量限速器（极短间隔，基本不限制）"""
+    def __init__(self, min_interval: float = 0.05):
         self.min_interval = min_interval
         self._last_request_time = 0.0
         self._lock = threading.Lock()
@@ -29,8 +29,8 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter(min_interval=0.1)
-        self._semaphore = Semaphore(14)
+        self._rate_limiter = RateLimiter(min_interval=0.05)
+        self._semaphore = Semaphore(10)   # 支持10个并发
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 1,
                  allow_backup: bool = False, silent_fail: bool = False,
@@ -422,7 +422,7 @@ class CoinGlassClient:
     # ========== 主数据获取与组装 ==========
     def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
         base_symbol = symbol.upper()
-        tasks = {
+        all_tasks = {
             "kline": lambda: self.get_kline_history(base_symbol, "4h", kline_limit),
             "oi": lambda: self.get_oi_ohlc_history(base_symbol, "4h", kline_limit),
             "funding": lambda: self.get_weighted_funding_rate_history(base_symbol, "4h", kline_limit),
@@ -450,9 +450,32 @@ class CoinGlassClient:
             "borrow_rate": lambda: self.get_borrow_interest_rate_history(30),
             "spot_netflow": lambda: self.get_spot_netflow(base_symbol),
         }
+
+        # 拆分成两批：第一批10个，第二批剩下的
+        tasks_list = list(all_tasks.items())
+        batch1 = dict(tasks_list[:10])
+        batch2 = dict(tasks_list[10:])
+
         results = {}
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_to_key = {executor.submit(task): key for key, task in tasks.items()}
+
+        # 第一批：并发10个
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_key = {executor.submit(task): key for key, task in batch1.items()}
+            for future in as_completed(future_to_key):
+                key = future_to_key[future]
+                try:
+                    results[key] = future.result()
+                except Exception as e:
+                    logger.error(f"获取 {key} 失败: {e}")
+                    results[key] = None
+
+        # 等待3秒
+        logger.info("第一批请求完成，等待3秒后开始第二批...")
+        time.sleep(3)
+
+        # 第二批：并发执行剩余所有
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_key = {executor.submit(task): key for key, task in batch2.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
                 try:
@@ -605,60 +628,6 @@ class CoinGlassClient:
             basis_values = [self._get_close_from_candle(b) for b in basis_data]
             basis_current = basis_values[-1]
             basis_percentile = self._calc_percentile(basis_data, basis_current)
-    
-       # ✅ 稳定币市值修正 (基于文档: data -> [ { data_list: [...] } ])
-        stablecoin_trend = 0.0
-        stablecoin_mcap_current = 0.0
-        if stablecoin_mcap_data and isinstance(stablecoin_mcap_data, list) and len(stablecoin_mcap_data) > 0:
-            first_item = stablecoin_mcap_data[0]
-            data_list = first_item.get("data_list", [])
-            if data_list and len(data_list) > 0:
-                # data_list 是数值列表，获取最新值 (列表最后一个元素)
-                stablecoin_mcap_current = float(data_list[-1])
-                # 计算7日趋势 (如果数据够7个点)
-                if len(data_list) >= 7:
-                    stablecoin_trend = (data_list[-1] - data_list[-7]) / (data_list[-7] + 1e-8) * 100
-
-        # ✅ 比特币占比修正 (基于文档: data -> [ { bitcoin_dominance: 94.3595 } ])
-        btc_dom_current = 0.0
-        btc_dom_trend = 0.0
-        if btc_dom_data and len(btc_dom_data) > 0:
-            dom_values = [float(d.get("bitcoin_dominance", 0)) for d in btc_dom_data if d.get("bitcoin_dominance") is not None]
-            if dom_values:
-                btc_dom_current = dom_values[-1]
-                if len(dom_values) >= 7:
-                    btc_dom_trend = (dom_values[-1] - dom_values[-7]) / (dom_values[-7] + 1e-8) * 100
-
-   
-       # ✅ 借贷利率修正 (基于文档: data -> [ { interest_rate: 0.002989 } ])
-        borrow_rate_current = 0.0
-        if borrow_rate_data and len(borrow_rate_data) > 0:
-            rates = [float(d.get("interest_rate", 0)) for d in borrow_rate_data if d.get("interest_rate") is not None]
-            if rates:
-                borrow_rate_current = rates[-1]
-
-        spot_netflow_24h = spot_netflow_data.get("24h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
-        spot_netflow_1h = spot_netflow_data.get("1h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
-
-        spot_vs_futures_divergence = self._calc_spot_vs_futures_divergence(
-            netflow_dict.get("24h", 0.0), spot_netflow_24h
-        )
-
-        direction_bias = self._calc_direction_bias(
-            above_liq, below_liq, above_trigger_val, below_trigger_val,
-            large_order_pressure,
-            retail_whale_divergence,
-            cvd_slope, taker_ratio_1h,
-            netflow_dict,
-            cgdi_percentile,
-            fear_greed,
-                    # 新增指标计算
-        basis_current = 0.0
-        basis_percentile = 50.0
-        if basis_data and len(basis_data) > 0:
-            basis_values = [self._get_close_from_candle(b) for b in basis_data]
-            basis_current = basis_values[-1]
-            basis_percentile = self._calc_percentile(basis_data, basis_current)
 
         # ✅ 稳定币市值修正 (基于文档: data -> [ { data_list: [...] } ])
         stablecoin_trend = 0.0
@@ -724,6 +693,29 @@ class CoinGlassClient:
             rates = [float(d.get("interest_rate", 0)) for d in borrow_rate_data if d.get("interest_rate") is not None]
             if rates:
                 borrow_rate_current = rates[-1]
+
+        spot_netflow_24h = spot_netflow_data.get("24h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
+        spot_netflow_1h = spot_netflow_data.get("1h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
+
+        spot_vs_futures_divergence = self._calc_spot_vs_futures_divergence(
+            netflow_dict.get("24h", 0.0), spot_netflow_24h
+        )
+
+        direction_bias = self._calc_direction_bias(
+            above_liq, below_liq, above_trigger_val, below_trigger_val,
+            large_order_pressure,
+            retail_whale_divergence,
+            cvd_slope, taker_ratio_1h,
+            netflow_dict,
+            cgdi_percentile,
+            fear_greed,
+            liq_bias_1h,
+            spot_vs_futures_divergence,
+            basis_current, basis_percentile,
+            stablecoin_trend,
+            btc_dom_trend,
+            mark_price, sth_rp, lth_rp, sth_sopr, lth_sopr,
+            borrow_rate_current,
         )
 
         liquidity_bias = self._calc_liquidity_bias(above_liq, below_liq, above_trigger_val, below_trigger_val, orderbook.get("imbalance", 0.0))
@@ -929,7 +921,7 @@ class CoinGlassClient:
         cross_symbol = "ETH" if base_symbol == "BTC" else "BTC"
         main_data = self.get_all_data(base_symbol, kline_limit)
 
-        tasks = {
+        all_tasks = {
             "cross_heatmap": lambda: self.get_liquidation_heatmap(cross_symbol),
             "cross_oi": lambda: self.get_oi_ohlc_history(cross_symbol, "4h", 42),
             "cross_funding": lambda: self.get_weighted_funding_rate_history(cross_symbol, "4h", 42),
@@ -939,9 +931,10 @@ class CoinGlassClient:
             "cross_price": lambda: get_current_price(f"{cross_symbol}-USDT-SWAP"),
             "cross_liq_history": lambda: self.get_liquidation_history(cross_symbol, "1h", 24),
         }
+
         results = {}
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_to_key = {executor.submit(task): key for key, task in tasks.items()}
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_key = {executor.submit(task): key for key, task in all_tasks.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
                 try:

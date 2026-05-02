@@ -683,11 +683,8 @@ class CoinGlassClient:
         sth_sopr = 1.0
         if sth_sopr_data and isinstance(sth_sopr_data, list) and len(sth_sopr_data) > 0:
             last_item = sth_sopr_data[-1]
-            if isinstance(last_item, dict) and "value" in last_item:
-                try:
-                    sth_sopr = float(last_item.get("sth_sopr", 1.0) or 1.0)
-                except (ValueError, TypeError):
-                    sth_sopr = 1.0
+            if isinstance(last_item, dict):
+                sth_sopr = float(last_item.get("sth_sopr", 1.0) or 1.0)
 
         # ✅ 借贷利率修正 (基于文档: data -> [ { interest_rate: 0.002989 } ])
         borrow_rate_current = 0.0

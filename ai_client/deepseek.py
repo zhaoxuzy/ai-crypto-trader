@@ -537,7 +537,7 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
                 json_str = extract_json(final_content)
                 s = json.loads(json_str)
             except Exception as e:
-                logger.error(f"JSON 解析失败: {e}\n原始内容前500字符: {final_content[:500]}")
+                logger.error(f"JSON 解析失败: {e}\n原始内容前8000字符: {final_content[:8000]}")
                 raise ValueError(f"JSON 解析失败: {e}")
 
             # 方向标准化

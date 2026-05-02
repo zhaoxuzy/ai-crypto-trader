@@ -299,9 +299,8 @@ class CoinGlassClient:
         return self._request("api/futures/liquidation/history", params, allow_backup=True, silent_fail=True)
 
     def get_futures_basis_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-    # 基差接口使用标准交易对格式（如 ETHUSDT），而不是 ETH-USDT-SWAP
-    params = {"symbol": f"{symbol.upper()}USDT", "interval": interval, "limit": limit}
-    return self._request("api/futures/basis/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
+        params = {"symbol": f"{symbol.upper()}USDT", "interval": interval, "limit": limit}
+        return self._request("api/futures/basis/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
     def get_stablecoin_market_cap_history(self, limit: int = 30):
         data = self._request("api/index/stableCoin-marketCap-history", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)

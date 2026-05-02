@@ -8,11 +8,13 @@ from utils.logger import logger
 
 
 class RateLimiter:
-    """线程安全的简单限速器（保留原有 0.1 秒间隔）"""
-    def __init__(self, min_interval: float = 0.1):
+    """线程安全的限速器，确保最多每2秒通过一个请求"""
+    def __init__(self, min_interval: float = 1.0):  # 关键：改为1秒
         self.min_interval = min_interval
         self._last_request_time = 0.0
         self._lock = threading.Lock()
+
+    # ... wait() 保持不变
 
     def wait(self):
         with self._lock:
@@ -34,77 +36,81 @@ class CoinGlassClient:
         self._semaphore = Semaphore(8)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
-                 allow_backup: bool = True, silent_fail: bool = False,
-                 no_exchange: bool = False) -> dict:
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        headers = {"accept": "application/json", "X-Api-Key": self.api_key}
-        base_params = params.copy() if params else {}
+             allow_backup: bool = True, silent_fail: bool = False,
+             no_exchange: bool = False) -> dict:
+    url = f"{self.base_url}/{endpoint.lstrip('/')}"
+    headers = {"accept": "application/json", "X-Api-Key": self.api_key}
+    base_params = params.copy() if params else {}
 
-        # 如果接口不需要交易所参数，直接传 None
-        if no_exchange:
-            exchanges_to_try = [None]
-        elif allow_backup and "exchange" in base_params:
-            exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
-        else:
-            exchanges_to_try = [base_params.get("exchange", self.primary_exchange)]
+    if no_exchange:
+        exchanges_to_try = [None]
+    elif allow_backup and "exchange" in base_params:
+        exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
+    else:
+        exchanges_to_try = [base_params.get("exchange", self.primary_exchange)]
 
-        last_error = None
+    last_error = None
 
-        for exchange in exchanges_to_try:
-            current_params = base_params.copy()
-            # 当 no_exchange 为 True 时，exchange 为 None，不添加 exchange 参数
-            if exchange is not None and "exchange" in current_params:
-                current_params["exchange"] = exchange
+    for exchange in exchanges_to_try:
+        current_params = base_params.copy()
+        if exchange is not None and "exchange" in current_params:
+            current_params["exchange"] = exchange
 
-            for attempt in range(max_retries):
-                with self._semaphore:
-                    self._rate_limiter.wait()
-                    try:
-                        logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}")
-                        resp = requests.get(url, params=current_params, headers=headers, timeout=15)
-                        data = resp.json()
-                        if data.get("code") in (0, "0"):
-                            return data.get("data", {})
-                        else:
-                            msg = f"CoinGlass API 错误: {data.get('msg', data)}"
-                            last_error = msg
-                            if attempt < max_retries - 1:
-                                if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
-                                    wait_time = min(60 - (time.time() % 60) + 2, 62)
-                                    logger.warning(f"{msg}，等待 {wait_time:.0f} 秒到下一个分钟窗口后重试...")
-                                else:
-                                    wait_time = 2 ** (attempt + 1)
-                                time.sleep(wait_time)
-                                continue
-                            else:
-                                logger.warning(f"{exchange} 重试{max_retries}次后仍失败: {msg}")
-                                break
-                    except requests.exceptions.Timeout as e:
-                        last_error = f"请求超时: {e}"
+        for attempt in range(max_retries):
+            with self._semaphore:
+                self._rate_limiter.wait()
+                try:
+                    logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}")
+                    resp = requests.get(url, params=current_params, headers=headers, timeout=15)
+                    data = resp.json()
+                    code = data.get("code")
+                    if code == 0 or code == "0":
+                        return data.get("data", {})
+                    else:
+                        msg = f"CoinGlass API 错误: {data.get('msg', data)}"
+                        last_error = msg
+                        # 如果是限频错误，不重试，直接标记为失败（因为重试只会加重）
+                        if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
+                            logger.warning(f"触发限频，放弃本次请求: {endpoint}")
+                            break
+                        # 如果是参数错误，重试无意义，直接放弃
+                        if "required" in str(msg).lower() or "not present" in str(msg):
+                            logger.error(f"请求参数错误，放弃: {msg}")
+                            break
+                        # 其他错误才重试
                         if attempt < max_retries - 1:
                             wait_time = 2 ** (attempt + 1)
-                            logger.warning(f"请求超时，{wait_time}秒后重试...")
+                            logger.warning(f"{msg}，{wait_time}秒后重试...")
                             time.sleep(wait_time)
                             continue
                         else:
-                            logger.warning(f"{exchange} 重试{max_retries}次后仍超时")
+                            logger.warning(f"{exchange} 重试{max_retries}次后仍失败: {msg}")
                             break
-                    except Exception as e:
-                        last_error = f"请求异常: {e}"
-                        if attempt < max_retries - 1:
-                            wait_time = 2 ** (attempt + 1)
-                            logger.warning(f"请求异常，{wait_time}秒后重试...")
-                            time.sleep(wait_time)
-                            continue
-                        else:
-                            logger.warning(f"{exchange} 重试{max_retries}次后仍异常")
-                            break
+                except requests.exceptions.Timeout as e:
+                    last_error = f"请求超时: {e}"
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** (attempt + 1)
+                        logger.warning(f"请求超时，{wait_time}秒后重试...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.warning(f"{exchange} 重试{max_retries}次后仍超时")
+                        break
+                except Exception as e:
+                    last_error = f"请求异常: {e}"
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** (attempt + 1)
+                        logger.warning(f"请求异常，{wait_time}秒后重试...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.warning(f"{exchange} 重试{max_retries}次后仍异常")
+                        break
 
-        if silent_fail:
-            logger.warning(f"CoinGlass 数据获取失败（静默）: {last_error}")
-            return {}
-        raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
-
+    if silent_fail:
+        logger.warning(f"CoinGlass 数据获取失败（静默）: {last_error}")
+        return {}
+    raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
     # ---------- 基础工具函数 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:

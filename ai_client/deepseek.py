@@ -520,7 +520,7 @@ def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
             resp = client.chat.completions.create(
                 model=FAST_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=8192,
+                max_tokens=16384,
                 timeout=TIMEOUT_SECONDS,
                 stop=["}\n```"]  # 防止模型输出多余代码块标记
             )

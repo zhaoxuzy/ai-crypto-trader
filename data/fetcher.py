@@ -9,7 +9,7 @@ from utils.logger import logger
 
 class RateLimiter:
     """线程安全的轻量限速器（2.0秒间隔，适配30次/分钟）"""
-    def __init__(self, min_interval: float = 0.3):
+    def __init__(self, min_interval: float = 0.1):
         self.min_interval = min_interval
         self._last_request_time = 0.0
         self._lock = threading.Lock()
@@ -29,8 +29,8 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter(min_interval=2.0)
-        self._semaphore = Semaphore(2)
+        self._rate_limiter = RateLimiter(min_interval=0.1)
+        self._semaphore = Semaphore(14)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 1,
                  allow_backup: bool = False, silent_fail: bool = False,

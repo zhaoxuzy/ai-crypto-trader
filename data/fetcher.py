@@ -72,6 +72,9 @@ class CoinGlassClient:
                             if "required" in str(msg).lower() or "not present" in str(msg):
                                 logger.error(f"请求参数错误，放弃: {msg}")
                                 break
+                            if "server error" in str(msg).lower():
+                                logger.warning(f"服务器错误，放弃本次请求: {endpoint}")
+                                break
                             if attempt < max_retries - 1:
                                 wait_time = 2 ** (attempt + 1)
                                 logger.warning(f"{msg}，{wait_time}秒后重试...")
@@ -296,18 +299,19 @@ class CoinGlassClient:
 
     # ✅ 文档确认：需 exchange、symbol（BTCUSDT 格式）、state、start_time、end_time
     def get_large_limit_order_history(self, symbol: str = "BTC", limit: int = 20, state: int = 1):
+    # 按照官方文档使用 Binance 交易所（OKX 可能不支持此接口）
         now_ms = int(time.time() * 1000)
-        start_time = now_ms - 24 * 60 * 60 * 1000  # 最近24小时
+        start_time = now_ms - 30 * 60 * 1000   # 最近30分钟，避免数据量过大
         end_time = now_ms
         params = {
-            "exchange": self.primary_exchange,
+            "exchange": "Binance",
             "symbol": f"{symbol.upper()}USDT",
             "state": state,
             "start_time": start_time,
             "end_time": end_time,
             "limit": limit
-        }
-        return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=True, silent_fail=True)
+    }
+    return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True)
 
     # ✅ 文档确认：需要 interval 参数
     def get_cgdi_index_history(self, limit: int = 90):

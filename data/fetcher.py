@@ -8,13 +8,11 @@ from utils.logger import logger
 
 
 class RateLimiter:
-    """线程安全的限速器，确保最多每2秒通过一个请求"""
-    def __init__(self, min_interval: float = 1.0):  # 关键：改为1秒
+    """线程安全的限速器（2秒间隔，确保每分钟≤30次）"""
+    def __init__(self, min_interval: float = 1.0):
         self.min_interval = min_interval
         self._last_request_time = 0.0
         self._lock = threading.Lock()
-
-    # ... wait() 保持不变
 
     def wait(self):
         with self._lock:
@@ -28,90 +26,88 @@ class RateLimiter:
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
-        # 保留原有代理地址
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter(min_interval=0.1)
+        self._rate_limiter = RateLimiter(min_interval=2.0)
         self._semaphore = Semaphore(8)
 
-def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
-             allow_backup: bool = True, silent_fail: bool = False,
-             no_exchange: bool = False) -> dict:
-    url = f"{self.base_url}/{endpoint.lstrip('/')}"
-    headers = {"accept": "application/json", "X-Api-Key": self.api_key}
-    base_params = params.copy() if params else {}
+    # ---------- 修复后的 _request ----------
+    def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
+                 allow_backup: bool = True, silent_fail: bool = False,
+                 no_exchange: bool = False) -> dict:
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        headers = {"accept": "application/json", "X-Api-Key": self.api_key}
+        base_params = params.copy() if params else {}
 
-    if no_exchange:
-        exchanges_to_try = [None]
-    elif allow_backup and "exchange" in base_params:
-        exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
-    else:
-        exchanges_to_try = [base_params.get("exchange", self.primary_exchange)]
+        if no_exchange:
+            exchanges_to_try = [None]
+        elif allow_backup and "exchange" in base_params:
+            exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
+        else:
+            exchanges_to_try = [base_params.get("exchange", self.primary_exchange)]
 
-    last_error = None
+        last_error = None
 
-    for exchange in exchanges_to_try:
-        current_params = base_params.copy()
-        if exchange is not None and "exchange" in current_params:
-            current_params["exchange"] = exchange
+        for exchange in exchanges_to_try:
+            current_params = base_params.copy()
+            if exchange is not None and "exchange" in current_params:
+                current_params["exchange"] = exchange
 
-        for attempt in range(max_retries):
-            with self._semaphore:
-                self._rate_limiter.wait()
-                try:
-                    logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}")
-                    resp = requests.get(url, params=current_params, headers=headers, timeout=15)
-                    data = resp.json()
-                    code = data.get("code")
-                    if code == 0 or code == "0":
-                        return data.get("data", {})
-                    else:
-                        msg = f"CoinGlass API 错误: {data.get('msg', data)}"
-                        last_error = msg
-                        # 如果是限频错误，不重试，直接标记为失败（因为重试只会加重）
-                        if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
-                            logger.warning(f"触发限频，放弃本次请求: {endpoint}")
-                            break
-                        # 如果是参数错误，重试无意义，直接放弃
-                        if "required" in str(msg).lower() or "not present" in str(msg):
-                            logger.error(f"请求参数错误，放弃: {msg}")
-                            break
-                        # 其他错误才重试
+            for attempt in range(max_retries):
+                with self._semaphore:
+                    self._rate_limiter.wait()
+                    try:
+                        logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}")
+                        resp = requests.get(url, params=current_params, headers=headers, timeout=15)
+                        data = resp.json()
+                        code = data.get("code")
+                        if code == 0 or code == "0":
+                            return data.get("data", {})
+                        else:
+                            msg = f"CoinGlass API 错误: {data.get('msg', data)}"
+                            last_error = msg
+                            if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
+                                logger.warning(f"触发限频，放弃本次请求: {endpoint}")
+                                break
+                            if "required" in str(msg).lower() or "not present" in str(msg):
+                                logger.error(f"请求参数错误，放弃: {msg}")
+                                break
+                            if attempt < max_retries - 1:
+                                wait_time = 2 ** (attempt + 1)
+                                logger.warning(f"{msg}，{wait_time}秒后重试...")
+                                time.sleep(wait_time)
+                                continue
+                            else:
+                                logger.warning(f"{exchange} 重试{max_retries}次后仍失败: {msg}")
+                                break
+                    except requests.exceptions.Timeout as e:
+                        last_error = f"请求超时: {e}"
                         if attempt < max_retries - 1:
                             wait_time = 2 ** (attempt + 1)
-                            logger.warning(f"{msg}，{wait_time}秒后重试...")
+                            logger.warning(f"请求超时，{wait_time}秒后重试...")
                             time.sleep(wait_time)
                             continue
                         else:
-                            logger.warning(f"{exchange} 重试{max_retries}次后仍失败: {msg}")
+                            logger.warning(f"{exchange} 重试{max_retries}次后仍超时")
                             break
-                except requests.exceptions.Timeout as e:
-                    last_error = f"请求超时: {e}"
-                    if attempt < max_retries - 1:
-                        wait_time = 2 ** (attempt + 1)
-                        logger.warning(f"请求超时，{wait_time}秒后重试...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        logger.warning(f"{exchange} 重试{max_retries}次后仍超时")
-                        break
-                except Exception as e:
-                    last_error = f"请求异常: {e}"
-                    if attempt < max_retries - 1:
-                        wait_time = 2 ** (attempt + 1)
-                        logger.warning(f"请求异常，{wait_time}秒后重试...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        logger.warning(f"{exchange} 重试{max_retries}次后仍异常")
-                        break
+                    except Exception as e:
+                        last_error = f"请求异常: {e}"
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** (attempt + 1)
+                            logger.warning(f"请求异常，{wait_time}秒后重试...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            logger.warning(f"{exchange} 重试{max_retries}次后仍异常")
+                            break
 
-    if silent_fail:
-        logger.warning(f"CoinGlass 数据获取失败（静默）: {last_error}")
-        return {}
-    raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
-    # ---------- 基础工具函数 ----------
+        if silent_fail:
+            logger.warning(f"CoinGlass 数据获取失败（静默）: {last_error}")
+            return {}
+        raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
+
+    # ---------- 静态工具函数 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -160,7 +156,7 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
     def _get_symbol(self, base: str) -> str:
         return f"{base}-USDT-SWAP"
 
-    # ========== 原有接口 ==========
+    # ========== 接口定义 ==========
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
@@ -184,11 +180,8 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
     def get_cvd_history(self, symbol: str = "BTC", interval: str = "1m", limit: int = 240):
         params = {"exchange": "Binance", "symbol": f"{symbol.upper()}USDT", "interval": interval, "limit": limit}
         data = self._request("api/futures/cvd/history", params, allow_backup=False, silent_fail=True)
-        if data is not None:
-            if isinstance(data, list):
-                logger.info(f"[CVD原始数据] 返回条数: {len(data)}，首条: {data[0] if data else '空'}")
-            else:
-                logger.info(f"[CVD原始数据] 返回类型: {type(data)}，内容: {data}")
+        if data is not None and isinstance(data, list):
+            logger.info(f"[CVD原始数据] 返回条数: {len(data)}，首条: {data[0] if data else '空'}")
         return data
 
     def get_option_max_pain(self, symbol: str = "BTC") -> dict:
@@ -210,7 +203,6 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
         return {"current": 50, "prev_7d": 50}
 
     def get_netflow(self, symbol: str = "BTC") -> float:
-        """返回24h净流入，保留向后兼容"""
         params = {"symbol": symbol.upper()}
         data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, dict):
@@ -220,7 +212,6 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
         return 0.0
 
     def get_netflow_dict(self, symbol: str = "BTC") -> dict:
-        """返回多周期净流入字典"""
         params = {"symbol": symbol.upper()}
         data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True, no_exchange=True)
         if isinstance(data, dict):
@@ -286,7 +277,7 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
             logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
-    # ========== 🆕 已接入的新接口（统一使用 no_exchange=True 处理不需要交易所的接口） ==========
+    # ---------- 其他接口（包括新增的链上指标等）----------
     def get_global_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
@@ -300,74 +291,44 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
         return self._request("api/futures/orderbook/large-limit-order-history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
     def get_cgdi_index_history(self, limit: int = 90):
-        params = {"limit": limit}
-        data = self._request("api/futures/cgdi-index/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
-        if isinstance(data, list):
-            return data
-        return []
+        data = self._request("api/futures/cgdi-index/history", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        return data if isinstance(data, list) else []
 
     def get_liquidation_history(self, symbol: str = "BTC", interval: str = "1h", limit: int = 24):
-        params = {
-            "exchange": self.primary_exchange,
-            "symbol": self._get_symbol(symbol),
-            "interval": interval,
-            "limit": limit
-        }
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/liquidation/history", params, allow_backup=True, silent_fail=True)
 
-    # ========== 🆕 本次优化新增接口（全部使用 no_exchange=True，避免传错参数） ==========
     def get_futures_basis_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/basis/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
 
     def get_stablecoin_market_cap_history(self, limit: int = 30):
-        params = {"limit": limit}
-        data = self._request("api/index/stableCoin-marketCap-history", params, allow_backup=False, silent_fail=True, no_exchange=True)
-        if isinstance(data, list):
-            return data
-        return []
+        data = self._request("api/index/stableCoin-marketCap-history", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        return data if isinstance(data, list) else []
 
     def get_bitcoin_dominance_history(self, limit: int = 30):
-        params = {"limit": limit}
-        data = self._request("api/index/bitcoin-dominance", params, allow_backup=False, silent_fail=True, no_exchange=True)
-        if isinstance(data, list):
-            return data
-        return []
+        data = self._request("api/index/bitcoin-dominance", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        return data if isinstance(data, list) else []
 
     def get_lth_realized_price_history(self, limit: int = 30):
-        params = {"limit": limit}
-        data = self._request("api/index/bitcoin-lth-realized-price", params, allow_backup=False, silent_fail=True, no_exchange=True)
-        if isinstance(data, list):
-            return data
-        return []
+        data = self._request("api/index/bitcoin-lth-realized-price", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        return data if isinstance(data, list) else []
 
     def get_sth_realized_price_history(self, limit: int = 30):
-        params = {"limit": limit}
-        data = self._request("api/index/bitcoin-sth-realized-price", params, allow_backup=False, silent_fail=True, no_exchange=True)
-        if isinstance(data, list):
-            return data
-        return []
+        data = self._request("api/index/bitcoin-sth-realized-price", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        return data if isinstance(data, list) else []
 
     def get_lth_sopr_history(self, limit: int = 30):
-        params = {"limit": limit}
-        data = self._request("api/index/bitcoin-lth-sopr", params, allow_backup=False, silent_fail=True, no_exchange=True)
-        if isinstance(data, list):
-            return data
-        return []
+        data = self._request("api/index/bitcoin-lth-sopr", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        return data if isinstance(data, list) else []
 
     def get_sth_sopr_history(self, limit: int = 30):
-        params = {"limit": limit}
-        data = self._request("api/index/bitcoin-sth-sopr", params, allow_backup=False, silent_fail=True, no_exchange=True)
-        if isinstance(data, list):
-            return data
-        return []
+        data = self._request("api/index/bitcoin-sth-sopr", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        return data if isinstance(data, list) else []
 
     def get_borrow_interest_rate_history(self, limit: int = 30):
-        params = {"limit": limit}
-        data = self._request("api/borrow-interest-rate/history", params, allow_backup=False, silent_fail=True, no_exchange=True)
-        if isinstance(data, list):
-            return data
-        return []
+        data = self._request("api/borrow-interest-rate/history", {"limit": limit}, allow_backup=False, silent_fail=True, no_exchange=True)
+        return data if isinstance(data, list) else []
 
     def get_spot_netflow(self, symbol: str = "BTC") -> dict:
         params = {"symbol": symbol.upper()}
@@ -380,15 +341,14 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
             }
         return {"5m": 0.0, "1h": 0.0, "24h": 0.0}
 
-    # ========== 🆕 衍生计算工具函数 ==========
+    # ========== 衍生计算 ==========
     def _calc_retail_whale_divergence(self, global_ls: float, top_ls_percentile: float) -> float:
         retail_signal = (global_ls - 1.0) * 100
         whale_signal = (top_ls_percentile - 50.0)
         return (whale_signal - retail_signal) / 50.0 if retail_signal != 0 else 0.0
 
     def _calc_large_order_pressure(self, orders: list) -> dict:
-        total_buy = 0.0
-        total_sell = 0.0
+        total_buy = total_sell = 0.0
         for order in orders:
             side = order.get("order_side")
             value = float(order.get("current_usd_value", 0) or 0)
@@ -397,21 +357,15 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
             elif side == 2:
                 total_buy += value
         total = total_buy + total_sell
-        pressure = ((total_sell - total_buy) / total) if total > 0 else 0.0
-        return {
-            "large_buy_value": total_buy,
-            "large_sell_value": total_sell,
-            "pressure": pressure
-        }
+        pressure = (total_sell - total_buy) / total if total > 0 else 0.0
+        return {"large_buy_value": total_buy, "large_sell_value": total_sell, "pressure": pressure}
 
     def _calc_taker_ratio(self, taker_data: list, hours: int = 1) -> float:
         if not taker_data:
             return 1.0
         buy_total = sum(float(d.get("aggregated_buy_volume_usd", 0) or 0) for d in taker_data[-hours:])
         sell_total = sum(float(d.get("aggregated_sell_volume_usd", 0) or 0) for d in taker_data[-hours:])
-        if sell_total == 0:
-            return 1.0
-        return buy_total / sell_total
+        return buy_total / sell_total if sell_total != 0 else 1.0
 
     def _calc_cgdi_percentile(self, cgdi_list: list, current_val: float) -> float:
         if not cgdi_list:
@@ -424,30 +378,20 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
     def _calc_liq_bias(self, liq_data: list, hours: int = 1) -> dict:
         if not liq_data:
             return {"long_liq_1h": 0.0, "short_liq_1h": 0.0, "liq_bias_1h": 0.0}
-
-        total_long = 0.0
-        total_short = 0.0
+        total_long = total_short = 0.0
         for item in liq_data[-hours:]:
             total_long += float(item.get("long_liquidation_usd", 0) or 0)
             total_short += float(item.get("short_liquidation_usd", 0) or 0)
-
         total = total_long + total_short
-        bias = ((total_short - total_long) / total) if total > 0 else 0.0
-        return {
-            "long_liq_1h": total_long,
-            "short_liq_1h": total_short,
-            "liq_bias_1h": bias
-        }
+        bias = (total_short - total_long) / total if total > 0 else 0.0
+        return {"long_liq_1h": total_long, "short_liq_1h": total_short, "liq_bias_1h": bias}
 
     def _calc_spot_vs_futures_divergence(self, futures_netflow_24h: float, spot_netflow_24h: float) -> float:
         if abs(futures_netflow_24h) + abs(spot_netflow_24h) < 1e6:
             return 0.0
-        if futures_netflow_24h * spot_netflow_24h >= 0:
-            return 1.0
-        else:
-            return -1.0
+        return 1.0 if futures_netflow_24h * spot_netflow_24h >= 0 else -1.0
 
-    # ========== 核心数据组装 ==========
+    # ========== 主数据获取与组装 ==========
     def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
         base_symbol = symbol.upper()
         tasks = {
@@ -468,7 +412,6 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
             "large_orders": lambda: self.get_large_limit_order_history(base_symbol, 20),
             "cgdi": lambda: self.get_cgdi_index_history(90),
             "liq_history": lambda: self.get_liquidation_history(base_symbol, "1h", 24),
-            # 🆕 新增任务
             "basis": lambda: self.get_futures_basis_history(base_symbol, "4h", 168),
             "stablecoin_mcap": lambda: self.get_stablecoin_market_cap_history(30),
             "btc_dominance": lambda: self.get_bitcoin_dominance_history(30),
@@ -480,7 +423,6 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
             "spot_netflow": lambda: self.get_spot_netflow(base_symbol),
         }
         results = {}
-        # 并发控制：max_workers=6，配合 0.1 秒间隔，26 个请求可在 3-4 秒内完成，不触发限频
         with ThreadPoolExecutor(max_workers=6) as executor:
             future_to_key = {executor.submit(task): key for key, task in tasks.items()}
             for future in as_completed(future_to_key):
@@ -512,7 +454,6 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
         large_orders_data = results.get("large_orders", [])
         cgdi_data = results.get("cgdi", [])
         liq_history_data = results.get("liq_history", [])
-        # 新数据
         basis_data = results.get("basis", [])
         stablecoin_mcap_data = results.get("stablecoin_mcap", [])
         btc_dom_data = results.get("btc_dominance", [])
@@ -523,12 +464,7 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
         borrow_rate_data = results.get("borrow_rate", [])
         spot_netflow_data = results.get("spot_netflow", {})
 
-        data_quality = {}
-        for key in ["kline", "oi", "funding", "heatmap", "top_ls", "cvd", "max_pain", "fg", "netflow",
-                    "orderbook", "exchange_btc", "agg_oi", "global_ls", "taker_bs", "large_orders", "cgdi",
-                    "liq_history", "basis", "stablecoin_mcap", "btc_dominance", "lth_rp", "sth_rp",
-                    "lth_sopr", "sth_sopr", "borrow_rate", "spot_netflow"]:
-            data_quality[key] = "✅" if results.get(key) else "❌ 缺失"
+        data_quality = {key: "✅" if results.get(key) else "❌ 缺失" for key in results.keys()}
 
         mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
         closes = [self._get_close_from_candle(k) for k in kline_data]
@@ -777,7 +713,6 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
             "long_liq_1h": long_liq_1h,
             "short_liq_1h": short_liq_1h,
             "liq_bias_1h": liq_bias_1h,
-            # 新增字段
             "basis_current": basis_current,
             "basis_percentile": basis_percentile,
             "stablecoin_mcap": stablecoin_mcap_current,
@@ -804,15 +739,21 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
                              mark_price, sth_rp, lth_rp, sth_sopr, lth_sopr,
                              borrow_rate):
         score = 0.0
+
+        # 1. 清算吸引力（25%）
         if above_trigger > 0 and below_trigger > 0:
             above_score = above_liq / above_trigger
             below_score = below_liq / below_trigger
             diff = below_score - above_score
             score += max(-1, min(1, diff / (abs(above_score) + abs(below_score) + 1e-8))) * 0.25
 
+        # 2. 大单压迫（15%）
         score += -large_order_pressure * 0.15
+
+        # 3. 散户-顶级背离（15%）
         score += max(-1, min(1, divergence)) * 0.15
 
+        # 4. CVD+主动买卖共振（10%）
         flow_signal = 0.0
         if cvd_slope > 0 and taker_ratio > 1.02:
             flow_signal = 0.10
@@ -820,6 +761,7 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
             flow_signal = -0.10
         score += flow_signal
 
+        # 5. 资金流加速（5%）
         netflow_1h = netflow_dict.get("1h", 0)
         netflow_4h = netflow_dict.get("4h", 0)
         if netflow_4h != 0:
@@ -831,39 +773,49 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
             elif netflow_1h < 0:
                 score -= 0.03
 
+        # 6. CGDI 情绪（5%）
         if cgdi_percentile > 80:
             score -= 0.05
         elif cgdi_percentile < 20:
             score += 0.05
 
+        # 7. 恐慌贪婪（5%）
         if fear_greed > 75:
             score -= 0.05
         elif fear_greed < 25:
             score += 0.05
 
+        # 8. 爆仓偏空比（5%）
         score += -liq_bias_1h * 0.05
+
+        # 9. 现货/期货背离（5%）
         score += spot_vs_futures_divergence * 0.05
 
+        # 10. 基差环境（5%）
         if basis_percentile > 80:
             score -= 0.05
         elif basis_percentile < 20:
             score += 0.05
 
+        # 11. 稳定币趋势（5%）
         if stablecoin_trend > 2:
             score += 0.05
         elif stablecoin_trend < -2:
             score -= 0.05
 
+        # 12. BTC.D 趋势（5%）
         if btc_dom_trend > 2:
             score -= 0.05
         elif btc_dom_trend < -2:
             score += 0.05
 
+        # 13. 链上成本锚（5%）
         if sth_rp > 0 and mark_price > sth_rp and sth_sopr > 1.0:
             score += 0.05
         elif sth_rp > 0 and mark_price < sth_rp and sth_sopr < 1.0:
             score -= 0.05
 
+        # 14. 借贷利率约束（约3%）
         if borrow_rate > 0.05:
             score -= 0.03
         elif borrow_rate < 0.01:
@@ -899,26 +851,25 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
         except:
             return 'neutral'
 
-    # ========== fetch_all_data 和 _build_cross_data ==========
+    # ========== 跨币种数据 ==========
     def fetch_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> tuple:
         base_symbol = symbol.upper()
         cross_symbol = "ETH" if base_symbol == "BTC" else "BTC"
-
-        all_tasks = {}
         main_data = self.get_all_data(base_symbol, kline_limit)
 
-        all_tasks["cross_heatmap"] = lambda: self.get_liquidation_heatmap(cross_symbol)
-        all_tasks["cross_oi"] = lambda: self.get_oi_ohlc_history(cross_symbol, "4h", 42)
-        all_tasks["cross_funding"] = lambda: self.get_weighted_funding_rate_history(cross_symbol, "4h", 42)
-        all_tasks["cross_top_ls"] = lambda: self.get_top_long_short_ratio_history(cross_symbol, "4h", 42)
-        all_tasks["cross_cvd"] = lambda: self.get_cvd_history(cross_symbol, "1m", 240)
-        all_tasks["cross_option"] = lambda: self.get_option_max_pain(cross_symbol)
-        all_tasks["cross_price"] = lambda: get_current_price(f"{cross_symbol}-USDT-SWAP")
-        all_tasks["cross_liq_history"] = lambda: self.get_liquidation_history(cross_symbol, "1h", 24)
-
+        tasks = {
+            "cross_heatmap": lambda: self.get_liquidation_heatmap(cross_symbol),
+            "cross_oi": lambda: self.get_oi_ohlc_history(cross_symbol, "4h", 42),
+            "cross_funding": lambda: self.get_weighted_funding_rate_history(cross_symbol, "4h", 42),
+            "cross_top_ls": lambda: self.get_top_long_short_ratio_history(cross_symbol, "4h", 42),
+            "cross_cvd": lambda: self.get_cvd_history(cross_symbol, "1m", 240),
+            "cross_option": lambda: self.get_option_max_pain(cross_symbol),
+            "cross_price": lambda: get_current_price(f"{cross_symbol}-USDT-SWAP"),
+            "cross_liq_history": lambda: self.get_liquidation_history(cross_symbol, "1h", 24),
+        }
         results = {}
         with ThreadPoolExecutor(max_workers=8) as executor:
-            future_to_key = {executor.submit(task): key for key, task in all_tasks.items()}
+            future_to_key = {executor.submit(task): key for key, task in tasks.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
                 try:
@@ -933,7 +884,6 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
     def _build_cross_data(self, results: dict, cross_symbol: str) -> dict:
         data = {}
         complete = True
-
         price = results.get("cross_price")
         if price is not None and price > 0:
             mark_price = price
@@ -958,9 +908,7 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
             data["below_liq"] = below_liq
             data["liq_ratio"] = above_liq / below_liq if below_liq > 0 else 0.0
         else:
-            data["above_liq"] = 0
-            data["below_liq"] = 0
-            data["liq_ratio"] = 0.0
+            data["above_liq"] = data["below_liq"] = data["liq_ratio"] = 0.0
             complete = False
 
         oi = results.get("cross_oi")
@@ -1016,10 +964,8 @@ def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
 
         liq_history = results.get("cross_liq_history")
         if liq_history:
-            liq_bias_info = self._calc_liq_bias(liq_history, hours=1)
-            data["liq_bias_1h"] = liq_bias_info.get("liq_bias_1h", 0.0)
-            data["long_liq_1h"] = liq_bias_info.get("long_liq_1h", 0.0)
-            data["short_liq_1h"] = liq_bias_info.get("short_liq_1h", 0.0)
+            liq_info = self._calc_liq_bias(liq_history, hours=1)
+            data["liq_bias_1h"] = liq_info.get("liq_bias_1h", 0.0)
         else:
             data["liq_bias_1h"] = 0.0
             complete = False

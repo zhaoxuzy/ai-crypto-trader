@@ -1,7 +1,12 @@
-import os, sys, time, threading
+import sys
+import os
+import threading
+
+# 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, call_reviewer, call_judge, apply_final_verdict
+# 导入新命名的交易员函数 call_trader
+from ai_client.deepseek import build_prompt, call_trader, validate_strategy, call_reviewer, call_judge, apply_final_verdict
 from notifier.dingtalk import format_strategy_message, format_review_message, format_judge_message, send_dingtalk_message, format_final_decision
 from data.fetcher import CoinGlassClient, get_current_price
 from utils.logger import logger
@@ -12,32 +17,28 @@ def main():
 
     client = CoinGlassClient()
     
-    # 一次性获取主数据 + 跨币种数据（合并并发，避免串行限速）
+    # 一次性获取主数据 + 跨币种数据
     try:
         data, cross_data = client.fetch_all_data(symbol)
     except Exception as e:
         logger.error(f"数据获取失败: {e}")
         return
 
-    # 补充 OKX 实时价格（如果 fetch_all_data 里已获取过则不会重复，但这里做一次备用）
+    # 补充 OKX 实时价格
     inst_id = f"{symbol}-USDT-SWAP"
     real_price = get_current_price(inst_id)
     if real_price > 0:
         data["mark_price"] = real_price
         logger.info(f"OKX 实时价格: {real_price}")
 
-    # ---- 确保跨币种数据尽量完整 ----
-    # 如果跨币种数据标记为 incomplete，仍将其传给 prompt，由 build_prompt 根据现有数据生成。
-    # 在此不补全，以免引入额外延迟。若确实缺失，可在 build_prompt 中处理。
     logger.info(f"跨币种数据完整性: {cross_data.get('_complete')}")
-    # ----
 
-    # 构建 Prompt（跨币种数据传入 eth_data）
+    # 构建 Prompt
     prompt = build_prompt(data, symbol, eth_data=cross_data)
 
-    # 1. 首席交易员生成策略
+    # 1. 首席交易员生成策略（使用新函数名 call_trader）
     try:
-        strategy = call_deepseek(prompt)
+        strategy = call_trader(prompt)
     except Exception as e:
         logger.error(f"{symbol} 策略生成失败: {e}")
         return
@@ -54,7 +55,7 @@ def main():
     prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
     send_dingtalk_message(prelim_msg, title=f"{symbol} 策略推送 (审查中...)")
 
-    # 3. 异步审查：审查官B → 交易委员会C，在线程内即时推送
+    # 3. 异步审查：审查官B → 交易委员会C
     def run_review_and_judge():
         nonlocal strategy
 

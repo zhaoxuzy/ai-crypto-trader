@@ -194,7 +194,13 @@ def build_reviewer_prompt(original_strategy: dict, data: dict, symbol: str) -> s
 # ------------------- 委员会提示词 -------------------
 def build_judge_prompt(original_strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> str:
     direction_bias = data.get('direction_bias', 0.0)
-    return f"""你是交易委员会主席。请基于审计报告和交易员策略，做出最终裁决。
+    return f"""你是交易委会主席，拥有最终决策权。交易员已进行规则数据分析，给出{初步方向}。审计官提供了补充洞察，指出[关键发现]。
+
+请基于以下框架作出最终裁决：
+1. **风险评估**：审计官揭示的信号，是新增风险还是隐藏机会？它对原决策的影响程度有多大？
+2. **决策选择**：综合所有信息，你选择：
+   A. 同意观望（当前信号不足或矛盾）
+   B. 建议谨慎开仓（审计官发现有足够强度的新信号），并给出具体方向和仓位。交易委员会主席。请基于审计报告和交易员策略，做出最终裁决。
 
 【交易标的】{symbol}
 【系统锚点】direction_bias={direction_bias:.3f}

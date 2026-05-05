@@ -1,51 +1,35 @@
 """
-notifier/dingtalk.py — 钉钉消息推送模块 (修复版)
-- 补全 os 导入
-- 审计统计正确提取 severity_counts
-- 裁决消息展示完整裁决书
+notifier/dingtalk.py — 钉钉推送 (修复版)
+- 代码块前后加空行
+- 审计报告使用代码块
+- 裁决内容完整展示
 """
-import os
-import json
-import requests
+import os, json, requests
 from datetime import datetime
 from utils.logger import logger
 
-def _send_dingtalk(webhook_url: str, payload: dict, secret: str = None) -> bool:
-    """发送钉钉消息，成功返回 True"""
+def _send_dingtalk(webhook_url, payload):
     try:
         headers = {"Content-Type": "application/json"}
-        response = requests.post(webhook_url, data=json.dumps(payload), headers=headers, timeout=10)
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("errcode") == 0:
-                return True
-            else:
-                logger.error(f"钉钉返回错误: {result}")
-                return False
+        resp = requests.post(webhook_url, data=json.dumps(payload), headers=headers, timeout=10)
+        if resp.status_code == 200 and resp.json().get("errcode") == 0:
+            return True
         else:
-            logger.error(f"钉钉请求失败，状态码: {response.status_code}")
+            logger.error(f"钉钉返回错误: {resp.text}")
             return False
     except Exception as e:
         logger.error(f"钉钉推送异常: {e}")
         return False
 
 def send_dingtalk_message(text: str, title: str = "交易策略通知") -> bool:
-    """发送 Markdown 消息到钉钉"""
     webhook_url = os.getenv("DINGTALK_WEBHOOK_URL")
     if not webhook_url:
-        logger.warning("未配置 DINGTALK_WEBHOOK_URL，跳过推送")
+        logger.warning("未配置 DINGTALK_WEBHOOK_URL")
         return False
-    payload = {
-        "msgtype": "markdown",
-        "markdown": {
-            "title": title[:30],
-            "text": text
-        }
-    }
+    payload = {"msgtype": "markdown", "markdown": {"title": title[:30], "text": text}}
     return _send_dingtalk(webhook_url, payload)
 
 def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> str:
-    """交易员初步策略消息格式"""
     direction = strategy.get("direction", "neutral")
     confidence = strategy.get("confidence", "中")
     position = strategy.get("position_size", "无")
@@ -54,46 +38,36 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> s
     stop = strategy.get("stop_loss", 0) or 0
     profit = strategy.get("take_profit", 0) or 0
     reasoning = strategy.get("reasoning", "")
-
     dir_map = {"long": "做多", "short": "做空", "neutral": "观望"}
     pos_map = {"heavy": "重仓", "medium": "中仓", "light": "轻仓", "none": "无"}
     conf_map = {"high": "高", "medium": "中", "low": "低"}
 
     msg = f"### 策略｜{symbol} 🧠 建议 {datetime.now().strftime('%m-%d %H:%M')}\n"
     msg += f"{dir_map.get(direction, '观望')} | 现价 {data.get('mark_price', 0) if data else 0:.0f} | 入场 {entry_low}-{entry_high} | 止损 {stop} | 止盈 {profit} | 置信度 {conf_map.get(confidence, '?')} | 仓位 {pos_map.get(position, '?')}\n\n"
-    msg += f"**推演过程**\n```\n{reasoning[:2000]}\n```"
+    msg += f"**推演过程**\n\n```\n{reasoning[:2000]}\n```"
     return msg
 
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict = None) -> str:
-    """风控审计报告消息格式（修复版）"""
     direction_map = {"long": "做多", "short": "做空", "neutral": "观望"}
     pos_map = {"heavy": "重仓", "medium": "中仓", "light": "轻仓", "none": "无"}
-    
     direction = direction_map.get(strategy.get("direction", "neutral"), "观望")
     position = pos_map.get(strategy.get("position_size", "none"), "无")
-    
-    # 直接使用审计报告的 severity_counts
     severity = reviewer_report.get("severity_counts", {"严重": 0, "中等": 0, "轻度": 0})
     severe = severity.get("严重", 0)
     medium = severity.get("中等", 0)
     low = severity.get("轻度", 0)
-    
     verdict = reviewer_report.get("verdict", "通过")
     full_report = reviewer_report.get("full_report", "")
-    
     msg = f"### 策略｜{symbol} ⚡ 审计 {verdict} {datetime.now().strftime('%m-%d %H:%M')}\n"
     msg += f"严重 {severe} | 中等 {medium} | 轻微 {low}\n\n"
     msg += f"**方向**: {direction} | **仓位**: {position} | **置信度**: {strategy.get('confidence', '?')}\n\n"
-    msg += f"**审计报告**\n{full_report[:2000]}"
-    
+    msg += f"**审计报告**\n\n```\n{full_report[:2000]}\n```"
     return msg
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict = None) -> str:
-    """交易委员会裁决消息格式（保留兼容）"""
     return format_final_decision(symbol, strategy, judge_result, data)
 
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict, data: dict = None) -> str:
-    """最终裁决消息格式（展示完整裁决书）"""
     verdict = judge_result.get("final_verdict", "维持原判")
     direction = judge_result.get("final_direction", strategy.get("direction", "neutral"))
     confidence = judge_result.get("final_confidence", strategy.get("confidence", "中"))
@@ -112,7 +86,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict, data:
     msg += f"{symbol_display} | 现价 {data.get('mark_price',0) if data else 0:.0f} | 入场 {entry_low}-{entry_high} | 止损 {stop} | 止盈 {profit} | 置信度 {conf_display} | 仓位 {pos_display}\n\n"
 
     final_reasoning = judge_result.get("final_reasoning", "") or "无裁决内容"
-    msg += f"**裁决内容**\n```\n{final_reasoning}\n```"
+    msg += f"**裁决内容**\n\n```\n{final_reasoning}\n```"
 
     if judge_result.get("audit_adopted", False):
         msg += f"\n> 审计意见已采纳"

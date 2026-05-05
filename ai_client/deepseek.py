@@ -1,8 +1,8 @@
 """
-deepseek.py — 生产级三角色闭环 (取消微观数据时效约束)
-- 交易员、审计官、委员会完整闭环
-- 已移除 _inject_ages 和 assess_micro_quality 的时效检查
-- 所有微观数据视为实时有效
+deepseek.py — 生产级三角色闭环 (修复审计官JSON解析异常)
+- 增强 extract_json_safe 的容错性
+- 增加 审计官/委员会 的 fallback 机制
+- 取消微观数据时效约束
 """
 
 import os, json, time, re, math
@@ -68,25 +68,49 @@ def _log_response(role: str, prompt: str, content: str, reasoning: str = None):
     except: pass
 
 def extract_json_safe(content: str) -> str:
+    """容错增强：支持代码块、纯JSON，以及计数括号的降级策略"""
+    # 优先提取 ```json ... ``` 代码块
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
     if m: return m.group(1).strip()
+    # 其次提取 ``` ... ``` 代码块
     m = re.search(r'```\s*([\s\S]*?)\s*```', content)
     if m: return m.group(1).strip()
+    # 直接寻找最外层花括号
     start = content.find('{')
     if start == -1: raise ValueError("未找到 JSON")
     count = 0
+    last_valid_end = -1
     for i, c in enumerate(content[start:], start):
         if c == '{': count += 1
         elif c == '}':
             count -= 1
-            if count == 0: return content[start:i+1].strip()
-    raise ValueError("JSON 未闭合")
+            if count == 0:
+                return content[start:i+1].strip()
+            if count < 0:
+                break
+        if count == 0:
+            last_valid_end = i
+    # 降级策略：截断到最后一个有效的结束位置
+    if last_valid_end != -1:
+        partial = content[start:last_valid_end+1] + '}'
+        logger.warning("JSON 未正确闭合，已采用降级策略修补")
+        return partial
+    # 最后手段：从起始位置截断，并在尾部补两个 }
+    partial = content[start:] + '}}'
+    logger.warning("JSON 严重损坏，尝试暴力修补")
+    return partial
 
 def _force_neutral(s: dict, reason: str):
-    s.update({"direction":"neutral","confidence":"low","position_size":"none",
-              "entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,
-              "execution_plan":"","reasoning":(s.get("reasoning","")+f"\n\n[系统强制观望，原因：{reason}]").strip(),
-              "risk_note":f"观望。{reason}"})
+    s["direction"] = "neutral"
+    s["confidence"] = "low"
+    s["position_size"] = "none"
+    s["entry_price_low"] = 0
+    s["entry_price_high"] = 0
+    s["stop_loss"] = 0
+    s["take_profit"] = 0
+    s["execution_plan"] = ""
+    s["reasoning"] = (s.get("reasoning", "") + f"\n\n[系统强制观望，原因：{reason}]").strip()
+    s["risk_note"] = f"观望。{reason}"
 
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     direction = s.get("direction")
@@ -116,7 +140,7 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         if val is None or float(val)<=0: return False, f"缺少或无效的 {f}"
     return True, ""
 
-# ---------- 清算穿刺 (保留) ----------
+# ---------- 清算穿刺 ----------
 def compute_liquidation_bias(data: dict) -> dict:
     liq_r = data.get('liq_ratio',1.0)
     cvd = data.get('cvd_slope',0.0)
@@ -126,8 +150,6 @@ def compute_liquidation_bias(data: dict) -> dict:
     pain = data.get('max_pain',0.0)
     atr = data.get('atr',0.0)
     mark = data.get('mark_price',0.0)
-
-    # 省略时效判断：ob_imb 直接使用，不再检查年龄
     score = (liq_r-1.0)*0.4 + (1 if cvd>0 else -1)*0.3 + (taker-0.5)*0.3
     direction = 'balanced'
     if score>0.15: direction='up'
@@ -138,7 +160,7 @@ def compute_liquidation_bias(data: dict) -> dict:
         if (direction=='up' and pain>mark) or (direction=='down' and pain<mark): pain_eff=True
     return {'puncture_direction':direction,'puncture_score':score,'lure_risk':lure,'pain_magnet':pain_eff}
 
-# ---------- 预期定价仪表盘 (保留) ----------
+# ---------- 预期定价仪表盘 ----------
 def build_expectation_dashboard(data: dict) -> str:
     basis_ann = data.get('basis_annualized',0)
     basis_med = data.get('basis_median',8)
@@ -200,7 +222,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
         try: return (f"{val:{fmt}}", False)
         except: return ("[N/A]", True)
 
-    # ---- 提取所有字段 ----
+    # 提取所有字段 (与之前完全相同，省略部分提取代码以保持清晰)
     mark_str, _ = safe_val('mark_price', fmt=".2f")
     atr_str, _ = safe_val('atr', fmt=".2f")
     fear_greed = data.get('fear_greed',50)
@@ -241,7 +263,6 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     puncture = compute_liquidation_bias(data)
     dashboard = build_expectation_dashboard(data)
 
-    # ---- 跨币种数据 ----
     cross_context = ""
     if eth_data:
         cross_context = f"""
@@ -263,6 +284,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     core_missing = [k for k in ["kline","heatmap","cvd"] if data.get("data_quality",{}).get(k)=="❌ 缺失"]
     constraint_note = f"【重要约束】核心数据缺失：{', '.join(core_missing)}。置信度强制设为'低'，若清算缺失则输出'neutral'。" if core_missing else ""
 
+    # ----- 优化后的交易员提示词，强调输出格式 -----
     prompt = f"""你是一位拥有 15 年实战经验的加密货币首席交易员，专精于清算动力学、多空博弈定位与预期差分析。
 你的任务：
 - 严格遵循五步分析框架，给出逻辑自洽的策略推演与具体交易计划。
@@ -346,7 +368,7 @@ def call_trader(prompt: str) -> dict:
                 return {"direction":"neutral","confidence":"low","position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"调用失败","reasoning":"调用失败","risk_note":"","_model_used":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 审计官 (已移除时效输入) -------------------
+# ------------------- 审计官 -------------------
 def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
     coverage_info = compute_coverage(data)
@@ -367,7 +389,7 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
 - 所有发现必须按“步骤/问题/数据证据/影响/严重性”格式记录。
 - 最终裁决（通过/存疑/驳回）必须仅基于发现的严重性和数量，不受交易员声望影响。
 - 输出必须为纯 JSON，包含完整的审计报告和严重性统计。
-- （微观数据时效检查已取消，无需审计此项。）
+- **务必直接输出纯JSON，不要包含任何额外的文本、解释或代码块标记。**
 
 【审计参考数据】
 - 核心数据覆盖率：{coverage_pct:.0f}%（{available}/{total}）
@@ -405,6 +427,7 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
         try:
             resp = client.chat.completions.create(model=FAST_MODEL, messages=[{"role":"user","content":prompt}], max_tokens=4096, timeout=120)
             content = resp.choices[0].message.content or ""
+            _log_response("reviewer", prompt, content)
             json_str = extract_json_safe(content)
             rev = json.loads(json_str)
             full_report = rev.get("full_report", str(rev))
@@ -430,12 +453,12 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             rev["full_report"] = full_report
             return {**rev, "_model": resp.model}
         except Exception as e:
-            logger.warning(f"审计官调用失败: {e}")
+            logger.warning(f"审计官调用失败 (尝试 {attempt+1}): {e}")
             if attempt == MAX_RETRIES-1:
                 return {"verdict":"驳回","max_severity":"严重","severity_counts":{"严重":1},"full_report":"审计官调用失败，自动驳回","_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 交易委员会 (恢复独立裁决能力) -------------------
+# ------------------- 交易委员会 -------------------
 def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
     prompt = f"""你是交易委员会主席，拥有最终决策权。
@@ -446,6 +469,7 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
 - 最终输出必须为纯 JSON，裁决字段优先使用英文值（long/short/neutral、high/medium/low）。
 - 若审计严重性为“严重”，你必须推翻原策略，制定独立的最终策略并给出充分理由。
 - 若维持原判或修改执行，也必须给出理由。
+- **务必直接输出纯JSON，不要包含任何额外的文本、解释或代码块标记。**
 
 【标的】{symbol}，现价：{data.get('mark_price',0):.2f}，锚点：{direction_bias:.3f}
 
@@ -486,6 +510,7 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
         try:
             resp = client.chat.completions.create(model=REASONING_MODEL, messages=[{"role":"user","content":prompt}], max_tokens=16384, timeout=120)
             content = resp.choices[0].message.content or ""
+            _log_response("judge", prompt, content)
             json_str = extract_json_safe(content)
             result = json.loads(json_str)
             result["final_direction"] = norm_direction(result.get("final_direction",""))
@@ -504,7 +529,7 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
             result["final_reasoning"] = format_reasoning(result.get("final_reasoning") or "裁决完成。")
             return {**result, "_model": resp.model}
         except Exception as e:
-            logger.warning(f"委员会调用失败: {e}")
+            logger.warning(f"委员会调用失败 (尝试 {attempt+1}): {e}")
             if attempt == MAX_RETRIES-1:
                 return {"final_verdict":"推翻","final_direction":"neutral","final_confidence":"low","final_position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"委员会调用失败，强制观望","risk_note":"系统故障","audit_adopted":False,"audit_max_severity":"严重","final_reasoning":"委员会调用失败，自动推翻并观望","_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))

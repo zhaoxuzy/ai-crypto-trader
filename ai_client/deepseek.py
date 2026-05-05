@@ -1,11 +1,3 @@
-"""
-deepseek.py — 生产级三角色闭环 (启用JSON强制模式 + 保留容错)
-- 所有模型调用均启用 response_format={"type": "json_object"}
-- 多级JSON提取与修复策略，确保高可用
-- 取消微观数据时效约束
-- 完整闭环：交易员 -> 审计官 -> 委员会
-"""
-
 import os, json, time, re, math
 from datetime import datetime
 from openai import OpenAI
@@ -69,13 +61,11 @@ def _log_response(role: str, prompt: str, content: str, reasoning: str = None):
     except: pass
 
 def extract_json_safe(content: str) -> str:
-    """
-    多级降级策略提取JSON，自动修复常见格式错误
-    """
+    """多级降级策略提取JSON，自动修复常见格式错误"""
     if not content or not content.strip():
         raise ValueError("空响应内容")
 
-    # 第1级：尝试从```json代码块中提取
+    # 第1级：从```json代码块中提取
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
     if m:
         json_str = m.group(1).strip()
@@ -85,7 +75,7 @@ def extract_json_safe(content: str) -> str:
         except json.JSONDecodeError:
             pass
 
-    # 第2级：尝试从```代码块中提取
+    # 第2级：从```代码块中提取
     m = re.search(r'```\s*([\s\S]*?)\s*```', content)
     if m:
         json_str = m.group(1).strip()
@@ -111,8 +101,6 @@ def extract_json_safe(content: str) -> str:
         json_str = content[start:end+1].strip()
     else:
         json_str = content.strip()
-    # 处理字符串中未转义的控制字符
-    json_str = re.sub(r'(?<!\\)\\(?![\\"/bfnrtu])', r'\\\\', json_str)  # 修复单个反斜杠
     json_str = json_str.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
     try:
         json.loads(json_str)
@@ -121,7 +109,7 @@ def extract_json_safe(content: str) -> str:
     except json.JSONDecodeError:
         pass
 
-    # 第5级：暴力修补 - 在结尾补上缺失的引号和括号
+    # 第5级：暴力修补
     if json_str.startswith('{'):
         if not json_str.endswith('"') and not json_str.endswith('}'):
             json_str += '"}'
@@ -138,7 +126,6 @@ def extract_json_safe(content: str) -> str:
 
 def try_parse_reviewer_json(content: str) -> dict:
     """专门用于解析审计官输出的容错函数"""
-    # 尝试直接解析为JSON
     try:
         json_str = extract_json_safe(content)
         return json.loads(json_str)
@@ -148,7 +135,6 @@ def try_parse_reviewer_json(content: str) -> dict:
     # 从文本中提取关键字段作为fallback
     result = {"verdict": "存疑", "max_severity": "中等", "severity_counts": {"严重": 0, "中等": 1, "轻度": 0}, "full_report": content}
 
-    # 尝试提取verdict
     if "驳回" in content:
         result["verdict"] = "驳回"
         result["max_severity"] = "严重"
@@ -158,7 +144,6 @@ def try_parse_reviewer_json(content: str) -> dict:
         result["max_severity"] = "无"
         result["severity_counts"]["中等"] = 0
 
-    # 统计严重性标记
     cnt = {"严重": 0, "中等": 0, "轻度": 0}
     for line in content.split('\n'):
         if '严重性：高' in line: cnt["严重"] += 1
@@ -449,7 +434,7 @@ def call_trader(prompt: str) -> dict:
                 return {"direction":"neutral","confidence":"low","position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"调用失败","reasoning":"调用失败","risk_note":"","_model_used":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 审计官 -------------------
+# ------------------- 审计官 (加强空报告兜底) -------------------
 def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
     coverage_info = compute_coverage(data)
@@ -515,12 +500,15 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             content = resp.choices[0].message.content or ""
             _log_response("reviewer", prompt, content)
             rev = try_parse_reviewer_json(content)
-            full_report = rev.get("full_report", str(rev))
+            # 如果解析出来的报告为空，直接用原始内容填充
+            full_report = rev.get("full_report", "")
+            if not full_report or full_report.strip() == "":
+                full_report = content  # 兜底
             full_report = format_reasoning(full_report)
+            rev["full_report"] = full_report
             if sum(rev["severity_counts"].values()) == 0 and rev.get("verdict") == "驳回":
                 rev["severity_counts"]["严重"] = 1
                 rev["max_severity"] = "严重"
-            rev["full_report"] = full_report
             return {**rev, "_model": resp.model}
         except Exception as e:
             logger.warning(f"审计官调用失败 (尝试 {attempt+1}): {e}")

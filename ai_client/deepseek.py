@@ -6,6 +6,7 @@ deepseek.py — 生产级三角色闭环 (审计提示词恢复版)
 - 修复盈亏比硬约束（已移除）
 - 修复 reasoning 格式化和换行问题
 - 修复审计严重性统计
+- 增强 JSON 提取，强制审计官纯 JSON 输出
 """
 
 import os, json, time, re, math
@@ -72,22 +73,35 @@ def _log_response(role: str, prompt: str, content: str, reasoning: str = None):
     except: pass
 
 def extract_json_safe(content: str) -> str:
+    # 优先匹配 ```json ... ```
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
-    if m: return m.group(1).strip()
+    if m:
+        return m.group(1).strip()
+    # 匹配 ``` ... ``` 无语言标识
     m = re.search(r'```\s*([\s\S]*?)\s*```', content)
-    if m: return m.group(1).strip()
+    if m:
+        return m.group(1).strip()
+    # 从第一个 '{' 开始，到最后一个 '}' 结束，尝试提取并修复常见错误
     start = content.find('{')
-    if start == -1: raise ValueError("未找到 JSON")
-    count = 0
-    for i, c in enumerate(content[start:], start):
-        if c == '{': count += 1
-        elif c == '}':
-            count -= 1
-            if count == 0: return content[start:i+1].strip()
-    raise ValueError("JSON 未闭合")
+    end = content.rfind('}')
+    if start != -1 and end != -1 and end > start:
+        candidate = content[start:end+1].strip()
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            # 简单修复：移除尾部的逗号
+            fixed = re.sub(r',\s*}', '}', candidate)
+            fixed = re.sub(r',\s*]', ']', fixed)
+            try:
+                json.loads(fixed)
+                return fixed
+            except:
+                pass
+    raise ValueError("未找到有效 JSON")
 
 def _force_neutral(s: dict, reason: str):
-    s.update({"direction":"neutral","confidence":"low","position_size":"none",
+    s.update({"direction":"neutral","confidence":"低","position_size":"none",
               "entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,
               "execution_plan":"","reasoning":(s.get("reasoning","")+f"\n\n[系统强制观望，原因：{reason}]").strip(),
               "risk_note":f"观望。{reason}"})
@@ -228,7 +242,6 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
         try: return (f"{val:{fmt}}", False)
         except: return ("[N/A]", True)
 
-    # ---- 提取所有字段 ----
     mark_str, _ = safe_val('mark_price', fmt=".2f")
     atr_str, _ = safe_val('atr', fmt=".2f")
     fear_greed = data.get('fear_greed',50)
@@ -270,7 +283,6 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     micro_q = assess_micro_quality(data)
     dashboard = build_expectation_dashboard(data)
 
-    # ---- 跨币种数据 ----
     cross_context = ""
     if eth_data:
         cross_context = f"""
@@ -375,7 +387,7 @@ def call_trader(prompt: str) -> dict:
                 return {"direction":"neutral","confidence":"low","position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"调用失败","reasoning":"调用失败","risk_note":"","_model_used":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 审计官 (恢复简洁提示词) -------------------
+# ------------------- 审计官 (强化纯 JSON 输出) -------------------
 def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
     micro_q = assess_micro_quality(data)
@@ -403,7 +415,7 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
 - 对照市场数据，逐项核查交易员分析中的遗漏、数据误用、逻辑断裂和反证缺失。
 - 所有发现必须按“步骤/问题/数据证据/影响/严重性”格式记录。
 - 最终裁决（通过/存疑/驳回）必须仅基于发现的严重性和数量，不受交易员声望影响。
-- 输出必须为纯 JSON，包含完整的审计报告和严重性统计。
+- 输出必须为纯 JSON，不包含任何 Markdown 标记，不附加解释文字，以 '{{' 开始，以 '}}' 结束。
 
 【审计参考数据】
 - 市场数据新鲜度：{overall}（{ages_info}）
@@ -427,7 +439,6 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
 
 每条发现格式：在[步骤X]中，交易员[具体问题]。该指标显示[具体数值/信号]，若纳入分析将[强化/削弱/推翻]当前方向判断。[严重性：高/中/低]
 统计严重/中等/轻度数量，并给出 max_severity。
-只输出纯JSON。
 
 【输出JSON】
 {{
@@ -436,6 +447,7 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
   "severity_counts": {{"严重":0,"中等":0,"轻度":0}},
   "full_report": "完整审计文本"
 }}
+只输出纯JSON，不要包含Markdown代码块标记（如```json），不要附加任何解释文字。输出必须以“{{”开头，以“}}”结尾。
 """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=TIMEOUT_SECONDS)
     for attempt in range(MAX_RETRIES):
@@ -446,30 +458,49 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             rev = json.loads(json_str)
             full_report = rev.get("full_report", str(rev))
             full_report = format_reasoning(full_report)
-            cnt = {"严重":0, "中等":0, "轻度":0}
-            for line in full_report.split('\n'):
-                if '严重性：高' in line: cnt["严重"]+=1
-                elif '严重性：中' in line: cnt["中等"]+=1
-                elif '严重性：低' in line: cnt["轻度"]+=1
-            rev["severity_counts"] = cnt
-            if cnt["严重"]>0:
+
+            # 严重性统计：优先使用审计官返回的 severity_counts，若缺失则从文本扫描
+            severity_counts = rev.get("severity_counts", {})
+            if not isinstance(severity_counts, dict) or not severity_counts:
+                cnt = {"严重": 0, "中等": 0, "轻度": 0}
+                for line in full_report.split('\n'):
+                    if '严重性：高' in line or '严重性：严重' in line:
+                        cnt["严重"] += 1
+                    elif '严重性：中' in line or '严重性：中等' in line:
+                        cnt["中等"] += 1
+                    elif '严重性：低' in line or '严重性：轻度' in line:
+                        cnt["轻度"] += 1
+                rev["severity_counts"] = cnt
+            else:
+                rev["severity_counts"] = {
+                    "严重": severity_counts.get("严重", 0) or severity_counts.get("critical", 0),
+                    "中等": severity_counts.get("中等", 0) or severity_counts.get("medium", 0),
+                    "轻度": severity_counts.get("轻度", 0) or severity_counts.get("low", 0),
+                }
+
+            cnt = rev["severity_counts"]
+            if cnt["严重"] > 0:
                 rev["max_severity"] = "严重"
                 rev["verdict"] = "驳回"
-            elif cnt["中等"]>0:
+            elif cnt["中等"] > 0:
                 rev["max_severity"] = "中等"
-                if rev.get("verdict") not in ("驳回","通过"): rev["verdict"] = "存疑"
-            elif cnt["轻度"]>0:
+                if rev.get("verdict") not in ("驳回","通过"):
+                    rev["verdict"] = "存疑"
+            elif cnt["轻度"] > 0:
                 rev["max_severity"] = "轻度"
-                if rev.get("verdict") not in ("驳回","通过"): rev["verdict"] = "存疑"
+                if rev.get("verdict") not in ("驳回","通过"):
+                    rev["verdict"] = "存疑"
             else:
                 rev["max_severity"] = "无"
                 rev["verdict"] = rev.get("verdict", "通过")
+
             rev["full_report"] = full_report
             return {**rev, "_model": resp.model}
         except Exception as e:
             logger.warning(f"审计官调用失败: {e}")
             if attempt == MAX_RETRIES-1:
-                return {"verdict":"驳回","max_severity":"严重","severity_counts":{"严重":1},"full_report":"审计官调用失败，自动驳回","_model":"fallback"}
+                return {"verdict":"驳回","max_severity":"严重","severity_counts":{"严重":1,"中等":0,"轻度":0},
+                        "full_report":"审计官调用失败，自动驳回","_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
 # ------------------- 交易委员会 -------------------

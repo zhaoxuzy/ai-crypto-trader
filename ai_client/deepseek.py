@@ -1,7 +1,6 @@
 """
 deepseek.py — 三角色闭环（修复版）
-修复 1：format_reasoning 不再乱换行，保持原有段落结构
-修复 2：审计官统一返回 severity 字段，确保钉钉推送统计正常
+修复：sv 函数参数名统一为 fmt，避免 TypeError
 """
 
 import os, json, time, re
@@ -47,15 +46,9 @@ def extract_json(content: str) -> str:
     return content[start:] + '}}'
 
 def format_reasoning(text: str) -> str:
-    """
-    智能分段：仅在文本完全没有换行时，在句号、冒号等天然停顿点添加换行。
-    如果文本已有换行或段落结构，则原样保留。
-    """
     if not text: return text
-    # 如果文本已包含换行或明显的段落标记(如【)，就不做处理
     if '\n' in text or '【' in text:
         return text.strip()
-    # 仅对完全没有换行的长文本进行温和分段
     text = re.sub(r'(?<=[。！？；：])\s*', '\n', text)
     return text.strip()
 
@@ -99,13 +92,15 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         if val is None or float(val) <= 0: return False, f"缺少或无效的 {f}"
     return True, ""
 
-# ---- 提示词 ----
+# ------------------- 交易员提示词 -------------------
 def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: str = None) -> str:
     if cross_symbol is None: cross_symbol = "ETH" if symbol == "BTC" else "BTC"
-    def sv(key, d=0.0, s=1.0, f=".2f"):
+    
+    # 修正：参数名从 f 改为 fmt
+    def sv(key, default=0.0, scale=1.0, fmt=".2f"):
         raw = data.get(key)
         if raw is None: return ("缺失", True)
-        try: return (f"{float(raw)*s:{f}}", False)
+        try: return (f"{float(raw)*scale:{fmt}}", False)
         except: return ("缺失", True)
 
     mark_price_str, _ = sv('mark_price', fmt=".2f")
@@ -220,7 +215,7 @@ BTC.D趋势：{btc_dom_trend_str}%，借贷利率：{borrow_str}%
 - 入场区间：[__-__] (依据)
 - 止损：[__] (依据：设于败方逻辑成立位置之外)
 - 止盈：[__] (依据：清算密集区/期权痛点)
-- 盈亏比计算：(止盈-入场)/(入场-止损) = __:1 [必须≥2:1]
+- 盈亏比计算：(止盈-入场)/(入场-止损) = __:1
 - 说明：[一句话指令或观望触发条件]
 
 【强制输出格式】
@@ -257,7 +252,6 @@ def call_trader(prompt: str) -> dict:
             s["position_size"] = {"重仓":"heavy","中仓":"medium","轻仓":"light","无":"none"}.get(s.get("position_size",""), "none")
             s["confidence"] = {"高":"high","中":"medium","低":"low"}.get(s.get("confidence",""), "medium")
             s.setdefault("reasoning",""); s.setdefault("risk_note",""); s.setdefault("execution_plan","")
-            # 修复1：智能格式化 reasoning
             s["reasoning"] = format_reasoning(s["reasoning"])
             s["_model_used"] = resp.model
             return s
@@ -279,7 +273,7 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
 【推演】{strategy.get('reasoning', '无')}
 
 【审计要求】
-- 按“一、遗漏指标与分析缺失；二、数据与解读错误；三、逻辑错误；四、关键反证提示；五、博弈层面审视”分段。
+- 按"一、遗漏指标与分析缺失；二、数据与解读错误；三、逻辑错误；四、关键反证提示；五、博弈层面审视"分段。
 - 每条发现格式为：在[步骤X]中，交易员[问题]。该指标显示[数值]，若纳入将[强化/削弱/推翻]判断。[严重性：高/中/低]
 - 必须统计所有发现的严重性，填入severity对象中。
 - 只输出纯JSON。
@@ -300,7 +294,6 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             rev = json.loads(json_str)
             rev["full_report"] = rev.get("full_report", str(rev))
             rev.setdefault("verdict", "通过")
-            # 修复2：统一审计严重性字段
             sev = rev.get("severity", {})
             rev["severity"] = {
                 "max": sev.get("max", "无"),

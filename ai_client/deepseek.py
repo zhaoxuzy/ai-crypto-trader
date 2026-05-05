@@ -179,8 +179,8 @@ def compute_liquidation_bias(data: dict) -> dict:
 # ---------- 微观质量 ----------
 def assess_micro_quality(data: dict) -> dict:
     checks = {
-        "orderbook_fresh": data.get("ob_age",float('inf'))<30,
-        "taker_fresh": data.get("taker_age",float('inf'))<60,
+        "orderbook_fresh": data.get("ob_age",float('inf'))<300,
+        "taker_fresh": data.get("taker_age",float('inf'))<300,
         "cvd_fresh": data.get("cvd_age",float('inf'))<300,
         "large_order_fresh": data.get("large_order_age",float('inf'))<300,
         "liquidation_fresh": data.get("liq_age",float('inf'))<600,

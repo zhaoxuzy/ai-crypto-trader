@@ -34,6 +34,7 @@ def _log_response(prompt: str, content: str, reasoning: str = None):
 
 
 def extract_json(content: str) -> str:
+    """增强的 JSON 提取器，支持代码块包裹和纯 JSON"""
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
     if m:
         return m.group(1).strip()
@@ -134,7 +135,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
         except (ValueError, TypeError):
             return ("缺失", True)
 
-    # 提取所有字段（精简示例，实际完整注入所有字段）
+    # ========== 提取所有字段（完整列表保持不变） ==========
     mark_price_str, _ = safe_val('mark_price', fmt=".2f")
     atr_str, _ = safe_val('atr', fmt=".2f")
     fear_greed = data.get('fear_greed', 50)
@@ -314,7 +315,6 @@ CGDI分位：{cgdi_perc_str}%，大户多空比分位：{top_ls_perc_str}%
 
 信号定性（跨币种修正）：
 - 跨币种清算方向与汇聚方向：[一致/矛盾/无数据]
-- 跨币种CVD方向与汇聚方向：[一致/矛盾/无数据]
 - 定性：[系统性趋势/单币种独立行情/无法定性]
 - 若为单币种独立行情，仓位自动降一级。
 修正后仓位：[重仓/中仓/轻仓/无]
@@ -438,12 +438,12 @@ def build_reviewer_prompt(strategy: dict, data: dict, symbol: str) -> str:
 每条发现的格式必须严格：
 - 在[步骤X/决策点]中，交易员[具体问题]。该指标显示[具体数值/信号]，若纳入分析将[强化/削弱/推翻]当前方向判断。 [严重性：高/中/低]
 
-请输出JSON：
+【极其重要】你必须只返回纯JSON，不要加任何额外的文本、解释或代码块标记。JSON必须包含以下字段：
 {{
   "verdict": "通过/存疑/驳回",
   "max_severity": "严重/中等/轻度/无",
   "severity_counts": {{"严重":0,"中等":0,"轻度":0}},
-  "full_report": "完整审计文本"
+  "full_report": "完整审计文本，每条发现以换行分隔"
 }}
 """
 
@@ -460,32 +460,47 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
                 timeout=120
             )
             content = resp.choices[0].message.content or ""
+            logger.info(f"审计官原始响应: {content[:500]}")
             _log_response(prompt, content)
+
+            # 增强的JSON提取
             json_str = extract_json(content)
             rev = json.loads(json_str)
+            rev["full_report"] = rev.get("full_report", str(rev))
+            rev.setdefault("verdict", "通过")
+            rev.setdefault("max_severity", "无")
+            rev.setdefault("severity_counts", {})
             return {**rev, "_model": resp.model}
         except Exception as e:
-            logger.warning(f"审计官调用失败: {e}")
+            logger.warning(f"审计官调用失败 (尝试 {attempt+1}): {e}, 原始响应前500字符: {content[:500] if 'content' in dir() else '无'}")
             if attempt == MAX_RETRIES - 1:
-                return {"verdict": "通过", "max_severity": "无", "severity_counts": {}, "full_report": "审计官调用失败，跳过审计"}
+                return {"verdict": "通过", "max_severity": "无", "severity_counts": {}, "full_report": "审计官调用失败，跳过审计", "_model": "fallback"}
             time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
 
 
 # ------------------- 交易委员会 -------------------
 def build_judge_prompt(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> str:
     direction_bias = data.get('direction_bias', 0.0)
-    return f"""你是交易委员会主席，拥有最终裁决权。请基于审计报告和交易员策略独立裁决。
+    return f"""你是交易委员会主席，拥有最终裁决权。请基于审计报告和交易员策略，独立做出裁决。
 
 【标的信息】{symbol}，现价：{data.get('mark_price', 0):.2f}
 【系统锚点】direction_bias={direction_bias:.3f}
 
-【交易员策略】
-方向：{strategy.get('direction')}，仓位：{strategy.get('position_size')}
-入场：{strategy.get('entry_price_low')}-{strategy.get('entry_price_high')}
-止损：{strategy.get('stop_loss')}，止盈：{strategy.get('take_profit')}
+【交易员完整策略】
+方向：{strategy.get('direction')}
+仓位：{strategy.get('position_size')}
+置信度：{strategy.get('confidence')}
+入场区间：{strategy.get('entry_price_low')}-{strategy.get('entry_price_high')}
+止损：{strategy.get('stop_loss')}
+止盈：{strategy.get('take_profit')}
+执行计划：{strategy.get('execution_plan')}
+风险提示：{strategy.get('risk_note')}
+推演：{strategy.get('reasoning', '无')}
 
 【审计报告】
 {reviewer_report.get('full_report', '无审计报告')}
+审计结论：{reviewer_report.get('verdict', '未知')}
+最高严重性：{reviewer_report.get('max_severity', '未知')}
 
 【裁决规则】
 - 若审计严重性为"严重"：必须推翻原策略，改为观望。
@@ -493,7 +508,7 @@ def build_judge_prompt(strategy: dict, reviewer_report: dict, data: dict, symbol
 - 若审计严重性为"轻度"或"无"：可修改执行或维持原判。
 - 你有权驳回审计官的指控，但必须提供数据依据。
 
-输出JSON：
+【极其重要】你必须只返回纯JSON，不要加任何额外的文本、解释或代码块标记。JSON格式如下：
 {{
   "final_verdict": "维持原判/修改执行/推翻",
   "final_direction": "long/short/neutral",
@@ -509,6 +524,7 @@ def build_judge_prompt(strategy: dict, reviewer_report: dict, data: dict, symbol
   "audit_max_severity": "严重/中等/轻度/无",
   "final_reasoning": "裁决理由，针对审计指控逐条回应"
 }}
+如果维持原判，价格字段必须填写交易员给出的原始数值，不能写0。
 """
 
 
@@ -524,36 +540,89 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
                 timeout=120
             )
             content = resp.choices[0].message.content or ""
+            logger.info(f"委员会原始响应: {content[:500]}")
             _log_response(prompt, content)
             json_str = extract_json(content)
             result = json.loads(json_str)
+
+            # 字段标准化
+            dir_map = {"做多": "long", "做空": "short", "观望": "neutral",
+                       "long": "long", "short": "short", "neutral": "neutral"}
+            result["final_direction"] = dir_map.get(result.get("final_direction", ""), "neutral")
+            pos_map = {"重仓": "heavy", "中仓": "medium", "轻仓": "light", "无": "none",
+                       "heavy": "heavy", "medium": "medium", "light": "light", "none": "none"}
+            result["final_position_size"] = pos_map.get(result.get("final_position_size", ""), "none")
+            conf_map = {"高": "high", "中": "medium", "低": "low",
+                        "high": "high", "medium": "medium", "low": "low"}
+            result["final_confidence"] = conf_map.get(result.get("final_confidence", ""), "medium")
+
+            # 维持原判时继承原策略的价格字段
+            if result.get("final_verdict") == "维持原判":
+                result["entry_price_low"] = result.get("entry_price_low") or strategy.get("entry_price_low", 0)
+                result["entry_price_high"] = result.get("entry_price_high") or strategy.get("entry_price_high", 0)
+                result["stop_loss"] = result.get("stop_loss") or strategy.get("stop_loss", 0)
+                result["take_profit"] = result.get("take_profit") or strategy.get("take_profit", 0)
+                result["execution_plan"] = result.get("execution_plan") or strategy.get("execution_plan", "")
+                result["risk_note"] = result.get("risk_note") or strategy.get("risk_note", "")
+                result["final_confidence"] = result.get("final_confidence") or strategy.get("confidence", "中")
+                result["final_position_size"] = result.get("final_position_size") or strategy.get("position_size", "none")
+
             return {**result, "_model": resp.model}
         except Exception as e:
-            logger.warning(f"交易委员会调用失败: {e}")
+            logger.warning(f"交易委员会调用失败 (尝试 {attempt+1}): {e}, 原始响应: {content[:500] if 'content' in dir() else '无'}")
             if attempt == MAX_RETRIES - 1:
-                return {"final_verdict": "维持原判", "final_direction": "neutral", "final_confidence": "低",
-                        "final_position_size": "none", "entry_price_low": 0, "entry_price_high": 0,
-                        "stop_loss": 0, "take_profit": 0, "execution_plan": "调用失败", "risk_note": "",
-                        "audit_adopted": False, "audit_max_severity": "无", "_model": "fallback"}
+                return {"final_verdict": "维持原判", "final_direction": strategy.get("direction", "neutral"),
+                        "final_confidence": strategy.get("confidence", "低"),
+                        "final_position_size": strategy.get("position_size", "none"),
+                        "entry_price_low": strategy.get("entry_price_low", 0),
+                        "entry_price_high": strategy.get("entry_price_high", 0),
+                        "stop_loss": strategy.get("stop_loss", 0),
+                        "take_profit": strategy.get("take_profit", 0),
+                        "execution_plan": strategy.get("execution_plan", ""),
+                        "risk_note": strategy.get("risk_note", ""),
+                        "audit_adopted": False, "audit_max_severity": "无",
+                        "final_reasoning": "委员会调用失败，自动维持原判", "_model": "fallback"}
             time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
 
 
 def apply_final_verdict(strategy: dict, judge_result: dict) -> dict:
+    """应用委员会裁决，将最终策略写入strategy"""
     verdict = judge_result.get("final_verdict", "维持原判")
     logger.info(f"应用最终决议: {verdict}")
+
+    # 正常化委员会返回的字段
+    strategy["_judge_verdict"] = verdict
+    strategy["_judge_reasoning"] = judge_result.get("final_reasoning", "")
+
     if verdict == "推翻":
         direction = judge_result.get("final_direction", "neutral")
         if direction == "neutral":
-            _force_neutral(strategy, "委员会推翻并观望")
+            _force_neutral(strategy, "委员会推翻并改为观望")
         else:
-            for k in ["final_direction", "final_confidence", "final_position_size", "entry_price_low", "entry_price_high", "stop_loss", "take_profit", "execution_plan"]:
-                if k in judge_result:
-                    strategy[k] = judge_result[k]
-        strategy["risk_note"] = judge_result.get("risk_note", "")
+            strategy["direction"] = direction
+            strategy["confidence"] = judge_result.get("final_confidence", "中")
+            strategy["position_size"] = judge_result.get("final_position_size", "none")
+            strategy["entry_price_low"] = judge_result.get("entry_price_low", 0) or 0
+            strategy["entry_price_high"] = judge_result.get("entry_price_high", 0) or 0
+            strategy["stop_loss"] = judge_result.get("stop_loss", 0) or 0
+            strategy["take_profit"] = judge_result.get("take_profit", 0) or 0
+            strategy["execution_plan"] = judge_result.get("execution_plan", "")
+            strategy["risk_note"] = judge_result.get("risk_note", "")
+        return strategy
+
     elif verdict == "修改执行":
-        for k in ["entry_price_low", "entry_price_high", "stop_loss", "take_profit", "execution_plan", "final_confidence", "final_position_size"]:
-            if k in judge_result:
+        # 只覆盖委员会有值的字段
+        for k in ["final_confidence", "final_position_size", "entry_price_low", "entry_price_high", "stop_loss", "take_profit", "execution_plan"]:
+            if k in judge_result and judge_result[k]:
                 strategy[k] = judge_result[k]
-        strategy["risk_note"] = judge_result.get("risk_note", strategy.get("risk_note", ""))
-    strategy["_judge_verdict"] = verdict
-    return strategy
+        if "risk_note" in judge_result and judge_result["risk_note"]:
+            strategy["risk_note"] = judge_result["risk_note"]
+        if "final_direction" in judge_result and judge_result["final_direction"] != strategy.get("direction"):
+            strategy["direction"] = judge_result["final_direction"]
+        return strategy
+
+    else:  # 维持原判
+        # 委员会可能返回了新字段，但维持原判时原则上保留原策略
+        strategy["risk_note"] = judge_result.get("risk_note") or strategy.get("risk_note", "")
+        strategy["execution_plan"] = judge_result.get("execution_plan") or strategy.get("execution_plan", "")
+        return strategy

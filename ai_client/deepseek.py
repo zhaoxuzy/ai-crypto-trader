@@ -179,10 +179,10 @@ def compute_liquidation_bias(data: dict) -> dict:
 # ---------- 微观质量 ----------
 def assess_micro_quality(data: dict) -> dict:
     checks = {
-        "orderbook_fresh": data.get("ob_age",float('inf'))<300,
-        "taker_fresh": data.get("taker_age",float('inf'))<300,
-        "cvd_fresh": data.get("cvd_age",float('inf'))<300,
-        "large_order_fresh": data.get("large_order_age",float('inf'))<300,
+        "orderbook_fresh": data.get("ob_age",float('inf'))<360,
+        "taker_fresh": data.get("taker_age",float('inf'))<360,
+        "cvd_fresh": data.get("cvd_age",float('inf'))<360,
+        "large_order_fresh": data.get("large_order_age",float('inf'))<360,
         "liquidation_fresh": data.get("liq_age",float('inf'))<600,
     }
     fresh_count = sum(checks.values())

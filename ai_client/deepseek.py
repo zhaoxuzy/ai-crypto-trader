@@ -1,12 +1,6 @@
 """
-deepseek.py — 生产级三角色闭环 (最终版)
-- 三位角色提示词专业化
-- 清算穿刺量化 + 微观时效 + 预期仪表盘
-- 跨币种强制嵌入 + 缺失降级
-- 审计官时效核查 + 委员会数据支撑驳回
-- 覆盖率检查 + 硬伤修复 + 日志角色标识
+deepseek.py — 生产级三角色闭环 (修复价格推演缺失+审计统计)
 """
-
 import os, json, time, re, math
 from datetime import datetime
 from openai import OpenAI
@@ -276,11 +270,13 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     core_missing = [k for k in ["kline","heatmap","cvd"] if data.get("data_quality",{}).get(k)=="❌ 缺失"]
     constraint_note = f"【重要约束】核心数据缺失：{', '.join(core_missing)}。置信度强制设为'低'，若清算缺失则输出'neutral'。" if core_missing else ""
 
+    # ========== 修改1：强化价格推演要求 ==========
     prompt = f"""你是一位拥有 15 年实战经验的加密货币首席交易员，专精于清算动力学、多空博弈定位与预期差分析。
 你的任务：
 - 严格遵循五步分析框架，给出逻辑自洽的策略推演与具体交易计划。
 - 遇到 [N/A] 标记的数据时，该维度不得作为判断依据，且整体置信度必须为低。
 - reasoning 总字数 ≤ 3000 字，结构清晰、分层明确。
+- **第五步必须包含“价格路径推演：”开头的一段文字，综合运用流动性猎杀理论、行为金融学及博弈论进行推演，缺失此段将被视为分析不完整。**
 - 最终输出必须为纯 JSON，且所有枚举值使用中文（做多/做空/观望等）。
 
 【数据质量】
@@ -325,7 +321,7 @@ BTC.D趋势：{btc_dom_str}%，借贷利率：{borrow_str}%
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "",
-  "reasoning": "五步完整分析，必须包含跨币种信号的使用与定性修正，字数≤3000字。",
+  "reasoning": "五步完整分析，必须包含价格路径推演段落，字数≤3000字。",
   "risk_note": "",
   "risk_reward_ratio": 0.0,
   "vote_result": {{"清算维度": "", "博弈维度": "", "预期差维度": "", "一致组数": 0, "最终方向": ""}}
@@ -356,18 +352,17 @@ def call_trader(prompt: str) -> dict:
                 return {"direction":"neutral","confidence":"low","position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"调用失败","reasoning":"调用失败","risk_note":"","_model_used":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 审计官 -------------------
+# ------------------- 审计官（修改2：统计逻辑强化） -------------------
 def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
     micro_q = assess_micro_quality(data)
-    # 注入时效信息
     ages_info = f"订单簿{data.get('ob_age','?')}s，主动成交{data.get('taker_age','?')}s，CVD{data.get('cvd_age','?')}s，大单{data.get('large_order_age','?')}s，清算{data.get('liq_age','?')}s"
     prompt = f"""你是一位独立的风险审计官，负责对首席交易员的策略进行无偏见的严格审计。
 你的职责：
 - 对照市场数据，逐项核查交易员分析中的遗漏、数据误用、逻辑断裂和反证缺失。
-- 所有发现必须按“步骤/问题/数据证据/影响/严重性”格式记录。
+- **每条发现末尾必须严格按照“[严重性：高]”、“[严重性：中]”或“[严重性：低]”的格式进行标记。**
 - 最终裁决（通过/存疑/驳回）必须仅基于发现的严重性和数量，不受交易员声望影响。
-- 输出必须为纯 JSON，包含完整的审计报告和严重性统计。
+- 输出必须为纯 JSON，包含完整的审计报告和准确的 severity_counts 统计。
 - 微观数据新鲜度：{micro_q['overall']}（{ages_info}）。若为 poor，核实交易员是否违规使用高频信号。
 
 【交易标的】{symbol} 【锚点】direction_bias={direction_bias:.3f}
@@ -383,15 +378,14 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
 四、关键反证提示
 五、博弈层面审视
 
-每条发现格式：在[步骤X]中，交易员[问题]。该指标显示[N/A]，若纳入将[强化/削弱/推翻]判断。[严重性：高/中/低]
-统计严重/中等/轻度数量，并给出 max_severity。
+请务必确保 JSON 中的 severity_counts 与报告正文中标记的严重性完全一致。
 只输出纯JSON。
 
 【输出JSON】
 {{
   "verdict": "通过/存疑/驳回",
   "max_severity": "严重/中等/轻度/无",
-  "severity_counts": {{"严重":0,"中等":0,"轻度":0}},
+  "severity_counts": {{"严重":..., "中等":..., "轻度":...}},
   "full_report": "完整审计文本"
 }}
 """
@@ -402,19 +396,32 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             content = resp.choices[0].message.content or ""
             json_str = extract_json_safe(content)
             rev = json.loads(json_str)
-            rev["full_report"] = rev.get("full_report", str(rev))
-            rev.setdefault("verdict", "驳回"); rev.setdefault("max_severity", "严重"); rev.setdefault("severity_counts", {})
-            # 确保统计正确：如果模型未提供正确计数，从full_report中解析
-            if rev["severity_counts"] == {}:
-                cnt = {"严重":0,"中等":0,"轻度":0}
-                for line in rev["full_report"].split('\n'):
-                    if '严重性：高' in line: cnt["严重"]+=1
-                    elif '严重性：中' in line: cnt["中等"]+=1
-                    elif '严重性：低' in line: cnt["轻度"]+=1
-                rev["severity_counts"] = cnt
-                if cnt["严重"]>0: rev["max_severity"]="严重"
-                elif cnt["中等"]>0: rev["max_severity"]="中等"
-                elif cnt["轻度"]>0: rev["max_severity"]="轻度"
+            full_report = rev.get("full_report", str(rev))
+            
+            # 强制从文本中重新统计，覆盖模型的统计值
+            cnt = {"严重":0, "中等":0, "轻度":0}
+            for line in full_report.split('\n'):
+                if '严重性：高' in line: cnt["严重"] += 1
+                elif '严重性：中' in line: cnt["中等"] += 1
+                elif '严重性：低' in line: cnt["轻度"] += 1
+            rev["severity_counts"] = cnt
+            
+            if cnt["严重"] > 0:
+                rev["max_severity"] = "严重"
+                rev["verdict"] = "驳回"
+            elif cnt["中等"] > 0:
+                rev["max_severity"] = "中等"
+                rev["verdict"] = "存疑"
+            elif cnt["轻度"] > 0:
+                rev["max_severity"] = "轻度"
+                # 如果原始是其他判决则保留，否则设为存疑
+                if rev.get("verdict") not in ("驳回","通过"):
+                    rev["verdict"] = "存疑"
+            else:
+                rev["max_severity"] = "无"
+                rev["verdict"] = rev.get("verdict", "通过")
+            
+            rev["full_report"] = full_report
             return {**rev, "_model": resp.model}
         except Exception as e:
             logger.warning(f"审计官调用失败: {e}")

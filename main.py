@@ -59,7 +59,7 @@ def main():
         nonlocal strategy
         try:
             reviewer_report = call_reviewer(strategy, data, symbol)
-            review_msg = format_review_message(symbol, strategy, reviewer_report, data)
+            review_msg = format_review_message(symbol, reviewer_report, data)
             send_dingtalk_message(review_msg, title=f"{symbol} 策略推送 (风控审计)")
         except Exception as e:
             logger.warning(f"审计官调用异常: {e}")

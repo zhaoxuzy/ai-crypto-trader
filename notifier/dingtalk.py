@@ -171,7 +171,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict, data:
 
     # 裁决状态短标签
     verdict_short = {"维持原判": "✅维持", "推翻": "🔄推翻", "修改执行": "🔧修改执行"}.get(verdict, verdict)
-    # 方向显示：当前方向 (原方向) —— 简洁表示
+    # 方向显示：当前方向 (原方向)
     dir_display = f"{_direction_emoji(final_direction)} (原{_direction_emoji(orig_direction)})"
 
     header = f"### 策略｜{symbol} 最终计划 ⚖️ {_beijing_time()}\n"

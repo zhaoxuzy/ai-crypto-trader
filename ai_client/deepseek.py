@@ -1,9 +1,9 @@
 """
 deepseek.py — 三角色闭环 (最终版)
-- 提示词极简，无重复要求
-- 清算穿刺路径修正 (基于 CVD + taker 推断近期轨迹)
+- 委员会独立制定最终策略，推翻时需至少3条证据
+- 清算穿刺 + 路径修正 + 微观时效 + 预期差仪表盘
 - 审计官文本解析确保统计正确
-- 委员会独立裁决、逐条回应
+- 所有硬伤修复 + 标准化映射 + 覆盖率检查
 """
 
 import os, json, time, re, math
@@ -88,64 +88,39 @@ def _inject_ages(data):
         ts = data.get(ts_key)
         data[age_key] = (now-ts) if (ts and ts>0) else float('inf')
 
-# ---------- 清算穿刺 (含路径修正) ----------
+# ---------- 清算穿刺 ----------
 def compute_liquidation_bias(data):
-    liq_r = data.get('liq_ratio',1.0)
-    cvd = data.get('cvd_slope',0.0)
-    taker = data.get('taker_ratio_1h',0.5)
-    ob_imb = data.get('orderbook_imbalance',0.0)
-    ob_age = data.get('ob_age',float('inf'))
-    press = data.get('large_order_pressure',0.0)
-    pain = data.get('max_pain',0.0)
-    atr = data.get('atr',0.0)
-    mark = data.get('mark_price',0.0)
-
+    liq_r = data.get('liq_ratio',1.0); cvd = data.get('cvd_slope',0.0); taker = data.get('taker_ratio_1h',0.5)
+    ob_imb = data.get('orderbook_imbalance',0.0); ob_age = data.get('ob_age',float('inf'))
+    press = data.get('large_order_pressure',0.0); pain = data.get('max_pain',0.0)
+    atr = data.get('atr',0.0); mark = data.get('mark_price',0.0)
     if ob_age>30: ob_imb=0.0
     score = (liq_r-1)*0.4 + (1 if cvd>0 else -1)*0.3 + (taker-0.5)*0.3
-
-    # -------- 价格路径修正 (新增) --------
-    # 推断近期轨迹：CVD>0且taker>1 → 向上穿越；CVD<0且taker<1 → 向下穿越；否则无法判断
     trajectory_modifier = 1.0
     trajectory_note = "无路径修正"
-    if cvd > 0 and taker > 1:
-        trajectory_note = "推断近期向上穿越"
-    elif cvd < 0 and taker < 1:
-        trajectory_note = "推断近期向下穿越"
-
-    if trajectory_note == "推断近期向下穿越" and score > 0.15:
-        # 预判向上穿刺，但价格刚跌下来 → 上方清算可能已被触发或阻力极大
-        trajectory_modifier = 0.5
-        trajectory_note += "，向上穿刺可信度减半(上方清算可能已被触发或存在解套抛压)"
-    elif trajectory_note == "推断近期向上穿越" and score < -0.15:
-        trajectory_modifier = 0.5
-        trajectory_note += "，向下穿刺可信度减半(下方清算可能已被触发或存在空头解套)"
+    if cvd>0 and taker>1: trajectory_note = "推断近期向上穿越"
+    elif cvd<0 and taker<1: trajectory_note = "推断近期向下穿越"
+    if trajectory_note == "推断近期向下穿越" and score>0.15:
+        trajectory_modifier=0.5; trajectory_note+="，向上穿刺可信度减半"
+    elif trajectory_note == "推断近期向上穿越" and score<-0.15:
+        trajectory_modifier=0.5; trajectory_note+="，向下穿刺可信度减半"
     elif trajectory_note in ["推断近期向上穿越","推断近期向下穿越"]:
-        trajectory_note += "，穿刺方向与近期轨迹一致，可信度不变"
-
-    score *= trajectory_modifier
-    # ----------------------------------------
-
-    direction = 'balanced'
+        trajectory_note+="，穿刺方向与近期轨迹一致"
+    score*=trajectory_modifier
+    direction='balanced'
     if score>0.15: direction='up'
     elif score<-0.15: direction='down'
-    lure = (direction=='up' and press<-0.5) or (direction=='down' and press>0.5)
-    pain_eff = False
+    lure=(direction=='up' and press<-0.5) or (direction=='down' and press>0.5)
+    pain_eff=False
     if atr>0 and pain>0 and abs(pain-mark)<1.0*atr:
         if (direction=='up' and pain>mark) or (direction=='down' and pain<mark): pain_eff=True
-    return {
-        'puncture_direction':direction,
-        'puncture_score':score,
-        'lure_risk':lure,
-        'pain_magnet':pain_eff,
-        'trajectory_note':trajectory_note
-    }
+    return {'puncture_direction':direction,'puncture_score':score,'lure_risk':lure,'pain_magnet':pain_eff,'trajectory_note':trajectory_note}
 
-# ---------- 微观质量 + 仪表盘 + 覆盖率 (保持简洁) ----------
 def assess_micro_quality(data):
-    checks = {"orderbook_fresh":data.get("ob_age",float('inf'))<30,"taker_fresh":data.get("taker_age",float('inf'))<60,
-              "cvd_fresh":data.get("cvd_age",float('inf'))<300,"large_order_fresh":data.get("large_order_age",float('inf'))<300,
-              "liquidation_fresh":data.get("liq_age",float('inf'))<600}
-    fresh = sum(checks.values())
+    checks={"orderbook_fresh":data.get("ob_age",float('inf'))<30,"taker_fresh":data.get("taker_age",float('inf'))<60,
+            "cvd_fresh":data.get("cvd_age",float('inf'))<300,"large_order_fresh":data.get("large_order_age",float('inf'))<300,
+            "liquidation_fresh":data.get("liq_age",float('inf'))<600}
+    fresh=sum(checks.values())
     return {**checks,"overall":"good" if fresh>=4 else ("degraded" if fresh>=2 else "poor")}
 
 def build_expectation_dashboard(data):
@@ -164,25 +139,25 @@ def build_expectation_dashboard(data):
 | P/C比 | {pc:.3f} | 0.7 | >1恐慌对冲 |
 | 价格7日分位 | {price_pct:.0f}% | 50% | 超买/超卖 |
 | 波动因子 | {vol_f:.2f} | 1.0 | 不确定性定价 |
-预期差分析必须回答：1.极端方向(贪婪/恐惧)依据哪些指标？2.找出两个矛盾指标构成预期差。3.价格朝矛盾方向移动1ATR谁最意外？4.结论必须基于矛盾证据并与清算预判、多空博弈交叉核对。"""
+预期差分析必须回答：1.极端方向依据哪些指标？2.找出两个矛盾指标构成预期差。3.价格朝矛盾方向移动1ATR谁最意外？4.结论必须基于矛盾证据并与清算预判、多空博弈交叉核对。"""
 
-CORE_KEYS = ['mark_price','atr','above_liq','below_liq','liq_ratio','cvd_slope','taker_ratio_1h','oi_change_24h',
-             'funding_percentile','orderbook_imbalance','large_order_pressure','max_pain','put_call_ratio',
-             'basis_percentile','stablecoin_trend_7d','cgdi_percentile','fear_greed','lth_realized_price','sth_realized_price','sth_sopr']
+CORE_KEYS=['mark_price','atr','above_liq','below_liq','liq_ratio','cvd_slope','taker_ratio_1h','oi_change_24h',
+           'funding_percentile','orderbook_imbalance','large_order_pressure','max_pain','put_call_ratio',
+           'basis_percentile','stablecoin_trend_7d','cgdi_percentile','fear_greed','lth_realized_price','sth_realized_price','sth_sopr']
 
 def compute_coverage(data):
-    total = len(CORE_KEYS)
-    available = sum(1 for k in CORE_KEYS if data.get(k) is not None)
+    total=len(CORE_KEYS)
+    available=sum(1 for k in CORE_KEYS if data.get(k) is not None)
     return {"available":available,"total":total,"coverage":available/total if total>0 else 0.0}
 
 # ------------------- 主提示词 -------------------
 def build_prompt(data, symbol, eth_data=None, cross_symbol=None):
-    if cross_symbol is None: cross_symbol = "ETH" if symbol=="BTC" else "BTC"
+    if cross_symbol is None: cross_symbol="ETH" if symbol=="BTC" else "BTC"
     _inject_ages(data)
-    coverage = compute_coverage(data)
+    coverage=compute_coverage(data)
 
     def sv(key,default=0.0,scale=1.0,fmt=".2f"):
-        raw = data.get(key)
+        raw=data.get(key)
         if raw is None: return ("[N/A]",True)
         try: val=float(raw)*scale
         except: return ("[N/A]",True)
@@ -190,72 +165,70 @@ def build_prompt(data, symbol, eth_data=None, cross_symbol=None):
         try: return (f"{val:{fmt}}",False)
         except: return ("[N/A]",True)
 
-    # 提取字段 (全部保留，篇幅问题省略部分重复声明)
-    mark_str,_ = sv('mark_price',fmt=".2f"); atr_str,_ = sv('atr',fmt=".2f")
-    fear_greed = data.get('fear_greed',50)
-    lth_str,_ = sv('lth_realized_price',fmt=".2f"); sth_str,_ = sv('sth_realized_price',fmt=".2f")
-    sopr_str,_ = sv('sth_sopr',1.0,fmt=".3f"); stable_str,_ = sv('stablecoin_trend_7d',fmt="+.1f")
-    oi_chg_str,_ = sv('oi_change_24h',fmt="+.1f"); fund_pct_str,_ = sv('funding_percentile',50,fmt=".0f")
-    cvd_str,_ = sv('cvd_slope',fmt=".4f"); taker_str,_ = sv('taker_ratio_1h',fmt=".3f")
-    nf24h_str,_ = sv('netflow_24h',scale=1/1e6,fmt=".1f")
-    abv_liq_str,_ = sv('above_liq',scale=1/1e9,fmt=".2f"); blw_liq_str,_ = sv('below_liq',scale=1/1e9,fmt=".2f")
-    liq_r_str,_ = sv('liq_ratio',fmt=".2f")
-    abv_trig = data.get('above_trigger','N/A'); blw_trig = data.get('below_trigger','N/A')
-    lgs_str,_ = sv('large_sell_value',scale=1/1e6,fmt=".1f"); lgb_str,_ = sv('large_buy_value',scale=1/1e6,fmt=".1f")
-    press_str,_ = sv('large_order_pressure',fmt=".3f"); ob_imb_str,_ = sv('orderbook_imbalance',fmt=".3f")
-    lure_str,_ = sv('lure_risk_factor',fmt=".2f"); pain_str,_ = sv('max_pain',fmt=".2f")
-    pc_str,_ = sv('put_call_ratio',fmt=".4f"); basis_pct_str,_ = sv('basis_percentile',50,fmt=".0f")
-    btc_dom_str,_ = sv('btc_dominance_trend_7d',fmt="+.1f"); borrow_str,_ = sv('borrow_rate',scale=100,fmt=".2f")
-    exch_str,_ = sv('exchange_btc_change_24h',fmt="+.0f"); spot24_str,_ = sv('spot_netflow_24h',scale=1/1e6,fmt=".1f")
-    spot_div_str,_ = sv('spot_vs_futures_divergence',fmt=".2f"); top_ls_str,_ = sv('top_ls_percentile',50,fmt=".0f")
-    price_pct_str,_ = sv('price_percentile',50,fmt=".0f"); vol_f_str,_ = sv('vol_factor',1.0,fmt=".2f")
-    cgdi_pct_str,_ = sv('cgdi_percentile',50,fmt=".0f"); direction_bias = data.get('direction_bias',0.0)
-    bias_quality = data.get('_bias_quality','reliable')
+    mark_str,_=sv('mark_price',fmt=".2f"); atr_str,_=sv('atr',fmt=".2f")
+    fear_greed=data.get('fear_greed',50)
+    lth_str,_=sv('lth_realized_price',fmt=".2f"); sth_str,_=sv('sth_realized_price',fmt=".2f")
+    sopr_str,_=sv('sth_sopr',1.0,fmt=".3f"); stable_str,_=sv('stablecoin_trend_7d',fmt="+.1f")
+    oi_chg_str,_=sv('oi_change_24h',fmt="+.1f"); fund_pct_str,_=sv('funding_percentile',50,fmt=".0f")
+    cvd_str,_=sv('cvd_slope',fmt=".4f"); taker_str,_=sv('taker_ratio_1h',fmt=".3f")
+    nf24h_str,_=sv('netflow_24h',scale=1/1e6,fmt=".1f")
+    abv_liq_str,_=sv('above_liq',scale=1/1e9,fmt=".2f"); blw_liq_str,_=sv('below_liq',scale=1/1e9,fmt=".2f")
+    liq_r_str,_=sv('liq_ratio',fmt=".2f")
+    abv_trig=data.get('above_trigger','N/A'); blw_trig=data.get('below_trigger','N/A')
+    lgs_str,_=sv('large_sell_value',scale=1/1e6,fmt=".1f"); lgb_str,_=sv('large_buy_value',scale=1/1e6,fmt=".1f")
+    press_str,_=sv('large_order_pressure',fmt=".3f"); ob_imb_str,_=sv('orderbook_imbalance',fmt=".3f")
+    lure_str,_=sv('lure_risk_factor',fmt=".2f"); pain_str,_=sv('max_pain',fmt=".2f")
+    pc_str,_=sv('put_call_ratio',fmt=".4f"); basis_pct_str,_=sv('basis_percentile',50,fmt=".0f")
+    btc_dom_str,_=sv('btc_dominance_trend_7d',fmt="+.1f"); borrow_str,_=sv('borrow_rate',scale=100,fmt=".2f")
+    exch_str,_=sv('exchange_btc_change_24h',fmt="+.0f"); spot24_str,_=sv('spot_netflow_24h',scale=1/1e6,fmt=".1f")
+    spot_div_str,_=sv('spot_vs_futures_divergence',fmt=".2f"); top_ls_str,_=sv('top_ls_percentile',50,fmt=".0f")
+    price_pct_str,_=sv('price_percentile',50,fmt=".0f"); vol_f_str,_=sv('vol_factor',1.0,fmt=".2f")
+    cgdi_pct_str,_=sv('cgdi_percentile',50,fmt=".0f"); direction_bias=data.get('direction_bias',0.0)
+    bias_quality=data.get('_bias_quality','reliable')
 
-    puncture = compute_liquidation_bias(data)
-    micro_q = assess_micro_quality(data)
-    dashboard = build_expectation_dashboard(data)
+    puncture=compute_liquidation_bias(data)
+    micro_q=assess_micro_quality(data)
+    dashboard=build_expectation_dashboard(data)
 
-    cross_context = ""
+    cross_context=""
     if eth_data:
-        cross_context = f"""【跨币种数据（{cross_symbol}）—— 用于第二步与第四步】
-| 指标 | {cross_symbol} 当前值 | {symbol} 当前值 |
-|------|---------------------|-----------------|
+        cross_context=f"""【跨币种数据（{cross_symbol}）】
+| 指标 | {cross_symbol} | {symbol} |
+|------|------------|---------|
 | 清算比值 | {eth_data.get('liq_ratio',0):.2f} | {data.get('liq_ratio',1):.2f} |
 | CVD斜率 | {eth_data.get('cvd_slope',0):.4f} | {data.get('cvd_slope',0):.4f} |
 | OI 24h变化 | {eth_data.get('oi_change_24h',0):+.1f}% | {data.get('oi_change_24h',0):+.1f}% |
-| 顶多空分位 | {eth_data.get('top_ls_percentile',50):.0f}% | {data.get('top_ls_percentile',50):.0f}% |
-规则：第二步多空论据可引用，交叉质询矛盾信号须作为攻击依据。第四步信号定性：清算方向一致→系统性趋势，仓位不变；矛盾→仓位降一级。"""
+第二步可引用，交叉质询矛盾信号须作为攻击依据。第四步信号定性：清算方向一致→系统性趋势，仓位不变；矛盾→单币种独立行情，仓位降一级。"""
     else:
-        cross_context = "\n【跨币种数据不可用】仓位上限自动下调一级，置信度上限为'中'。"
+        cross_context="\n【跨币种数据不可用】仓位上限自动下调一级，置信度上限'中'。"
 
-    core_missing = [k for k in ["kline","heatmap","cvd"] if data.get("data_quality",{}).get(k)=="❌ 缺失"]
-    constraint_note = f"核心数据缺失：{', '.join(core_missing)}。置信度强制'低'，若清算缺失输出'neutral'。" if core_missing else ""
+    core_missing=[k for k in ["kline","heatmap","cvd"] if data.get("data_quality",{}).get(k)=="❌ 缺失"]
+    constraint_note=f"核心数据缺失：{', '.join(core_missing)}。置信度强制'低'，若清算缺失输出'neutral'。" if core_missing else ""
 
-    prompt = f"""你是一位拥有 15 年实战经验的加密货币首席交易员。遇到 [N/A] 标记的数据时，该维度不作为依据，且置信度必须为低。reasoning 总字数 ≤ 3000 字。
+    prompt=f"""你是一位拥有 15 年实战经验的加密货币首席交易员。遇到 [N/A] 标记的数据时，该维度不作为依据，且置信度必须为低。reasoning ≤ 3000 字。
 
-【数据质量】核心数据覆盖率：{coverage['coverage']:.0%}({coverage['available']}/{coverage['total']})。低于70%时强制置信度'低'，仓位上限轻仓。direction_bias 可信度：{bias_quality}，untrusted时不生效。
+【数据质量】核心覆盖率：{coverage['coverage']:.0%}({coverage['available']}/{coverage['total']})。<70%强制置信度'低'，仓位上限轻仓。direction_bias 可信度：{bias_quality}，untrusted时不生效。
 
-【系统预判】清算穿刺方向：{puncture['puncture_direction']}，得分 {puncture['puncture_score']:.2f}。诱饵风险：{puncture['lure_risk']}，期权磁吸：{puncture['pain_magnet']}。价格路径修正：{puncture['trajectory_note']}。若无数据反证应尊重预判，有充分反证可推翻并说明理由。微观新鲜度：{micro_q['overall']}，poor时高频信号权重降为0。
+【系统预判】清算穿刺：{puncture['puncture_direction']}，得分{puncture['puncture_score']:.2f}。诱饵：{puncture['lure_risk']}，磁吸：{puncture['pain_magnet']}。路径修正：{puncture['trajectory_note']}。无数据反证应尊重预判。微观新鲜度：{micro_q['overall']}，poor时高频信号降权。
 
 {dashboard}
 
 【市场数据】
 现价：{mark_str}，ATR：{atr_str}，恐慌贪婪：{fear_greed}
-LTH成本：{lth_str}，STH成本：{sth_str}，STH SOPR：{sopr_str}
-稳定币趋势：{stable_str}%，OI 24h变化：{oi_chg_str}%，费率分位：{fund_pct_str}%
-CVD斜率：{cvd_str}，主动买卖比(1h)：{taker_str}
-24h期货净流：{nf24h_str}M，现货24h净流：{spot24_str}M，背离度：{spot_div_str}
-上方清算：{abv_liq_str}B，触发距{abv_trig}点；下方清算：{blw_liq_str}B，触发距{blw_trig}点，比值：{liq_r_str}
-大单卖：{lgs_str}M，买：{lgb_str}M，压迫比：{press_str}
-订单簿失衡率：{ob_imb_str}，诱饵风险：{lure_str}
+LTH：{lth_str}，STH：{sth_str}，STH SOPR：{sopr_str}
+稳定币趋势：{stable_str}%，OI 24h：{oi_chg_str}%，费率分位：{fund_pct_str}%
+CVD斜率：{cvd_str}，主动买卖比：{taker_str}
+24h期货净流：{nf24h_str}M，现货：{spot24_str}M，背离度：{spot_div_str}
+上方清算：{abv_liq_str}B({abv_trig}点)，下方：{blw_liq_str}B({blw_trig}点)，比值：{liq_r_str}
+大单：卖{lgs_str}M/买{lgb_str}M，压迫比：{press_str}
+订单簿失衡率：{ob_imb_str}，诱饵：{lure_str}
 期权痛点：{pain_str}，P/C比：{pc_str}，基差分位：{basis_pct_str}%
-BTC.D趋势：{btc_dom_str}%，借贷利率：{borrow_str}%，交易所BTC余额变化：{exch_str} BTC
-价格7日分位：{price_pct_str}%，波动因子：{vol_f_str}，CGDI分位：{cgdi_pct_str}%
+BTC.D趋势：{btc_dom_str}%，借贷利率：{borrow_str}%，交易所BTC变化：{exch_str}BTC
+价格7日分位：{price_pct_str}%，波动因子：{vol_f_str}，CGDI：{cgdi_pct_str}%
 {cross_context}
 {constraint_note}
 
-严格按五步分析(每步数据确认表+定性分析)，锚点 direction_bias={direction_bias:.3f}，盈亏比≥2:1。第五步必须输出价格路径推演。
+严格按五步分析(每步数据确认表+定性分析)，锚点direction_bias={direction_bias:.3f}，盈亏比≥2:1。第五步必须包含价格路径推演。
 输出纯JSON，枚举值用中文。
 
 【输出JSON】
@@ -266,7 +239,7 @@ BTC.D趋势：{btc_dom_str}%，借贷利率：{borrow_str}%，交易所BTC余额
   "entry_price_low": 0.0, "entry_price_high": 0.0,
   "stop_loss": 0.0, "take_profit": 0.0,
   "execution_plan": "一句话指令",
-  "reasoning": "完整五步推演，含价格路径推演段落。",
+  "reasoning": "完整五步推演，含价格路径推演。",
   "risk_note": "", "risk_reward_ratio": 0.0,
   "vote_result": {{"清算":"","博弈":"","预期差":"","一致组数":0,"方向":""}}
 }}
@@ -330,16 +303,56 @@ def call_reviewer(strategy, data, symbol):
             if attempt==MAX_RETRIES-1: return {"verdict":"驳回","max_severity":"严重","severity_counts":{"严重":1},"full_report":"审计官调用失败","_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 委员会 -------------------
+# ------------------- 交易委员会 -------------------
 def call_judge(strategy, reviewer_report, data, symbol):
     direction_bias = data.get('direction_bias',0.0)
-    prompt = f"""你是交易委员会主席。审议策略及审计报告，逐条回应严重指控，明确采纳或驳斥理由。维持原判时价格字段不能填0。输出纯JSON，裁决字段用英文值。
+    prompt = f"""你是交易委员会主席，拥有最终决策权。你必须基于交易员策略和审计报告，独立制定一份完整的、可立即执行的最终交易策略。
 
-标的：{symbol} 现价：{data.get('mark_price',0):.2f} 锚点：{direction_bias:.3f}
-策略：方向{strategy.get('direction')} 仓位{strategy.get('position_size')} 入场{strategy.get('entry_price_low')}-{strategy.get('entry_price_high')} 止损{strategy.get('stop_loss')} 止盈{strategy.get('take_profit')}
-审计：{reviewer_report.get('full_report','无')} 结论{reviewer_report.get('verdict')} 严重性{reviewer_report.get('max_severity')}
+【你的职责】
+1. 逐条回应审计官的所有严重指控，明确采纳或驳斥的理由。
+2. 综合交易员分析的合理部分和审计官修正意见，制定最终策略。
+3. 最终策略必须包含：方向、仓位、置信度、入场区间、止损、止盈、执行计划、风险提示、盈亏比。缺一不可。
+4. 若审计官指出严重问题且成立，你必须调整策略参数或改变方向。
 
-【输出JSON】{{"final_verdict":"维持原判/修改执行/推翻","final_direction":"long/short/neutral","final_confidence":"high/medium/low","final_position_size":"heavy/medium/light/none","entry_price_low":0.0,"entry_price_high":0.0,"stop_loss":0.0,"take_profit":0.0,"execution_plan":"","risk_note":"","audit_adopted":true,"audit_max_severity":"严重/中等/轻度/无","final_reasoning":"裁决书正文"}}
+【推翻策略的硬性要求】
+若你推翻原策略方向，必须回答以下三个问题：
+1. 原策略依赖的最核心假设是什么？（引用原策略中的具体字段和数值）
+2. 这个核心假设为什么是错的？（至少引用1条反证数据）
+3. 新方向为什么更正确？（至少引用2条独立数据证据，条条带字段名和数值）
+上述三条缺一不可。若无法回答第2或第3条，不得推翻，只能修正参数或维持。
+
+【标的】{symbol}，现价：{data.get('mark_price',0):.2f}，锚点：{direction_bias:.3f}
+
+【交易员策略】
+方向：{strategy.get('direction')}，仓位：{strategy.get('position_size')}，置信度：{strategy.get('confidence')}
+入场：{strategy.get('entry_price_low')}-{strategy.get('entry_price_high')}
+止损：{strategy.get('stop_loss')}，止盈：{strategy.get('take_profit')}
+执行计划：{strategy.get('execution_plan')}，风险：{strategy.get('risk_note')}
+推演：{strategy.get('reasoning','无')}
+
+【审计报告】
+{reviewer_report.get('full_report','无')}
+审计结论：{reviewer_report.get('verdict')}，最高严重性：{reviewer_report.get('max_severity')}
+严重性统计：{reviewer_report.get('severity_counts',{})}
+
+【输出JSON】裁决字段用英文值，所有价格字段不能是空或0（若是观望方向，价格字段填0）。
+{{
+  "final_verdict": "维持原判/修改执行/推翻",
+  "final_direction": "long/short/neutral",
+  "final_confidence": "high/medium/low",
+  "final_position_size": "heavy/medium/light/none",
+  "entry_price_low": 0.0,
+  "entry_price_high": 0.0,
+  "stop_loss": 0.0,
+  "take_profit": 0.0,
+  "execution_plan": "",
+  "risk_note": "",
+  "risk_reward_ratio": 0.0,
+  "audit_adopted": true,
+  "audit_max_severity": "严重/中等/轻度/无",
+  "final_reasoning": "裁决理由，逐条回应审计指控，若推翻则包含三个强制回答",
+  "overturn_evidence": {{"original_assumption":"","assumption_refuted_by":"","new_direction_evidence":["",""]}}
+}}
 """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"),base_url="https://api.deepseek.com",timeout=TIMEOUT_SECONDS)
     for attempt in range(MAX_RETRIES):
@@ -364,7 +377,7 @@ def call_judge(strategy, reviewer_report, data, symbol):
         except Exception as e:
             logger.warning(f"委员会失败: {e}")
             if attempt==MAX_RETRIES-1:
-                return {"final_verdict":"推翻","final_direction":"neutral","final_confidence":"low","final_position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"委员会调用失败","risk_note":"系统故障","audit_adopted":False,"audit_max_severity":"critical","final_reasoning":"委员会调用失败","_model":"fallback"}
+                return {"final_verdict":"推翻","final_direction":"neutral","final_confidence":"low","final_position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"委员会调用失败","risk_note":"系统故障","audit_adopted":False,"audit_max_severity":"critical","final_reasoning":"委员会调用失败","overturn_evidence":{},"_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
 def apply_final_verdict(strategy, judge_result):

@@ -1,12 +1,8 @@
 """
-deepseek.py — 生产级三角色闭环 (审计提示词恢复版)
-- 保留定价仪表盘、穿刺预判、覆盖率、时效约束
-- 审计官提示词恢复简洁定义，不添加硬规则清单
-- 修复 overall 变量未定义异常
-- 修复盈亏比硬约束（已移除）
-- 修复 reasoning 格式化和换行问题
-- 修复审计严重性统计
-- 增强 JSON 提取，审计官输出纯 JSON 失败时自动 fallback
+deepseek.py — 生产级三角色闭环 (取消微观数据时效约束)
+- 交易员、审计官、委员会完整闭环
+- 已移除 _inject_ages 和 assess_micro_quality 的时效检查
+- 所有微观数据视为实时有效
 """
 
 import os, json, time, re, math
@@ -50,8 +46,7 @@ def norm_position_size(raw: str) -> str:
 
 # ---------- 文本格式化 ----------
 def format_reasoning(text: str) -> str:
-    if not text:
-        return text
+    if not text: return text
     text = text.replace('\\n', '\n')
     text = re.sub(r'(\*\*[^*]+\*\*)', r'\n\1\n', text)
     text = re.sub(r'(【[^】]+】)', r'\n\1\n', text)
@@ -72,46 +67,23 @@ def _log_response(role: str, prompt: str, content: str, reasoning: str = None):
             json.dump({"prompt": prompt, "content": content, "reasoning": reasoning}, f, ensure_ascii=False, indent=2)
     except: pass
 
-def _log_audit_raw(content: str):
-    """将审计官原始响应写入日志以便排查"""
-    try:
-        os.makedirs("logs", exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        with open(f"logs/audit_raw_{ts}.txt", "w", encoding="utf-8") as f:
-            f.write(content)
-    except:
-        pass
-
 def extract_json_safe(content: str) -> str:
-    # 优先匹配 ```json ... ```
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
-    if m:
-        return m.group(1).strip()
-    # 匹配 ``` ... ``` 无语言标识
+    if m: return m.group(1).strip()
     m = re.search(r'```\s*([\s\S]*?)\s*```', content)
-    if m:
-        return m.group(1).strip()
-    # 从第一个 '{' 到最后一个 '}' 提取，尝试修复常见错误
+    if m: return m.group(1).strip()
     start = content.find('{')
-    end = content.rfind('}')
-    if start != -1 and end != -1 and end > start:
-        candidate = content[start:end+1].strip()
-        try:
-            json.loads(candidate)
-            return candidate
-        except json.JSONDecodeError:
-            # 简单修复：移除尾部的逗号
-            fixed = re.sub(r',\s*}', '}', candidate)
-            fixed = re.sub(r',\s*]', ']', fixed)
-            try:
-                json.loads(fixed)
-                return fixed
-            except:
-                pass
-    raise ValueError("未找到有效 JSON")
+    if start == -1: raise ValueError("未找到 JSON")
+    count = 0
+    for i, c in enumerate(content[start:], start):
+        if c == '{': count += 1
+        elif c == '}':
+            count -= 1
+            if count == 0: return content[start:i+1].strip()
+    raise ValueError("JSON 未闭合")
 
 def _force_neutral(s: dict, reason: str):
-    s.update({"direction":"neutral","confidence":"低","position_size":"none",
+    s.update({"direction":"neutral","confidence":"low","position_size":"none",
               "entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,
               "execution_plan":"","reasoning":(s.get("reasoning","")+f"\n\n[系统强制观望，原因：{reason}]").strip(),
               "risk_note":f"观望。{reason}"})
@@ -144,28 +116,18 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         if val is None or float(val)<=0: return False, f"缺少或无效的 {f}"
     return True, ""
 
-# ---------- 时效注入 ----------
-def _inject_ages(data: dict):
-    now = time.time()
-    for ts_key, age_key in [("ob_imbalance_ts","ob_age"),("taker_ratio_ts","taker_age"),
-                            ("cvd_slope_ts","cvd_age"),("large_order_ts","large_order_age"),
-                            ("liquidation_ts","liq_age")]:
-        ts = data.get(ts_key)
-        data[age_key] = (now - ts) if (ts and ts>0) else float('inf')
-
-# ---------- 清算穿刺 ----------
+# ---------- 清算穿刺 (保留) ----------
 def compute_liquidation_bias(data: dict) -> dict:
     liq_r = data.get('liq_ratio',1.0)
     cvd = data.get('cvd_slope',0.0)
     taker = data.get('taker_ratio_1h',0.5)
     ob_imb = data.get('orderbook_imbalance',0.0)
-    ob_age = data.get('ob_age', float('inf'))
     press = data.get('large_order_pressure',0.0)
     pain = data.get('max_pain',0.0)
     atr = data.get('atr',0.0)
     mark = data.get('mark_price',0.0)
 
-    if ob_age>30: ob_imb=0.0
+    # 省略时效判断：ob_imb 直接使用，不再检查年龄
     score = (liq_r-1.0)*0.4 + (1 if cvd>0 else -1)*0.3 + (taker-0.5)*0.3
     direction = 'balanced'
     if score>0.15: direction='up'
@@ -176,20 +138,7 @@ def compute_liquidation_bias(data: dict) -> dict:
         if (direction=='up' and pain>mark) or (direction=='down' and pain<mark): pain_eff=True
     return {'puncture_direction':direction,'puncture_score':score,'lure_risk':lure,'pain_magnet':pain_eff}
 
-# ---------- 微观质量 ----------
-def assess_micro_quality(data: dict) -> dict:
-    checks = {
-        "orderbook_fresh": data.get("ob_age",float('inf'))<360,
-        "taker_fresh": data.get("taker_age",float('inf'))<360,
-        "cvd_fresh": data.get("cvd_age",float('inf'))<360,
-        "large_order_fresh": data.get("large_order_age",float('inf'))<360,
-        "liquidation_fresh": data.get("liq_age",float('inf'))<600,
-    }
-    fresh_count = sum(checks.values())
-    overall = "good" if fresh_count>=4 else ("degraded" if fresh_count>=2 else "poor")
-    return {**checks, "overall":overall}
-
-# ---------- 预期定价仪表盘 ----------
+# ---------- 预期定价仪表盘 (保留) ----------
 def build_expectation_dashboard(data: dict) -> str:
     basis_ann = data.get('basis_annualized',0)
     basis_med = data.get('basis_median',8)
@@ -235,12 +184,11 @@ def compute_coverage(data: dict) -> dict:
     coverage = available / total if total > 0 else 0.0
     return {"available": available, "total": total, "coverage": coverage}
 
-# ------------------- 交易员提示词 -------------------
+# ------------------- 首席交易员提示词 -------------------
 def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: str = None) -> str:
     if cross_symbol is None:
         cross_symbol = "ETH" if symbol=="BTC" else "BTC"
 
-    _inject_ages(data)
     coverage = compute_coverage(data)
 
     def safe_val(key, default=0.0, scale=1.0, fmt=".2f"):
@@ -252,6 +200,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
         try: return (f"{val:{fmt}}", False)
         except: return ("[N/A]", True)
 
+    # ---- 提取所有字段 ----
     mark_str, _ = safe_val('mark_price', fmt=".2f")
     atr_str, _ = safe_val('atr', fmt=".2f")
     fear_greed = data.get('fear_greed',50)
@@ -290,9 +239,9 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     bias_quality = data.get('_bias_quality','reliable')
 
     puncture = compute_liquidation_bias(data)
-    micro_q = assess_micro_quality(data)
     dashboard = build_expectation_dashboard(data)
 
+    # ---- 跨币种数据 ----
     cross_context = ""
     if eth_data:
         cross_context = f"""
@@ -319,7 +268,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
 - 严格遵循五步分析框架，给出逻辑自洽的策略推演与具体交易计划。
 - 遇到 [N/A] 标记的数据时，该维度不得作为判断依据，且整体置信度必须为低。
 - reasoning 总字数 ≤ 3000 字，结构清晰、分层明确。
-- 第五步必须包含“价格路径推演：”开头的一段文字，综合运用流动性猎杀理论、行为金融学及博弈论进行推演，缺失此段将被视为分析不完整。
+- **第五步必须包含“价格路径推演：”开头的一段文字，综合运用流动性猎杀理论、行为金融学及博弈论进行推演，缺失此段将被视为分析不完整。**
 - 请计算盈亏比作为参考，但不强制要求 ≥ 2:1。
 - 最终输出必须为纯 JSON，且所有枚举值使用中文（做多/做空/观望等）。
 
@@ -332,7 +281,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
 清算穿刺预判：方向 {puncture['puncture_direction']}，得分 {puncture['puncture_score']:.2f}。
 诱饵风险：{puncture['lure_risk']}，期权磁吸：{puncture['pain_magnet']}。
 若无数据反证，应尊重预判；若有充分反证可推翻并说明理由。
-微观数据新鲜度：{micro_q['overall']}。若为 poor，高频信号（CVD、taker、OB）权重降为0，只能依赖中频数据。
+（微观数据时效检查已取消，所有高频信号（CVD、taker、OB）视为实时有效。）
 
 {dashboard}
 
@@ -397,16 +346,9 @@ def call_trader(prompt: str) -> dict:
                 return {"direction":"neutral","confidence":"low","position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"调用失败","reasoning":"调用失败","risk_note":"","_model_used":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 审计官 (强化纯 JSON + fallback) -------------------
+# ------------------- 审计官 (已移除时效输入) -------------------
 def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
-    micro_q = assess_micro_quality(data)
-    overall = micro_q['overall']
-    ob_age = data.get('ob_age','?')
-    taker_age = data.get('taker_age','?')
-    cvd_age = data.get('cvd_age','?')
-    large_age = data.get('large_order_age','?')
-    liq_age = data.get('liq_age','?')
     coverage_info = compute_coverage(data)
     coverage_pct = coverage_info['coverage']*100
     available = coverage_info['available']
@@ -418,18 +360,16 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     trader_direction = strategy.get('direction','')
     trader_position_size = strategy.get('position_size','')
     rr = strategy.get('risk_reward_ratio','?')
-    ages_info = f"订单簿{ob_age}s，主动成交{taker_age}s，CVD{cvd_age}s，大单{large_age}s，清算{liq_age}s"
 
     prompt = f"""你是一位独立的风险审计官，负责对首席交易员的策略进行无偏见的严格审计。
 你的职责：
 - 对照市场数据，逐项核查交易员分析中的遗漏、数据误用、逻辑断裂和反证缺失。
 - 所有发现必须按“步骤/问题/数据证据/影响/严重性”格式记录。
 - 最终裁决（通过/存疑/驳回）必须仅基于发现的严重性和数量，不受交易员声望影响。
-- **输出格式：纯 JSON，不含任何代码块标记（如 ```json），不含任何前置或后置说明。**
-- 输出必须以 `{{` 开头，以 `}}` 结尾。
+- 输出必须为纯 JSON，包含完整的审计报告和严重性统计。
+- （微观数据时效检查已取消，无需审计此项。）
 
 【审计参考数据】
-- 市场数据新鲜度：{overall}（{ages_info}）
 - 核心数据覆盖率：{coverage_pct:.0f}%（{available}/{total}）
 - 系统预判穿刺方向：{puncture_direction}，诱饵风险：{lure_risk}
 - 方向锚点 direction_bias：{direction_bias}，可信度：{bias_quality}
@@ -450,124 +390,52 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
 
 每条发现格式：在[步骤X]中，交易员[具体问题]。该指标显示[具体数值/信号]，若纳入分析将[强化/削弱/推翻]当前方向判断。[严重性：高/中/低]
 统计严重/中等/轻度数量，并给出 max_severity。
+只输出纯JSON。
 
-【输出JSON范例】
+【输出JSON】
 {{
-  "verdict": "驳回",
-  "max_severity": "严重",
-  "severity_counts": {{"严重":2,"中等":1,"轻度":0}},
-  "full_report": "一、遗漏指标...\\n二、数据与解读错误...\\n..."
+  "verdict": "通过/存疑/驳回",
+  "max_severity": "严重/中等/轻度/无",
+  "severity_counts": {{"严重":0,"中等":0,"轻度":0}},
+  "full_report": "完整审计文本"
 }}
-现在，只输出纯JSON：
 """
-
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=TIMEOUT_SECONDS)
-    
     for attempt in range(MAX_RETRIES):
         try:
-            resp = client.chat.completions.create(
-                model=FAST_MODEL,
-                messages=[{"role":"user","content":prompt}],
-                max_tokens=4096,
-                timeout=120
-            )
+            resp = client.chat.completions.create(model=FAST_MODEL, messages=[{"role":"user","content":prompt}], max_tokens=4096, timeout=120)
             content = resp.choices[0].message.content or ""
-
-            if os.getenv("DEBUG_AUDIT", "").lower() == "true":
-                _log_audit_raw(content)
-
-            # ---------- JSON 提取与 fallback ----------
-            try:
-                json_str = extract_json_safe(content)
-                rev = json.loads(json_str)
-            except Exception as parse_err:
-                logger.warning(f"审计官 JSON 提取失败: {parse_err}")
-                full_fallback = content.strip()
-                if not full_fallback:
-                    raise ValueError("审计官返回空内容")
-                cnt = {"严重": 0, "中等": 0, "轻度": 0}
-                for line in full_fallback.split('\n'):
-                    if '严重性：高' in line or '严重性：严重' in line:
-                        cnt["严重"] += 1
-                    elif '严重性：中' in line or '严重性：中等' in line:
-                        cnt["中等"] += 1
-                    elif '严重性：低' in line or '严重性：轻度' in line:
-                        cnt["轻度"] += 1
-                if cnt["严重"] > 0:
-                    verdict = "驳回"
-                    max_sev = "严重"
-                elif cnt["中等"] > 0:
-                    verdict = "存疑"
-                    max_sev = "中等"
-                elif cnt["轻度"] > 0:
-                    verdict = "存疑"
-                    max_sev = "轻度"
-                else:
-                    verdict = "存疑"
-                    max_sev = "轻度"
-                rev = {
-                    "verdict": verdict,
-                    "max_severity": max_sev,
-                    "severity_counts": cnt,
-                    "full_report": full_fallback
-                }
-                logger.info("审计官 JSON 提取失败，已根据文本生成 fallback 报告")
-                return {**rev, "_model": resp.model}
-
-            # ---------- 正常 JSON 解析成功后的处理 ----------
+            json_str = extract_json_safe(content)
+            rev = json.loads(json_str)
             full_report = rev.get("full_report", str(rev))
             full_report = format_reasoning(full_report)
-
-            severity_counts = rev.get("severity_counts", {})
-            if not isinstance(severity_counts, dict) or not severity_counts:
-                cnt = {"严重": 0, "中等": 0, "轻度": 0}
-                for line in full_report.split('\n'):
-                    if '严重性：高' in line or '严重性：严重' in line:
-                        cnt["严重"] += 1
-                    elif '严重性：中' in line or '严重性：中等' in line:
-                        cnt["中等"] += 1
-                    elif '严重性：低' in line or '严重性：轻度' in line:
-                        cnt["轻度"] += 1
-                rev["severity_counts"] = cnt
-            else:
-                rev["severity_counts"] = {
-                    "严重": severity_counts.get("严重", 0) or severity_counts.get("critical", 0),
-                    "中等": severity_counts.get("中等", 0) or severity_counts.get("medium", 0),
-                    "轻度": severity_counts.get("轻度", 0) or severity_counts.get("low", 0),
-                }
-
-            cnt = rev["severity_counts"]
-            if cnt["严重"] > 0:
+            cnt = {"严重":0, "中等":0, "轻度":0}
+            for line in full_report.split('\n'):
+                if '严重性：高' in line: cnt["严重"]+=1
+                elif '严重性：中' in line: cnt["中等"]+=1
+                elif '严重性：低' in line: cnt["轻度"]+=1
+            rev["severity_counts"] = cnt
+            if cnt["严重"]>0:
                 rev["max_severity"] = "严重"
                 rev["verdict"] = "驳回"
-            elif cnt["中等"] > 0:
+            elif cnt["中等"]>0:
                 rev["max_severity"] = "中等"
-                if rev.get("verdict") not in ("驳回","通过"):
-                    rev["verdict"] = "存疑"
-            elif cnt["轻度"] > 0:
+                if rev.get("verdict") not in ("驳回","通过"): rev["verdict"] = "存疑"
+            elif cnt["轻度"]>0:
                 rev["max_severity"] = "轻度"
-                if rev.get("verdict") not in ("驳回","通过"):
-                    rev["verdict"] = "存疑"
+                if rev.get("verdict") not in ("驳回","通过"): rev["verdict"] = "存疑"
             else:
                 rev["max_severity"] = "无"
                 rev["verdict"] = rev.get("verdict", "通过")
-
             rev["full_report"] = full_report
             return {**rev, "_model": resp.model}
-
         except Exception as e:
             logger.warning(f"审计官调用失败: {e}")
             if attempt == MAX_RETRIES-1:
-                return {
-                    "verdict": "驳回",
-                    "max_severity": "严重",
-                    "severity_counts": {"严重": 1, "中等": 0, "轻度": 0},
-                    "full_report": f"审计官三次调用均失败，自动驳回。错误: {e}",
-                    "_model": "fallback"
-                }
+                return {"verdict":"驳回","max_severity":"严重","severity_counts":{"严重":1},"full_report":"审计官调用失败，自动驳回","_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 交易委员会 -------------------
+# ------------------- 交易委员会 (恢复独立裁决能力) -------------------
 def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
     prompt = f"""你是交易委员会主席，拥有最终决策权。
@@ -576,6 +444,8 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
 - 对审计官的每一条严重指控必须逐条回应，明确采纳或驳斥的理由。
 - 在三维汇聚存在分歧时，用你的市场经验作出最后平衡，但不得无视硬数据约束（如方向锚点、盈亏比底线）。
 - 最终输出必须为纯 JSON，裁决字段优先使用英文值（long/short/neutral、high/medium/low）。
+- 若审计严重性为“严重”，你必须推翻原策略，制定独立的最终策略并给出充分理由。
+- 若维持原判或修改执行，也必须给出理由。
 
 【标的】{symbol}，现价：{data.get('mark_price',0):.2f}，锚点：{direction_bias:.3f}
 
@@ -591,7 +461,7 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
 严重性统计：{reviewer_report.get('severity_counts',{})}
 
 对于审计官的每一项严重指控，你必须基于实际数据回应。若驳回，需指明数据中的反证依据。若采信，需说明如何修改策略。无数据支撑的驳回视为无效。
-严重指控成立必须推翻或修改策略。final_reasoning 必须逐条回应指控。维持原判时价格字段不能填0。
+严重指控成立必须推翻或修改策略。final_reasoning 必须逐条回应指控，并给出独立、完整的最终策略。维持原判时价格字段不能填0，必须填写实际数值。
 只输出纯JSON。
 
 【输出JSON】
@@ -608,7 +478,7 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
   "risk_note": "",
   "audit_adopted": true,
   "audit_max_severity": "严重/中等/轻度/无",
-  "final_reasoning": "裁决书正文，必须包含对审计指控的逐条回应"
+  "final_reasoning": "裁决书正文，必须包含对审计指控的逐条回应以及独立制定的最终策略依据"
 }}
 """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=TIMEOUT_SECONDS)

@@ -1,12 +1,15 @@
 """
-notifier/dingtalk.py — 钉钉推送 (修复版)
-- 代码块前后加空行
-- 审计报告使用代码块
-- 裁决内容完整展示
+notifier/dingtalk.py — 钉钉推送 (北京时间 + 代码块格式化)
 """
 import os, json, requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from utils.logger import logger
+
+# 北京时间（东八区）
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+def _beijing_time():
+    return datetime.now(BEIJING_TZ).strftime('%m-%d %H:%M')
 
 def _send_dingtalk(webhook_url, payload):
     try:
@@ -42,7 +45,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> s
     pos_map = {"heavy": "重仓", "medium": "中仓", "light": "轻仓", "none": "无"}
     conf_map = {"high": "高", "medium": "中", "low": "低"}
 
-    msg = f"### 策略｜{symbol} 🧠 建议 {datetime.now().strftime('%m-%d %H:%M')}\n"
+    msg = f"### 策略｜{symbol} 🧠 建议 {_beijing_time()}\n"
     msg += f"{dir_map.get(direction, '观望')} | 现价 {data.get('mark_price', 0) if data else 0:.0f} | 入场 {entry_low}-{entry_high} | 止损 {stop} | 止盈 {profit} | 置信度 {conf_map.get(confidence, '?')} | 仓位 {pos_map.get(position, '?')}\n\n"
     msg += f"**推演过程**\n\n```\n{reasoning[:2000]}\n```"
     return msg
@@ -58,7 +61,7 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     low = severity.get("轻度", 0)
     verdict = reviewer_report.get("verdict", "通过")
     full_report = reviewer_report.get("full_report", "")
-    msg = f"### 策略｜{symbol} ⚡ 审计 {verdict} {datetime.now().strftime('%m-%d %H:%M')}\n"
+    msg = f"### 策略｜{symbol} ⚡ 审计 {verdict} {_beijing_time()}\n"
     msg += f"严重 {severe} | 中等 {medium} | 轻微 {low}\n\n"
     msg += f"**方向**: {direction} | **仓位**: {position} | **置信度**: {strategy.get('confidence', '?')}\n\n"
     msg += f"**审计报告**\n\n```\n{full_report[:2000]}\n```"
@@ -82,7 +85,7 @@ def format_final_decision(symbol: str, strategy: dict, judge_result: dict, data:
     conf_display = {"high": "高", "medium": "中", "low": "低"}.get(confidence, "中")
 
     symbol_display = "🔴做空" if direction == "short" else ("🟢做多" if direction == "long" else "⚪观望")
-    msg = f"### 策略｜{symbol} 📋 裁决 {'✅维持' if verdict=='维持原判' else '🔄推翻'} {datetime.now().strftime('%m-%d %H:%M')}\n"
+    msg = f"### 策略｜{symbol} 📋 裁决 {'✅维持' if verdict=='维持原判' else '🔄推翻'} {_beijing_time()}\n"
     msg += f"{symbol_display} | 现价 {data.get('mark_price',0) if data else 0:.0f} | 入场 {entry_low}-{entry_high} | 止损 {stop} | 止盈 {profit} | 置信度 {conf_display} | 仓位 {pos_display}\n\n"
 
     final_reasoning = judge_result.get("final_reasoning", "") or "无裁决内容"

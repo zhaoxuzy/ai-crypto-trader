@@ -1,11 +1,10 @@
-import sys
-import os
-import threading
-
+import sys, os, threading
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from ai_client.deepseek import build_prompt, call_trader, validate_strategy, call_reviewer, call_judge, apply_final_verdict
-from notifier.dingtalk import format_strategy_message, format_review_message, format_judge_message, send_dingtalk_message, format_final_decision
+from ai_client.deepseek import (build_prompt, call_trader, validate_strategy,
+                                call_reviewer, call_judge, apply_final_verdict, _force_neutral)
+from notifier.dingtalk import (format_strategy_message, format_review_message,
+                               format_judge_message, send_dingtalk_message, format_final_decision)
 from data.fetcher import CoinGlassClient, get_current_price
 from utils.logger import logger
 
@@ -14,12 +13,21 @@ def main():
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
 
     client = CoinGlassClient()
-
     try:
         data, cross_data = client.fetch_all_data(symbol)
     except Exception as e:
         logger.error(f"数据获取失败: {e}")
         return
+
+    # 锚点可信度标记
+    data_quality = data.get("data_quality", {})
+    missing_count = sum(1 for v in data_quality.values() if v == "❌ 缺失")
+    if missing_count == 0:
+        data["_bias_quality"] = "reliable"
+    elif missing_count <= 2:
+        data["_bias_quality"] = "degraded"
+    else:
+        data["_bias_quality"] = "untrusted"
 
     inst_id = f"{symbol}-USDT-SWAP"
     real_price = get_current_price(inst_id)
@@ -49,13 +57,12 @@ def main():
 
     def run_review_and_judge():
         nonlocal strategy
-
         try:
             reviewer_report = call_reviewer(strategy, data, symbol)
             review_msg = format_review_message(symbol, strategy, reviewer_report, data)
             send_dingtalk_message(review_msg, title=f"{symbol} 策略推送 (风控审计)")
         except Exception as e:
-            logger.warning(f"审查官B调用失败: {e}")
+            logger.warning(f"审计官调用异常: {e}")
             strategy["_reviewed"] = False
             return
 
@@ -65,12 +72,10 @@ def main():
             judge_msg = format_final_decision(symbol, strategy, judge_result, data)
             send_dingtalk_message(judge_msg, title=f"{symbol} 策略推送 (交易委员会裁决)")
         except Exception as e:
-            logger.warning(f"交易委员会调用失败: {e}")
-            strategy["_reviewed"] = False
-            return
+            logger.warning(f"委员会调用异常: {e}")
+            _force_neutral(strategy, "委员会调用失败，强制观望")
 
         strategy["_reviewer_report"] = reviewer_report.get("full_report", "")
-        strategy["_judge_reasoning"] = judge_result.get("final_reasoning", "")
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()

@@ -1,8 +1,8 @@
 """
-deepseek.py — 生产级三角色闭环 (修复审计官JSON解析异常)
-- 增强 extract_json_safe 的容错性
-- 增加 审计官/委员会 的 fallback 机制
+deepseek.py — 生产级三角色闭环 (增强JSON解析鲁棒性)
+- 多级JSON提取策略，自动修复常见格式错误
 - 取消微观数据时效约束
+- 完整闭环：交易员 -> 审计官 -> 委员会
 """
 
 import os, json, time, re, math
@@ -68,37 +68,109 @@ def _log_response(role: str, prompt: str, content: str, reasoning: str = None):
     except: pass
 
 def extract_json_safe(content: str) -> str:
-    """容错增强：支持代码块、纯JSON，以及计数括号的降级策略"""
-    # 优先提取 ```json ... ``` 代码块
+    """
+    多级降级策略提取JSON，自动修复常见格式错误
+    """
+    if not content or not content.strip():
+        raise ValueError("空响应内容")
+
+    # 第1级：尝试从```json代码块中提取
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
-    if m: return m.group(1).strip()
-    # 其次提取 ``` ... ``` 代码块
+    if m:
+        json_str = m.group(1).strip()
+        try:
+            json.loads(json_str)
+            return json_str
+        except json.JSONDecodeError:
+            pass
+
+    # 第2级：尝试从```代码块中提取
     m = re.search(r'```\s*([\s\S]*?)\s*```', content)
-    if m: return m.group(1).strip()
-    # 直接寻找最外层花括号
+    if m:
+        json_str = m.group(1).strip()
+        try:
+            json.loads(json_str)
+            return json_str
+        except json.JSONDecodeError:
+            pass
+
+    # 第3级：从整个文本中寻找第一个{到最后一个}之间的内容
     start = content.find('{')
-    if start == -1: raise ValueError("未找到 JSON")
-    count = 0
-    last_valid_end = -1
-    for i, c in enumerate(content[start:], start):
-        if c == '{': count += 1
-        elif c == '}':
-            count -= 1
-            if count == 0:
-                return content[start:i+1].strip()
-            if count < 0:
-                break
-        if count == 0:
-            last_valid_end = i
-    # 降级策略：截断到最后一个有效的结束位置
-    if last_valid_end != -1:
-        partial = content[start:last_valid_end+1] + '}'
-        logger.warning("JSON 未正确闭合，已采用降级策略修补")
-        return partial
-    # 最后手段：从起始位置截断，并在尾部补两个 }
-    partial = content[start:] + '}}'
-    logger.warning("JSON 严重损坏，尝试暴力修补")
-    return partial
+    end = content.rfind('}')
+    if start != -1 and end != -1 and end > start:
+        json_str = content[start:end+1].strip()
+        try:
+            json.loads(json_str)
+            return json_str
+        except json.JSONDecodeError:
+            pass
+
+    # 第4级：修复常见JSON错误
+    # 修复未转义的换行符和制表符
+    json_str = content[start:end+1].strip() if (start != -1 and end != -1) else content.strip()
+    json_str = json_str.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+    try:
+        json.loads(json_str)
+        return json_str
+    except json.JSONDecodeError:
+        pass
+
+    # 第5级：暴力修补 - 在结尾补上缺失的引号和括号
+    if json_str.startswith('{'):
+        # 补充缺失的结束符
+        if not json_str.endswith('"') and not json_str.endswith('}'):
+            json_str += '"}'
+        elif json_str.endswith('"'):
+            json_str += '}'
+        try:
+            json.loads(json_str)
+            logger.warning("JSON通过暴力修补修复成功")
+            return json_str
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"所有JSON提取策略均失败，原始内容前200字符: {content[:200]}")
+
+def try_parse_reviewer_json(content: str) -> dict:
+    """专门用于解析审计官输出的容错函数"""
+    # 尝试直接解析为JSON
+    try:
+        json_str = extract_json_safe(content)
+        return json.loads(json_str)
+    except Exception:
+        pass
+
+    # 从文本中提取关键字段作为fallback
+    result = {"verdict": "存疑", "max_severity": "中等", "severity_counts": {"严重": 0, "中等": 1, "轻度": 0}, "full_report": content}
+
+    # 尝试提取verdict
+    if "驳回" in content:
+        result["verdict"] = "驳回"
+        result["max_severity"] = "严重"
+        result["severity_counts"]["严重"] = 1
+    elif "通过" in content and "驳回" not in content and "存疑" not in content:
+        result["verdict"] = "通过"
+        result["max_severity"] = "无"
+        result["severity_counts"]["中等"] = 0
+
+    # 统计严重性标记
+    cnt = {"严重": 0, "中等": 0, "轻度": 0}
+    for line in content.split('\n'):
+        if '严重性：高' in line: cnt["严重"] += 1
+        elif '严重性：中' in line: cnt["中等"] += 1
+        elif '严重性：低' in line: cnt["轻度"] += 1
+    if sum(cnt.values()) > 0:
+        result["severity_counts"] = cnt
+        if cnt["严重"] > 0:
+            result["verdict"] = "驳回"
+            result["max_severity"] = "严重"
+        elif cnt["中等"] > 0:
+            result["max_severity"] = "中等"
+        elif cnt["轻度"] > 0:
+            result["max_severity"] = "轻度"
+
+    logger.warning("使用fallback方式解析审计官响应")
+    return result
 
 def _force_neutral(s: dict, reason: str):
     s["direction"] = "neutral"
@@ -222,7 +294,6 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
         try: return (f"{val:{fmt}}", False)
         except: return ("[N/A]", True)
 
-    # 提取所有字段 (与之前完全相同，省略部分提取代码以保持清晰)
     mark_str, _ = safe_val('mark_price', fmt=".2f")
     atr_str, _ = safe_val('atr', fmt=".2f")
     fear_greed = data.get('fear_greed',50)
@@ -284,7 +355,6 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     core_missing = [k for k in ["kline","heatmap","cvd"] if data.get("data_quality",{}).get(k)=="❌ 缺失"]
     constraint_note = f"【重要约束】核心数据缺失：{', '.join(core_missing)}。置信度强制设为'低'，若清算缺失则输出'neutral'。" if core_missing else ""
 
-    # ----- 优化后的交易员提示词，强调输出格式 -----
     prompt = f"""你是一位拥有 15 年实战经验的加密货币首席交易员，专精于清算动力学、多空博弈定位与预期差分析。
 你的任务：
 - 严格遵循五步分析框架，给出逻辑自洽的策略推演与具体交易计划。
@@ -428,34 +498,20 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             resp = client.chat.completions.create(model=FAST_MODEL, messages=[{"role":"user","content":prompt}], max_tokens=4096, timeout=120)
             content = resp.choices[0].message.content or ""
             _log_response("reviewer", prompt, content)
-            json_str = extract_json_safe(content)
-            rev = json.loads(json_str)
+            # 使用增强的解析函数
+            rev = try_parse_reviewer_json(content)
             full_report = rev.get("full_report", str(rev))
             full_report = format_reasoning(full_report)
-            cnt = {"严重":0, "中等":0, "轻度":0}
-            for line in full_report.split('\n'):
-                if '严重性：高' in line: cnt["严重"]+=1
-                elif '严重性：中' in line: cnt["中等"]+=1
-                elif '严重性：低' in line: cnt["轻度"]+=1
-            rev["severity_counts"] = cnt
-            if cnt["严重"]>0:
+            # 确保sev_stats完整
+            if sum(rev["severity_counts"].values()) == 0 and rev.get("verdict") == "驳回":
+                rev["severity_counts"]["严重"] = 1
                 rev["max_severity"] = "严重"
-                rev["verdict"] = "驳回"
-            elif cnt["中等"]>0:
-                rev["max_severity"] = "中等"
-                if rev.get("verdict") not in ("驳回","通过"): rev["verdict"] = "存疑"
-            elif cnt["轻度"]>0:
-                rev["max_severity"] = "轻度"
-                if rev.get("verdict") not in ("驳回","通过"): rev["verdict"] = "存疑"
-            else:
-                rev["max_severity"] = "无"
-                rev["verdict"] = rev.get("verdict", "通过")
             rev["full_report"] = full_report
             return {**rev, "_model": resp.model}
         except Exception as e:
             logger.warning(f"审计官调用失败 (尝试 {attempt+1}): {e}")
             if attempt == MAX_RETRIES-1:
-                return {"verdict":"驳回","max_severity":"严重","severity_counts":{"严重":1},"full_report":"审计官调用失败，自动驳回","_model":"fallback"}
+                return {"verdict":"驳回","max_severity":"严重","severity_counts":{"严重":1,"中等":0,"轻度":0},"full_report":"审计官调用失败，自动驳回","_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
 # ------------------- 交易委员会 -------------------

@@ -1,6 +1,7 @@
 """
-deepseek.py — 生产级三角色闭环 (增强JSON解析鲁棒性)
-- 多级JSON提取策略，自动修复常见格式错误
+deepseek.py — 生产级三角色闭环 (启用JSON强制模式 + 保留容错)
+- 所有模型调用均启用 response_format={"type": "json_object"}
+- 多级JSON提取与修复策略，确保高可用
 - 取消微观数据时效约束
 - 完整闭环：交易员 -> 审计官 -> 委员会
 """
@@ -105,19 +106,23 @@ def extract_json_safe(content: str) -> str:
         except json.JSONDecodeError:
             pass
 
-    # 第4级：修复常见JSON错误
-    # 修复未转义的换行符和制表符
-    json_str = content[start:end+1].strip() if (start != -1 and end != -1) else content.strip()
+    # 第4级：修复常见JSON错误 - 转义未处理的特殊字符
+    if start != -1 and end != -1:
+        json_str = content[start:end+1].strip()
+    else:
+        json_str = content.strip()
+    # 处理字符串中未转义的控制字符
+    json_str = re.sub(r'(?<!\\)\\(?![\\"/bfnrtu])', r'\\\\', json_str)  # 修复单个反斜杠
     json_str = json_str.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
     try:
         json.loads(json_str)
+        logger.warning("JSON通过转义修复成功")
         return json_str
     except json.JSONDecodeError:
         pass
 
     # 第5级：暴力修补 - 在结尾补上缺失的引号和括号
     if json_str.startswith('{'):
-        # 补充缺失的结束符
         if not json_str.endswith('"') and not json_str.endswith('}'):
             json_str += '"}'
         elif json_str.endswith('"'):
@@ -419,7 +424,13 @@ def call_trader(prompt: str) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=TIMEOUT_SECONDS)
     for attempt in range(MAX_RETRIES):
         try:
-            resp = client.chat.completions.create(model=FAST_MODEL, messages=[{"role":"user","content":prompt}], max_tokens=16384, timeout=TIMEOUT_SECONDS)
+            resp = client.chat.completions.create(
+                model=FAST_MODEL,
+                messages=[{"role":"user","content":prompt}],
+                max_tokens=16384,
+                timeout=TIMEOUT_SECONDS,
+                response_format={"type": "json_object"}
+            )
             content = resp.choices[0].message.content or ""
             _log_response("trader", prompt, content)
             if not content.strip(): raise ValueError("空响应")
@@ -459,7 +470,6 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
 - 所有发现必须按“步骤/问题/数据证据/影响/严重性”格式记录。
 - 最终裁决（通过/存疑/驳回）必须仅基于发现的严重性和数量，不受交易员声望影响。
 - 输出必须为纯 JSON，包含完整的审计报告和严重性统计。
-- **务必直接输出纯JSON，不要包含任何额外的文本、解释或代码块标记。**
 
 【审计参考数据】
 - 核心数据覆盖率：{coverage_pct:.0f}%（{available}/{total}）
@@ -495,14 +505,18 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=TIMEOUT_SECONDS)
     for attempt in range(MAX_RETRIES):
         try:
-            resp = client.chat.completions.create(model=FAST_MODEL, messages=[{"role":"user","content":prompt}], max_tokens=4096, timeout=120)
+            resp = client.chat.completions.create(
+                model=FAST_MODEL,
+                messages=[{"role":"user","content":prompt}],
+                max_tokens=4096,
+                timeout=120,
+                response_format={"type": "json_object"}
+            )
             content = resp.choices[0].message.content or ""
             _log_response("reviewer", prompt, content)
-            # 使用增强的解析函数
             rev = try_parse_reviewer_json(content)
             full_report = rev.get("full_report", str(rev))
             full_report = format_reasoning(full_report)
-            # 确保sev_stats完整
             if sum(rev["severity_counts"].values()) == 0 and rev.get("verdict") == "驳回":
                 rev["severity_counts"]["严重"] = 1
                 rev["max_severity"] = "严重"
@@ -525,7 +539,6 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
 - 最终输出必须为纯 JSON，裁决字段优先使用英文值（long/short/neutral、high/medium/low）。
 - 若审计严重性为“严重”，你必须推翻原策略，制定独立的最终策略并给出充分理由。
 - 若维持原判或修改执行，也必须给出理由。
-- **务必直接输出纯JSON，不要包含任何额外的文本、解释或代码块标记。**
 
 【标的】{symbol}，现价：{data.get('mark_price',0):.2f}，锚点：{direction_bias:.3f}
 
@@ -564,7 +577,13 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=TIMEOUT_SECONDS)
     for attempt in range(MAX_RETRIES):
         try:
-            resp = client.chat.completions.create(model=REASONING_MODEL, messages=[{"role":"user","content":prompt}], max_tokens=16384, timeout=120)
+            resp = client.chat.completions.create(
+                model=REASONING_MODEL,
+                messages=[{"role":"user","content":prompt}],
+                max_tokens=16384,
+                timeout=120,
+                response_format={"type": "json_object"}
+            )
             content = resp.choices[0].message.content or ""
             _log_response("judge", prompt, content)
             json_str = extract_json_safe(content)

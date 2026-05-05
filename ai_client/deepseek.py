@@ -272,13 +272,37 @@ def call_reviewer(strategy, data, symbol):
     direction_bias = data.get('direction_bias',0.0)
     micro_q = assess_micro_quality(data)
     ages_info = f"OB{data.get('ob_age','?')}s Taker{data.get('taker_age','?')}s CVD{data.get('cvd_age','?')}s Lg{data.get('large_order_age','?')}s Liq{data.get('liq_age','?')}s"
-    prompt = f"""你是独立风险审计官。逐项核查交易员策略，每条发现严格按“[严重性：高/中/低]”标记结尾。输出纯JSON。
+    prompt = f"""你是一位独立的风控审计官，与首席交易员无任何汇报关系。你的唯一使命是根据客观数据和既定规则，对交易员的策略执行严格、无偏见的审计。你不应受策略方向、仓位大小或交易员声望的影响。
 
-标的：{symbol} 锚点：{direction_bias:.3f} 微观时效：{micro_q['overall']}({ages_info})
-策略：方向{strategy.get('direction')} 仓位{strategy.get('position_size')} 入场{strategy.get('entry_price_low')}-{strategy.get('entry_price_high')} 止损{strategy.get('stop_loss')} 止盈{strategy.get('take_profit')}
-推演：{strategy.get('reasoning','无')}
+【你必须逐项核查以下硬规则，任何违反都将直接导致“驳回”或“存疑”】
+1.  **周期一致性**：周期阶段（价值区/派发区等）是否与策略方向自洽？若价值区做空或派发区做多，必须驳回。
+2.  **微观数据时效**：市场数据新鲜度为{overall}时，高频信号（订单簿、主动成交、CVD）是否被违规使用？若新鲜度为poor却依赖此类信号，必须驳回。
+3.  **核心数据覆盖率**：核心决策字段覆盖率低于70%时，交易员是否遵守了强制降置信度、降仓位的要求？若无，必须驳回。
+4.  **方向锚点冲突**：当`direction_bias`可信且|bias|>0.4时，交易员的方向是否与之冲突？若冲突且无充分数据反证，必须驳回。
+5.  **跨币种论证**：若跨币种数据可用，交易员是否在第二步论据和第四步信号定性中使用了跨币种数据？若遗漏或未处理矛盾，至少“存疑”。
 
-按五节输出审计报告，包含完整 severity_counts。
+【你的审计必须覆盖以下五个维度，每个发现需严格按照格式输出】
+一、遗漏指标与分析缺失
+二、数据与解读错误
+三、逻辑错误（含论证矛盾、周期错配等）
+四、关键反证提示（被交易员忽略的反向信号）
+五、博弈层面审视（入场点与清算区/大单墙的不利重合等）
+
+每条发现的输出格式（必须严格遵守）：
+在[步骤X/决策点]中，交易员[具体问题]。相关指标显示[具体数值/信号]，若纳入分析/修正逻辑，将[强化/削弱/推翻]当前方向判断。[严重性：高/中/低]
+
+【你必须在输出的JSON中提供精确的统计】
+根据所有发现的严重性标记，准确统计“严重”、“中等”、“轻度”的数量，并据此给出“max_severity”和“verdict”。请确保统计与报告正文中的标记完全一致，不得遗漏或偏差。
+
+【审计输入数据】
+- 市场数据新鲜度：{overall}（订单簿{ob_age}s， 主动成交{taker_age}s， CVD{cvd_age}s， 大单{large_age}s， 清算{liq_age}s）
+- 核心数据覆盖率：{coverage}%（{available}/{total}）
+- 系统预判穿刺倾向：{puncture_direction}， 诱饵风险：{lure_risk}
+- 方向锚点 direction_bias：{direction_bias} (可信度：{bias_quality})
+- 交易员策略方向：{trader_direction}， 仓位：{trader_position_size}， 盈亏比：{rr}
+
+现在，请基于以上规则和输入，对交易员的完整推演进行审计，按五节输出审计报告，包含完整 severity_counts。
+
 【输出JSON】{{"verdict":"通过/存疑/驳回","max_severity":"严重/中等/轻度/无","severity_counts":{{"严重":0,"中等":0,"轻度":0}},"full_report":"完整审计文本"}}
 """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"),base_url="https://api.deepseek.com",timeout=TIMEOUT_SECONDS)

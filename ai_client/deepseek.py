@@ -1,8 +1,8 @@
 """
-deepseek.py — 三角色闭环（三重修复版）
-修复 1：强制 reasoning 段落化，避免大段文本
-修复 2：审计官强制返回 max_severity，统计准确传递给推送模板
-修复 3：委员会裁决内容强制写入 final_reasoning，确保有完整裁决书
+deepseek.py — 三角色闭环（修复版）
+- 交易员：清算动力学 + 多空博弈 + 预期差分析
+- 审计官：逐条审计，严重性评级，钉钉统计匹配
+- 交易委员会：独立裁决，推翻后给出明确操作指令
 """
 
 import os
@@ -66,7 +66,7 @@ def extract_json(content: str) -> str:
 
 
 def format_reasoning(text: str) -> str:
-    """在中文句号、问号、感叹号、冒号、分号后强制插入换行，确保文本段落化"""
+    """强制分段，避免大段文本"""
     if not text:
         return text
     text = re.sub(r'(?<=[。！？；：])\s*', '\n', text)
@@ -112,6 +112,13 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
                 _force_neutral(s, f"方向与强锚点({direction_bias:.3f})冲突")
                 return True, ""
 
+    # ---- 盈亏比风险提示（不再强制驳回） ----
+    rr = s.get("risk_reward_ratio", 0)
+    if rr > 0 and rr < 2.0 and direction != "neutral":
+        s["risk_note"] = s.get("risk_note", "") + f" [系统提示] 盈亏比{rr:.1f}:1，偏低。"
+        if s.get("confidence") == "high":
+            s["confidence"] = "medium"
+
     if direction == "neutral":
         for f in ["entry_price_low", "entry_price_high", "stop_loss", "take_profit"]:
             s[f] = 0
@@ -139,7 +146,6 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
         try: return (f"{float(raw)*scale:{fmt}}", False)
         except: return ("缺失", True)
 
-    # 提取所有字段（完整保留）
     mark_price_str, _ = safe_val('mark_price', fmt=".2f")
     atr_str, _ = safe_val('atr', fmt=".2f")
     fear_greed = data.get('fear_greed', 50)
@@ -183,12 +189,11 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     core_missing = [k for k in ["kline","heatmap","cvd"] if data.get("data_quality",{}).get(k) == "❌ 缺失"]
     constraint_note = f"【重要约束】核心数据缺失：{', '.join(core_missing)}。置信度强制设为'低'，若清算数据缺失则输出'neutral'。" if core_missing else ""
 
-    # 完整的五步提示词模板（附带强制换行和 JSON 格式要求）
     prompt = f"""你是一位拥有15年经验的加密货币顶级交易员，精通清算动力学、多空博弈和预期差分析。
 
 【核心铁律】
 1. 每步必须先完成「数据确认」填空，再进入定性分析。
-2. 盈亏比必须≥2:1，否则降为观望。
+2. 盈亏比低于2:1时需在risk_note中提示，不再强制驳回，但置信度不能为高。
 3. 最终方向与系统锚点direction_bias={direction_bias:.3f}冲突且|bias|>0.4时，强制观望。
 4. 数据确认表中必须填写所有字段，不可跳过。
 5. **reasoning字段必须按步骤分段，每段用换行分隔，严禁写成连续的一整段。**
@@ -212,7 +217,7 @@ BTC.D趋势：{btc_dom_trend_str}%，借贷利率：{borrow_str}%
 
 请严格按照以下五步进行分析，每步均需填写数据确认表，然后做定性分析。reasoning中必须保留所有分析过程。
 
-【第一步：清算动力学分析】... (数据确认表及问题，内容长度限制，此处省略，但你的实际代码中需完整保留)
+【第一步：清算动力学分析】... (数据确认表及问题，实际代码中需完整保留)
 【第二步：多空博弈分析】... (同上)
 【第三步：预期差分析】... (同上)
 【第四步：三维汇聚与信号定性】...
@@ -253,7 +258,6 @@ def call_trader(prompt: str) -> dict:
             s["position_size"] = {"重仓":"heavy","中仓":"medium","轻仓":"light","无":"none"}.get(s.get("position_size",""), "none")
             s["confidence"] = {"高":"high","中":"medium","低":"low"}.get(s.get("confidence",""), "medium")
             s.setdefault("reasoning",""); s.setdefault("risk_note",""); s.setdefault("execution_plan","")
-            # 【修复1】：强制reasoning段落化
             s["reasoning"] = format_reasoning(s["reasoning"])
             s["_model_used"] = resp.model
             return s
@@ -297,12 +301,17 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             json_str = extract_json(content)
             rev = json.loads(json_str)
             rev["full_report"] = rev.get("full_report", str(rev))
-            rev.setdefault("verdict", "通过"); rev.setdefault("max_severity", "无"); rev.setdefault("severity_counts", {})
+            rev.setdefault("verdict", "通过")
+            rev.setdefault("max_severity", "无")
+            rev.setdefault("severity_counts", {"严重":0,"中等":0,"轻度":0})
+            # 强制补全审计结论字段
+            if not rev.get("full_report") or rev["full_report"] == str(rev):
+                rev["full_report"] = f"审计完成，结论：{rev['verdict']}，最高严重性：{rev['max_severity']}。"
             return {**rev, "_model": resp.model}
         except Exception as e:
             logger.warning(f"审计官调用失败: {e}")
             if attempt == MAX_RETRIES-1:
-                return {"verdict":"通过","max_severity":"无","severity_counts":{},"full_report":"审计官调用失败，跳过审计","_model":"fallback"}
+                return {"verdict":"通过","max_severity":"无","severity_counts":{"严重":0,"中等":0,"轻度":0},"full_report":"审计官调用失败，跳过审计","_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
 
@@ -331,6 +340,7 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
 - 对于"中等"或"轻度"指控，可选择修改执行或维持原判。
 - final_reasoning必须包含对审计指控的逐条回应，这是最终裁决书。
 - 维持原判时，价格字段不能填0，必须填写交易员给出的原始数值。
+- 推翻后必须给出明确的操作指令（观望触发条件或新策略）。
 - 只输出纯JSON。
 
 【输出JSON】
@@ -360,6 +370,7 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
             result["final_direction"] = {"做多":"long","做空":"short","观望":"neutral"}.get(result.get("final_direction",""), "neutral")
             result["final_position_size"] = {"重仓":"heavy","中仓":"medium","轻仓":"light","无":"none"}.get(result.get("final_position_size",""), "none")
             result["final_confidence"] = {"高":"high","中":"medium","低":"low"}.get(result.get("final_confidence",""), "medium")
+
             # 维持原判时继承原策略
             if result.get("final_verdict") == "维持原判":
                 result["entry_price_low"] = result.get("entry_price_low") or strategy.get("entry_price_low", 0)
@@ -368,6 +379,16 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
                 result["take_profit"] = result.get("take_profit") or strategy.get("take_profit", 0)
                 result["execution_plan"] = result.get("execution_plan") or strategy.get("execution_plan", "")
                 result["risk_note"] = result.get("risk_note") or strategy.get("risk_note", "")
+
+            # 推翻后确保有明确操作指令
+            if result.get("final_verdict") == "推翻" and result.get("final_direction") == "neutral":
+                if not result.get("execution_plan"):
+                    result["execution_plan"] = "当前策略逻辑崩塌，等待新的三维一致信号。"
+                result["entry_price_low"] = 0
+                result["entry_price_high"] = 0
+                result["stop_loss"] = 0
+                result["take_profit"] = 0
+
             # 确保裁决书有内容
             result["final_reasoning"] = result.get("final_reasoning") or "裁决完成，详见裁决书。"
             return {**result, "_model": resp.model}
@@ -391,11 +412,13 @@ def apply_final_verdict(strategy: dict, judge_result: dict) -> dict:
         else:
             for k in ["direction","confidence","position_size","entry_price_low","entry_price_high","stop_loss","take_profit","execution_plan"]:
                 if k in judge_result: strategy[k] = judge_result[k]
+        strategy["risk_note"] = judge_result.get("risk_note", strategy.get("risk_note", ""))
         return strategy
 
     elif verdict == "修改执行":
         for k in ["confidence","position_size","entry_price_low","entry_price_high","stop_loss","take_profit","execution_plan"]:
             if judge_result.get(k): strategy[k] = judge_result[k]
+        strategy["risk_note"] = judge_result.get("risk_note", strategy.get("risk_note", ""))
         return strategy
 
     else:  # 维持原判

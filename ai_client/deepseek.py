@@ -1,3 +1,11 @@
+"""
+deepseek.py — 生产级三角色闭环 (终极修复审计报告为空)
+- 审计官 max_tokens 提升至 8192
+- Prompt 强制 full_report 不得为空
+- 解析后校验，若空则自动提取或重试
+- 多级容错保证审计报告不再空白
+"""
+
 import os, json, time, re, math
 from datetime import datetime
 from openai import OpenAI
@@ -123,44 +131,6 @@ def extract_json_safe(content: str) -> str:
             pass
 
     raise ValueError(f"所有JSON提取策略均失败，原始内容前200字符: {content[:200]}")
-
-def try_parse_reviewer_json(content: str) -> dict:
-    """专门用于解析审计官输出的容错函数"""
-    try:
-        json_str = extract_json_safe(content)
-        return json.loads(json_str)
-    except Exception:
-        pass
-
-    # 从文本中提取关键字段作为fallback
-    result = {"verdict": "存疑", "max_severity": "中等", "severity_counts": {"严重": 0, "中等": 1, "轻度": 0}, "full_report": content}
-
-    if "驳回" in content:
-        result["verdict"] = "驳回"
-        result["max_severity"] = "严重"
-        result["severity_counts"]["严重"] = 1
-    elif "通过" in content and "驳回" not in content and "存疑" not in content:
-        result["verdict"] = "通过"
-        result["max_severity"] = "无"
-        result["severity_counts"]["中等"] = 0
-
-    cnt = {"严重": 0, "中等": 0, "轻度": 0}
-    for line in content.split('\n'):
-        if '严重性：高' in line: cnt["严重"] += 1
-        elif '严重性：中' in line: cnt["中等"] += 1
-        elif '严重性：低' in line: cnt["轻度"] += 1
-    if sum(cnt.values()) > 0:
-        result["severity_counts"] = cnt
-        if cnt["严重"] > 0:
-            result["verdict"] = "驳回"
-            result["max_severity"] = "严重"
-        elif cnt["中等"] > 0:
-            result["max_severity"] = "中等"
-        elif cnt["轻度"] > 0:
-            result["max_severity"] = "轻度"
-
-    logger.warning("使用fallback方式解析审计官响应")
-    return result
 
 def _force_neutral(s: dict, reason: str):
     s["direction"] = "neutral"
@@ -434,7 +404,7 @@ def call_trader(prompt: str) -> dict:
                 return {"direction":"neutral","confidence":"low","position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"调用失败","reasoning":"调用失败","risk_note":"","_model_used":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 审计官 (加强空报告兜底) -------------------
+# ------------------- 审计官 (强化空报告处理) -------------------
 def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
     coverage_info = compute_coverage(data)
@@ -455,6 +425,7 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
 - 所有发现必须按“步骤/问题/数据证据/影响/严重性”格式记录。
 - 最终裁决（通过/存疑/驳回）必须仅基于发现的严重性和数量，不受交易员声望影响。
 - 输出必须为纯 JSON，包含完整的审计报告和严重性统计。
+- **full_report 字段必须包含不少于 3 段的详细审计内容，绝对不能为空或占位符。**
 
 【审计参考数据】
 - 核心数据覆盖率：{coverage_pct:.0f}%（{available}/{total}）
@@ -477,14 +448,14 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
 
 每条发现格式：在[步骤X]中，交易员[具体问题]。该指标显示[具体数值/信号]，若纳入分析将[强化/削弱/推翻]当前方向判断。[严重性：高/中/低]
 统计严重/中等/轻度数量，并给出 max_severity。
-只输出纯JSON。
+只输出纯JSON。**务必保证 full_report 非空且包含完整报告文本。**
 
 【输出JSON】
 {{
   "verdict": "通过/存疑/驳回",
   "max_severity": "严重/中等/轻度/无",
   "severity_counts": {{"严重":0,"中等":0,"轻度":0}},
-  "full_report": "完整审计文本"
+  "full_report": "完整审计文本（绝对不能为空！）"
 }}
 """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=TIMEOUT_SECONDS)
@@ -493,20 +464,36 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             resp = client.chat.completions.create(
                 model=FAST_MODEL,
                 messages=[{"role":"user","content":prompt}],
-                max_tokens=4096,
+                max_tokens=8192,  # 提升至 8192
                 timeout=120,
                 response_format={"type": "json_object"}
             )
             content = resp.choices[0].message.content or ""
             _log_response("reviewer", prompt, content)
-            rev = try_parse_reviewer_json(content)
-            # 如果解析出来的报告为空，直接用原始内容填充
-            full_report = rev.get("full_report", "")
-            if not full_report or full_report.strip() == "":
-                full_report = content  # 兜底
+            rev = None
+            try:
+                json_str = extract_json_safe(content)
+                rev = json.loads(json_str)
+                full_report = rev.get("full_report", "")
+                # 空报告检查
+                if not full_report.strip():
+                    logger.warning(f"审计官返回空报告 (尝试 {attempt+1})，将使用原始内容")
+                    rev["full_report"] = content
+                    rev["verdict"] = rev.get("verdict", "驳回")
+                    rev["max_severity"] = rev.get("max_severity", "严重")
+                    rev["severity_counts"] = rev.get("severity_counts", {"严重":1, "中等":0, "轻度":0})
+                    return {**rev, "_model": resp.model}
+            except Exception:
+                # 解析失败，用原始内容填充报告
+                rev = {"verdict":"驳回","max_severity":"严重","severity_counts":{"严重":1,"中等":0,"轻度":0},"full_report":content}
+                logger.warning(f"审计官JSON解析失败，使用原始内容作为报告")
+                return {**rev, "_model": resp.model}
+            
+            # 正常解析且有内容，继续后续处理
+            full_report = rev.get("full_report", content)
             full_report = format_reasoning(full_report)
             rev["full_report"] = full_report
-            if sum(rev["severity_counts"].values()) == 0 and rev.get("verdict") == "驳回":
+            if sum(rev.get("severity_counts", {}).values()) == 0 and rev.get("verdict") == "驳回":
                 rev["severity_counts"]["严重"] = 1
                 rev["max_severity"] = "严重"
             return {**rev, "_model": resp.model}

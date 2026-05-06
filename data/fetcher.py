@@ -6,9 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Semaphore
 from utils.logger import logger
 
-
 class RateLimiter:
-    """线程安全的轻量限速器（极短间隔，基本不限制）"""
     def __init__(self, min_interval: float = 0.05):
         self.min_interval = min_interval
         self._last_request_time = 0.0
@@ -21,7 +19,6 @@ class RateLimiter:
             if elapsed < self.min_interval:
                 time.sleep(self.min_interval - elapsed)
             self._last_request_time = time.time()
-
 
 class CoinGlassClient:
     def __init__(self):
@@ -47,7 +44,6 @@ class CoinGlassClient:
             exchanges_to_try = [base_params.get("exchange", self.primary_exchange)]
 
         last_error = None
-
         for exchange in exchanges_to_try:
             current_params = base_params.copy()
             if exchange is not None and "exchange" in current_params:
@@ -112,7 +108,6 @@ class CoinGlassClient:
             return {}
         raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
 
-    # ---------- 基础工具函数 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -122,13 +117,19 @@ class CoinGlassClient:
         return 0.0
 
     @staticmethod
+    def _calc_percentile_values(values: list, current: float) -> float:
+        if not values:
+            return 50.0
+        sorted_vals = sorted(values)
+        rank = sum(1 for v in sorted_vals if v < current)
+        return round((rank / len(sorted_vals)) * 100, 2)
+
+    @staticmethod
     def _calc_percentile(history: list, current: float) -> float:
         if not history:
             return 50.0
         values = [CoinGlassClient._get_close_from_candle(item) for item in history]
-        values.sort()
-        rank = sum(1 for v in values if v < current)
-        return round((rank / len(values)) * 100, 2)
+        return CoinGlassClient._calc_percentile_values(values, current)
 
     @staticmethod
     def _calc_slope(series: list) -> float:
@@ -159,10 +160,9 @@ class CoinGlassClient:
         return atrs
 
     def _get_symbol(self, base: str) -> str:
-        """生成 OKX 永续合约格式的 symbol，如 ETH-USDT-SWAP"""
         return f"{base}-USDT-SWAP"
 
-    # ========== 原有接口 ==========
+    # ---- 基础数据接口 (保持完整) ----
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=False, silent_fail=True)
@@ -263,7 +263,7 @@ class CoinGlassClient:
         try:
             eth_kline = self.get_kline_history("ETH", "4h", 42)
             btc_kline = self.get_kline_history("BTC", "4h", 42)
-            if not eth_kline or not btc_kline:
+            if not isinstance(eth_kline, list) or not isinstance(btc_kline, list) or not eth_kline or not btc_kline:
                 return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
             ratios = []
             for ec, bc in zip(eth_kline, btc_kline):
@@ -275,15 +275,12 @@ class CoinGlassClient:
                 return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
             current = ratios[-1]
             ma_7d = sum(ratios) / len(ratios)
-            sorted_r = sorted(ratios)
-            rank = sum(1 for r in sorted_r if r < current)
-            percentile = round((rank / len(sorted_r)) * 100, 2)
+            percentile = self._calc_percentile_values(ratios, current)
             return {"current": current, "ma_7d": round(ma_7d, 6), "percentile_7d": percentile}
         except Exception as e:
             logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
             return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
-    # ---------- 其他接口 ----------
     def get_global_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=False, silent_fail=True)
@@ -369,18 +366,7 @@ class CoinGlassClient:
             }
         return {"5m": 0.0, "1h": 0.0, "24h": 0.0}
 
-    # ========== 衍生计算 ==========
-    # (省略，请确保你的完整代码中包含原来的 _calc_retail_whale_divergence 等方法)
-
-    def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
-        # (省略，请保留你原来的 get_all_data 完整实现)
-        pass
-
-    def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
-        # (省略，请保留你原来的 _build_main_data 完整实现，并使用之前修正过的稳定币、BTC占比、借贷利率、链上数据解析逻辑)
-        pass
-
-    # ========== 衍生计算 ==========
+    # ---------- 衍生计算 ----------
     def _calc_retail_whale_divergence(self, global_ls: float, top_ls_percentile: float) -> float:
         retail_signal = (global_ls - 1.0) * 100
         whale_signal = (top_ls_percentile - 50.0)
@@ -410,9 +396,7 @@ class CoinGlassClient:
         if not cgdi_list:
             return 50.0
         values = [float(d.get("cgdi_index_value", 0) or 0) for d in cgdi_list]
-        values.sort()
-        rank = sum(1 for v in values if v < current_val)
-        return round((rank / len(values)) * 100, 2)
+        return self._calc_percentile_values(values, current_val)
 
     def _calc_liq_bias(self, liq_data: list, hours: int = 1) -> dict:
         if not liq_data:
@@ -430,7 +414,100 @@ class CoinGlassClient:
             return 0.0
         return 1.0 if futures_netflow_24h * spot_netflow_24h >= 0 else -1.0
 
-    # ========== 主数据获取与组装 ==========
+    @staticmethod
+    def _calc_momentum(series: list, window: int = 6) -> float:
+        if len(series) < window:
+            return 0.0
+        recent = series[-window:]
+        n = len(recent)
+        x_mean = (n - 1) / 2
+        y_mean = sum(recent) / n
+        num = sum((i - x_mean) * (recent[i] - y_mean) for i in range(n))
+        den = sum((i - x_mean) ** 2 for i in range(n))
+        return num / den if den != 0 else 0.0
+
+    @staticmethod
+    def _calc_direction_bias(above_liq, below_liq, above_trigger, below_trigger,
+                             large_order_pressure, divergence, cvd_slope, taker_ratio,
+                             netflow_dict, cgdi_percentile, fear_greed,
+                             liq_bias_1h, spot_vs_futures_divergence,
+                             basis_current, basis_percentile,
+                             stablecoin_trend, btc_dom_trend,
+                             mark_price, sth_rp, lth_rp, sth_sopr, lth_sopr,
+                             borrow_rate):
+        score = 0.0
+        if above_trigger > 0 and below_trigger > 0:
+            above_score = above_liq / above_trigger
+            below_score = below_liq / below_trigger
+            diff = below_score - above_score
+            score += max(-1, min(1, diff / (abs(above_score) + abs(below_score) + 1e-8))) * 0.25
+        score += -large_order_pressure * 0.15
+        score += max(-1, min(1, divergence)) * 0.15
+        flow_signal = 0.0
+        if cvd_slope > 0 and taker_ratio > 1.02:
+            flow_signal = 0.10
+        elif cvd_slope < 0 and taker_ratio < 0.98:
+            flow_signal = -0.10
+        score += flow_signal
+        netflow_1h = netflow_dict.get("1h", 0)
+        netflow_4h = netflow_dict.get("4h", 0)
+        if netflow_4h != 0:
+            acc = (netflow_1h - netflow_4h/4) / (abs(netflow_4h)/4 + 1e-8)
+            score += max(-0.05, min(0.05, acc))
+        else:
+            if netflow_1h > 0:
+                score += 0.03
+            elif netflow_1h < 0:
+                score -= 0.03
+        if cgdi_percentile > 80:
+            score -= 0.05
+        elif cgdi_percentile < 20:
+            score += 0.05
+        if fear_greed > 75:
+            score -= 0.05
+        elif fear_greed < 25:
+            score += 0.05
+        score += -liq_bias_1h * 0.05
+        score += spot_vs_futures_divergence * 0.05
+        if basis_percentile > 80:
+            score -= 0.05
+        elif basis_percentile < 20:
+            score += 0.05
+        if stablecoin_trend > 2:
+            score += 0.05
+        elif stablecoin_trend < -2:
+            score -= 0.05
+        if btc_dom_trend > 2:
+            score -= 0.05
+        elif btc_dom_trend < -2:
+            score += 0.05
+        if sth_rp > 0 and mark_price > sth_rp and sth_sopr > 1.0:
+            score += 0.05
+        elif sth_rp > 0 and mark_price < sth_rp and sth_sopr < 1.0:
+            score -= 0.05
+        if borrow_rate > 0.05:
+            score -= 0.03
+        elif borrow_rate < 0.01:
+            score += 0.02
+        return max(-1.0, min(1.0, score))
+
+    @staticmethod
+    def _calc_liquidity_bias(above_liq, below_liq, above_trigger, below_trigger, orderbook_imbalance):
+        try:
+            at = float(above_trigger) if above_trigger != 'N/A' else 0
+            bt = float(below_trigger) if below_trigger != 'N/A' else 0
+            above_score = (above_liq / at) if at > 0 else 0
+            below_score = (below_liq / bt) if bt > 0 else 0
+            if above_score > below_score * 1.2:
+                return 'long'
+            elif below_score > above_score * 1.2:
+                return 'short'
+            else:
+                return 'neutral'
+        except:
+            return 'neutral'
+
+    # ---------- 主数据获取与组装 ----------
     def get_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> dict:
         base_symbol = symbol.upper()
         all_tasks = {
@@ -462,14 +539,11 @@ class CoinGlassClient:
             "spot_netflow": lambda: self.get_spot_netflow(base_symbol),
         }
 
-        # 拆分成两批：第一批10个，第二批剩下的
         tasks_list = list(all_tasks.items())
         batch1 = dict(tasks_list[:10])
         batch2 = dict(tasks_list[10:])
-
         results = {}
 
-        # 第一批：并发10个
         with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_key = {executor.submit(task): key for key, task in batch1.items()}
             for future in as_completed(future_to_key):
@@ -480,11 +554,9 @@ class CoinGlassClient:
                     logger.error(f"获取 {key} 失败: {e}")
                     results[key] = None
 
-        # 等待3秒
         logger.info("第一批请求完成，等待3秒后开始第二批...")
         time.sleep(3)
 
-        # 第二批：并发执行剩余所有
         with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_key = {executor.submit(task): key for key, task in batch2.items()}
             for future in as_completed(future_to_key):
@@ -499,6 +571,7 @@ class CoinGlassClient:
         return self._build_main_data(results, base_symbol, eth_btc_data, kline_limit)
 
     def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
+        # 解包原始数据 (与之前相同)
         kline_data = results.get("kline", [])
         oi_data = results.get("oi", [])
         funding_data = results.get("funding", [])
@@ -550,7 +623,7 @@ class CoinGlassClient:
                     intensity = float(item[2])
                     if price > mark_price: above_liq += intensity
                     elif price < mark_price: below_liq += intensity
-                    pain_map[price] = intensity
+                    pain_map[price] = pain_map.get(price, 0) + intensity  # 修复累加
             liq_ratio = above_liq / below_liq if below_liq > 0 else 0.0
             if pain_map:
                 above_prices = [p for p in pain_map if p > mark_price]
@@ -598,6 +671,7 @@ class CoinGlassClient:
         fear_greed = fg_data.get("current", 50)
         fear_greed_prev_7d = fg_data.get("prev_7d", 50)
 
+        # 二阶动量
         cvd_acceleration = self._calc_momentum(cvd_series[-60:]) if len(cvd_series) >= 60 else 0.0
         oi_series = [self._get_close_from_candle(c) for c in oi_data] if oi_data else []
         oi_acceleration = self._calc_momentum(oi_series[-30:]) if len(oi_series) >= 30 else 0.0
@@ -632,17 +706,24 @@ class CoinGlassClient:
         short_liq_1h = liq_bias_info.get("short_liq_1h", 0.0)
         liq_bias_1h = liq_bias_info.get("liq_bias_1h", 0.0)
 
-        # 新增指标计算
-        basis_current = 0.0
-        basis_percentile = 50.0
+        # 基差
+        basis_values = []
         if basis_data and len(basis_data) > 0:
             basis_values = [float(b.get("close_basis", 0) or 0) for b in basis_data]
-            basis_current = basis_values[-1]
-            basis_percentile = self._calc_percentile(basis_data, basis_current)
+        basis_current = basis_values[-1] if basis_values else 0.0
+        basis_percentile = self._calc_percentile_values(basis_values, basis_current) if basis_values else 50.0
+        # 基差年化与中位
+        if basis_values:
+            sorted_basis = sorted(basis_values)
+            basis_median = sorted_basis[len(sorted_basis)//2]
+            basis_annualized = ((1 + basis_median/100) ** (365/90) - 1) * 100
+        else:
+            basis_median = 0.0
+            basis_annualized = 0.0
 
-        # ✅ 稳定币市值修正 (基于文档: data -> [ { data_list: [...] } ])
-        stablecoin_trend = 0.0
+        # 稳定币
         stablecoin_mcap_current = 0.0
+        stablecoin_trend = 0.0
         if stablecoin_mcap_data and isinstance(stablecoin_mcap_data, list) and len(stablecoin_mcap_data) > 0:
             first_item = stablecoin_mcap_data[0]
             data_list = first_item.get("data_list", [])
@@ -651,7 +732,6 @@ class CoinGlassClient:
                 if len(data_list) >= 7:
                     stablecoin_trend = (data_list[-1] - data_list[-7]) / (data_list[-7] + 1e-8) * 100
 
-        # ✅ 比特币占比修正 (基于文档: data -> [ { bitcoin_dominance: 94.3595 } ])
         btc_dom_current = 0.0
         btc_dom_trend = 0.0
         if btc_dom_data and len(btc_dom_data) > 0:
@@ -661,32 +741,27 @@ class CoinGlassClient:
                 if len(dom_values) >= 7:
                     btc_dom_trend = (dom_values[-1] - dom_values[-7]) / (dom_values[-7] + 1e-8) * 100
 
-        # ✅ 链上数据修正 (基于文档: data 是一个对象数组，每个对象有 "value" 字段)
         lth_rp = 0.0
         if lth_rp_data and isinstance(lth_rp_data, list) and len(lth_rp_data) > 0:
             last_item = lth_rp_data[-1]
             if isinstance(last_item, dict):
                 lth_rp = float(last_item.get("lth_realized_price", 0) or 0)
-
         sth_rp = 0.0
         if sth_rp_data and isinstance(sth_rp_data, list) and len(sth_rp_data) > 0:
             last_item = sth_rp_data[-1]
             if isinstance(last_item, dict):
                 sth_rp = float(last_item.get("sth_realized_price", 0) or 0)
-
         lth_sopr = 1.0
         if lth_sopr_data and isinstance(lth_sopr_data, list) and len(lth_sopr_data) > 0:
             last_item = lth_sopr_data[-1]
             if isinstance(last_item, dict):
                 lth_sopr = float(last_item.get("slh_sopr", 1.0) or 1.0)
-
         sth_sopr = 1.0
         if sth_sopr_data and isinstance(sth_sopr_data, list) and len(sth_sopr_data) > 0:
             last_item = sth_sopr_data[-1]
             if isinstance(last_item, dict):
                 sth_sopr = float(last_item.get("sth_sopr", 1.0) or 1.0)
 
-        # ✅ 借贷利率修正 (基于文档: data -> [ { interest_rate: 0.002989 } ])
         borrow_rate_current = 0.0
         if borrow_rate_data and len(borrow_rate_data) > 0:
             rates = [float(d.get("interest_rate", 0)) for d in borrow_rate_data if d.get("interest_rate") is not None]
@@ -695,30 +770,20 @@ class CoinGlassClient:
 
         spot_netflow_24h = spot_netflow_data.get("24h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
         spot_netflow_1h = spot_netflow_data.get("1h", 0.0) if isinstance(spot_netflow_data, dict) else 0.0
-
-        spot_vs_futures_divergence = self._calc_spot_vs_futures_divergence(
-            netflow_dict.get("24h", 0.0), spot_netflow_24h
-        )
+        spot_vs_futures_divergence = self._calc_spot_vs_futures_divergence(netflow_dict.get("24h", 0.0), spot_netflow_24h)
 
         direction_bias = self._calc_direction_bias(
             above_liq, below_liq, above_trigger_val, below_trigger_val,
-            large_order_pressure,
-            retail_whale_divergence,
-            cvd_slope, taker_ratio_1h,
-            netflow_dict,
-            cgdi_percentile,
-            fear_greed,
-            liq_bias_1h,
-            spot_vs_futures_divergence,
+            large_order_pressure, retail_whale_divergence, cvd_slope, taker_ratio_1h,
+            netflow_dict, cgdi_percentile, fear_greed,
+            liq_bias_1h, spot_vs_futures_divergence,
             basis_current, basis_percentile,
-            stablecoin_trend,
-            btc_dom_trend,
+            stablecoin_trend, btc_dom_trend,
             mark_price, sth_rp, lth_rp, sth_sopr, lth_sopr,
-            borrow_rate_current,
+            borrow_rate_current
         )
 
-        liquidity_bias = self._calc_liquidity_bias(above_liq, below_liq, above_trigger_val, below_trigger_val, orderbook.get("imbalance", 0.0))
-
+        liquidity_bias = self._calc_liquidity_bias(above_liq, below_liq, above_trigger_str, below_trigger_str, orderbook.get("imbalance", 0.0))
         lure_risk_factor = 0.0
         try:
             if orderbook.get("imbalance", 0) < -0.1 and below_trigger_val < above_trigger_val:
@@ -794,6 +859,8 @@ class CoinGlassClient:
             "liq_bias_1h": liq_bias_1h,
             "basis_current": basis_current,
             "basis_percentile": basis_percentile,
+            "basis_annualized": basis_annualized,
+            "basis_median": basis_median,
             "stablecoin_mcap": stablecoin_mcap_current,
             "stablecoin_trend_7d": stablecoin_trend,
             "btc_dominance": btc_dom_current,
@@ -808,113 +875,7 @@ class CoinGlassClient:
             "spot_vs_futures_divergence": spot_vs_futures_divergence,
         }
 
-    @staticmethod
-    def _calc_direction_bias(above_liq, below_liq, above_trigger, below_trigger,
-                             large_order_pressure, divergence, cvd_slope, taker_ratio,
-                             netflow_dict, cgdi_percentile, fear_greed,
-                             liq_bias_1h, spot_vs_futures_divergence,
-                             basis_current, basis_percentile,
-                             stablecoin_trend, btc_dom_trend,
-                             mark_price, sth_rp, lth_rp, sth_sopr, lth_sopr,
-                             borrow_rate):
-        score = 0.0
-
-        if above_trigger > 0 and below_trigger > 0:
-            above_score = above_liq / above_trigger
-            below_score = below_liq / below_trigger
-            diff = below_score - above_score
-            score += max(-1, min(1, diff / (abs(above_score) + abs(below_score) + 1e-8))) * 0.25
-
-        score += -large_order_pressure * 0.15
-        score += max(-1, min(1, divergence)) * 0.15
-
-        flow_signal = 0.0
-        if cvd_slope > 0 and taker_ratio > 1.02:
-            flow_signal = 0.10
-        elif cvd_slope < 0 and taker_ratio < 0.98:
-            flow_signal = -0.10
-        score += flow_signal
-
-        netflow_1h = netflow_dict.get("1h", 0)
-        netflow_4h = netflow_dict.get("4h", 0)
-        if netflow_4h != 0:
-            acc = (netflow_1h - netflow_4h/4) / (abs(netflow_4h)/4 + 1e-8)
-            score += max(-0.05, min(0.05, acc))
-        else:
-            if netflow_1h > 0:
-                score += 0.03
-            elif netflow_1h < 0:
-                score -= 0.03
-
-        if cgdi_percentile > 80:
-            score -= 0.05
-        elif cgdi_percentile < 20:
-            score += 0.05
-
-        if fear_greed > 75:
-            score -= 0.05
-        elif fear_greed < 25:
-            score += 0.05
-
-        score += -liq_bias_1h * 0.05
-        score += spot_vs_futures_divergence * 0.05
-
-        if basis_percentile > 80:
-            score -= 0.05
-        elif basis_percentile < 20:
-            score += 0.05
-
-        if stablecoin_trend > 2:
-            score += 0.05
-        elif stablecoin_trend < -2:
-            score -= 0.05
-
-        if btc_dom_trend > 2:
-            score -= 0.05
-        elif btc_dom_trend < -2:
-            score += 0.05
-
-        if sth_rp > 0 and mark_price > sth_rp and sth_sopr > 1.0:
-            score += 0.05
-        elif sth_rp > 0 and mark_price < sth_rp and sth_sopr < 1.0:
-            score -= 0.05
-
-        if borrow_rate > 0.05:
-            score -= 0.03
-        elif borrow_rate < 0.01:
-            score += 0.02
-
-        return max(-1.0, min(1.0, score))
-
-    @staticmethod
-    def _calc_momentum(series: list, window: int = 6) -> float:
-        if len(series) < window:
-            return 0.0
-        recent = series[-window:]
-        n = len(recent)
-        x_mean = (n - 1) / 2
-        y_mean = sum(recent) / n
-        num = sum((i - x_mean) * (recent[i] - y_mean) for i in range(n))
-        den = sum((i - x_mean) ** 2 for i in range(n))
-        return num / den if den != 0 else 0.0
-
-    @staticmethod
-    def _calc_liquidity_bias(above_liq, below_liq, above_trigger, below_trigger, orderbook_imbalance):
-        try:
-            at = float(above_trigger) if above_trigger != 'N/A' else 0
-            bt = float(below_trigger) if below_trigger != 'N/A' else 0
-            above_score = (above_liq / at) if at > 0 else 0
-            below_score = (below_liq / bt) if bt > 0 else 0
-            if above_score > below_score * 1.2:
-                return 'long'
-            elif below_score > above_score * 1.2:
-                return 'short'
-            else:
-                return 'neutral'
-        except:
-            return 'neutral'
-
-    # ========== 跨币种数据 ==========
+    # ---------- 跨币种数据 ----------
     def fetch_all_data(self, symbol: str = "BTC", kline_limit: int = 100) -> tuple:
         base_symbol = symbol.upper()
         cross_symbol = "ETH" if base_symbol == "BTC" else "BTC"
@@ -930,7 +891,6 @@ class CoinGlassClient:
             "cross_price": lambda: get_current_price(f"{cross_symbol}-USDT-SWAP"),
             "cross_liq_history": lambda: self.get_liquidation_history(cross_symbol, "1h", 24),
         }
-
         results = {}
         with ThreadPoolExecutor(max_workers=8) as executor:
             future_to_key = {executor.submit(task): key for key, task in all_tasks.items()}
@@ -951,11 +911,10 @@ class CoinGlassClient:
         price = results.get("cross_price")
         if price is not None and price > 0:
             mark_price = price
-            data["mark_price"] = mark_price
         else:
             mark_price = 0.0
-            data["mark_price"] = 0.0
             complete = False
+        data["mark_price"] = mark_price
 
         heatmap = results.get("cross_heatmap")
         if heatmap:
@@ -1006,12 +965,10 @@ class CoinGlassClient:
                 current = float(latest.get("top_position_long_short_ratio", 0))
             else:
                 current = self._get_close_from_candle(latest)
-            data["top_ls_ratio"] = current
-            data["top_ls_percentile"] = self._calc_percentile(top_ls, current)
         else:
-            data["top_ls_ratio"] = 0.0
-            data["top_ls_percentile"] = 50.0
-            complete = False
+            current = 0.0
+        data["top_ls_ratio"] = current
+        data["top_ls_percentile"] = self._calc_percentile(top_ls, current) if top_ls else 50.0
 
         cvd = results.get("cross_cvd")
         if cvd:
@@ -1036,7 +993,6 @@ class CoinGlassClient:
 
         data["_complete"] = complete
         return data
-
 
 def get_current_price(inst_id: str) -> float:
     try:

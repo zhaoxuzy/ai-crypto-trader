@@ -46,7 +46,9 @@ def send_dingtalk_message(msg: str, title: str = ""):
 
 
 def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> str:
-    """生成交易员策略推送消息 (无推演概要)"""
+    """
+    生成交易员策略推送消息（保留完整七步推演，无顶部摘要）
+    """
     direction = strategy.get("direction", "neutral")
     direction_emoji = {"long": "🟢做多", "short": "🔴做空", "neutral": "⚪观望"}.get(direction, "⚪观望")
     confidence = strategy.get("confidence", "?")
@@ -62,6 +64,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> s
     data_constraints = strategy.get("data_quality_constraints", "")
     emergency = strategy.get("emergency_mode", "否")
     cross_action = strategy.get("cross_coin_action", "")
+    reasoning = strategy.get("reasoning", "")
 
     msg = f"""### 策略｜{symbol} 初步方案 ⏳ {datetime.now().strftime('%m-%d %H:%M')}
 
@@ -69,6 +72,10 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> s
 置信度 {'⭐'*3 if confidence=='high' else '⭐⭐' if confidence=='medium' else '⭐'} | 仓位 {'💰💰💰重仓' if position_size=='heavy' else '💰💰中仓' if position_size=='medium' else '💰轻仓' if position_size=='light' else '🚫无'}
 
 > 📊 **核心摘要**：{data_constraints if data_constraints else '无特殊数据质量约束'} | 紧急模式：{emergency} | 跨币种：{cross_action}
+
+---
+### 📝 完整推演
+{reasoning if reasoning else '（无推演内容）'}
 
 """
     if risk_note:
@@ -82,15 +89,16 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> s
 
 
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict = None) -> str:
+    """审计官审查报告消息（恢复版）"""
     verdict = reviewer_report.get("overall_verdict", "未知")
     max_severity = reviewer_report.get("max_severity", "无")
     severity_summary = reviewer_report.get("severity_summary", {})
     full_report = reviewer_report.get("full_report", "无")
-
+    
     sev_text = f"严重：{severity_summary.get('严重',0)} 中等：{severity_summary.get('中等',0)} 轻度：{severity_summary.get('轻度',0)}"
     direction = strategy.get("direction", "?")
     position_size = strategy.get("position_size", "?")
-
+    
     msg = f"""### 策略｜{symbol} 审计报告 📋 {datetime.now().strftime('%m-%d %H:%M')}
 {verdict} | 严重性：{max_severity} | {sev_text}
 原方向：{direction} | 原仓位：{position_size}
@@ -101,6 +109,7 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
 
 
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict = None) -> str:
+    """交易委员会裁决消息（恢复版）"""
     verdict = judge_result.get("final_verdict", "未知")
     final_direction = judge_result.get("final_direction", "neutral")
     final_confidence = judge_result.get("final_confidence", "?")

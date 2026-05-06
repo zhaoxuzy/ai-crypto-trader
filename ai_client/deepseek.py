@@ -1,3 +1,10 @@
+"""
+deepseek.py — 生产级三角闭环 (修复 liq_quality 等未定义错误 + P0/P1)
+- 修复所有未定义变量 (liq_quality, onchain_quality, exch_quality 等)
+- P0: 审计官获取一致性校验报告，硬规则自动核查
+- P1: 交易员、审计官注入历史状态，形成连续策略
+"""
+
 import os, json, time, re, math
 from datetime import datetime
 from openai import OpenAI
@@ -238,6 +245,22 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     puncture = compute_liquidation_bias(data)
     dashboard = build_expectation_dashboard(data)
 
+    # ---------- 修复未定义变量 ----------
+    # 1. 数据源质量标记 (暂时统一设为"高"，后续可从实际数据源状态判定)
+    data_quality_map = data.get("data_quality", {})
+    liq_quality = "低" if data_quality_map.get("heatmap") == "❌ 缺失" else "高"
+    exch_quality = "低" if data_quality_map.get("exchange_btc") == "❌ 缺失" else "高"
+    onchain_quality = "低" if data_quality_map.get("sth_sopr") == "❌ 缺失" else "高"
+
+    # 2. 快速响应因子 (从现有数据推算)
+    price_24h_pct = data.get('price_percentile', 50) / 100.0
+    # 7日均1h量无法获取，用1代替，成交量爆发比暂时设为1.0
+    vol_surge = 1.0
+    # ATR振幅比：用 (现价*价格7日分位/ATR) 粗略模拟，或设为1.0
+    atr_str_val = data.get('atr', 0.0)
+    mark_val = data.get('mark_price', 0.0)
+    atr_ratio = (mark_val * 0.02 / atr_str_val) if atr_str_val > 0 else 1.0
+
     # 跨币种上下文
     cross_context = ""
     if eth_data:
@@ -472,6 +495,7 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             if "full_report" not in rev or not rev["full_report"].strip():
                 rev["full_report"] = content
             rev["full_report"] = format_reasoning(rev["full_report"])
+            # 确保严重性统计不为空
             if sum(rev.get("severity_summary",{}).values())==0 and rev.get("overall_verdict")=="驳回":
                 rev["severity_summary"]["严重"] = 1
                 rev["max_severity"] = "严重"

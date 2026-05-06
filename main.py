@@ -51,16 +51,13 @@ def main():
         return
 
     # 发送初步方案
-    preliminary_strategy = strategy.copy()
-    preliminary_strategy["_preliminary"] = True
-    prelim_msg = format_strategy_message(symbol, preliminary_strategy, data)
+    prelim_msg = format_strategy_message(symbol, strategy, data)
     send_dingtalk_message(prelim_msg, title=f"策略｜{symbol} 初步方案 ⏳")
 
     def run_review_and_judge():
         nonlocal strategy
         try:
             reviewer_report = call_reviewer(strategy, data, symbol)
-            # 审计报告推送（新版签名，增加 strategy）
             review_msg = format_review_message(symbol, strategy, reviewer_report, data)
             send_dingtalk_message(review_msg, title=f"策略｜{symbol} 审计报告 📋")
         except Exception as e:
@@ -71,24 +68,14 @@ def main():
         try:
             judge_result = call_judge(strategy, reviewer_report, data, symbol)
             strategy = apply_final_verdict(strategy, judge_result)
-            # 最终计划推送
             final_msg = format_final_decision(symbol, strategy, judge_result, data)
             send_dingtalk_message(final_msg, title=f"策略｜{symbol} 最终计划 ⚖️")
         except Exception as e:
             logger.warning(f"委员会调用异常: {e}")
             _force_neutral(strategy, "委员会调用失败，强制观望")
-            # 即便强制观望也推送最终计划（简化版）
-            final_msg = format_final_decision(symbol, strategy,
-                                              {"final_verdict": "推翻", "final_direction": "neutral",
-                                               "final_confidence": "low", "final_position_size": "none",
-                                               "entry_price_low": 0, "entry_price_high": 0,
-                                               "stop_loss": 0, "take_profit": 0,
-                                               "audit_adopted": False,
-                                               "final_reasoning": "委员会调用失败，自动推翻并观望"},
-                                              data)
+            fake_judge = {"final_verdict":"推翻","final_direction":"neutral","final_confidence":"low","final_position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"final_reasoning":"委员会失败","weighted_signal":{},"audit_responses":[]}
+            final_msg = format_final_decision(symbol, strategy, fake_judge, data)
             send_dingtalk_message(final_msg, title=f"策略｜{symbol} 最终计划 ⚖️")
-
-        strategy["_reviewer_report"] = reviewer_report.get("full_report", "")
 
     review_thread = threading.Thread(target=run_review_and_judge)
     review_thread.start()

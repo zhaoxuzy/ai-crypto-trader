@@ -88,27 +88,42 @@ def _extract_step_summary(reasoning: str) -> str:
 
 # ---------- 消息构建 ----------
 def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> str:
-    direction = _normalize_direction(strategy.get("direction", "neutral"))
-    confidence = strategy.get("confidence", "中")
-    position = strategy.get("position_size", "无")
-    entry_low = strategy.get("entry_price_low", 0) or 0
-    entry_high = strategy.get("entry_price_high", 0) or 0
-    stop = strategy.get("stop_loss", 0) or 0
-    profit = strategy.get("take_profit", 0) or 0
-    reasoning = strategy.get("reasoning", "")
-    mark = data.get('mark_price', 0) if data else 0
+    """
+    生成交易员策略推送消息（无推演概要版）
+    """
+    direction = strategy.get("direction", "neutral")
+    direction_emoji = {"long": "🟢做多", "short": "🔴做空", "neutral": "⚪观望"}.get(direction, "⚪观望")
+    confidence = strategy.get("confidence", "?")
+    position_size = strategy.get("position_size", "?")
+    entry_low = strategy.get("entry_price_low", 0)
+    entry_high = strategy.get("entry_price_high", 0)
+    stop_loss = strategy.get("stop_loss", 0)
+    take_profit = strategy.get("take_profit", 0)
+    mark_price = data.get("mark_price", 0) if data else 0
+    risk_note = strategy.get("risk_note", "")
+    execution_plan = strategy.get("execution_plan", "")
+    risk_reward = strategy.get("risk_reward_ratio", 0)
+    data_constraints = strategy.get("data_quality_constraints", "")
+    
+    # 仅提取紧急模式和跨币种状态
+    emergency = strategy.get("emergency_mode", "否")
+    cross_action = strategy.get("cross_coin_action", "")
 
-    header = f"### 策略｜{symbol} 初步方案 ⏳ {_beijing_time()}\n"
-    line1 = f"{_direction_emoji(direction)} | 现价 {_format_price(mark)} | 入场 {_format_price(entry_low)}-{_format_price(entry_high)}\n"
-    line2 = f"止损 {_format_price(stop)} | 止盈 {_format_price(profit)} | 置信度 {_conf_stars(confidence)} | 仓位 {_pos_emoji(position)}\n\n"
+    msg = f"""### 策略｜{symbol} 初步方案 ⏳ {datetime.now().strftime('%m-%d %H:%M')}
 
-    # 七步摘要
-    msg = header + line1 + line2
-    msg += "> **七步推演概要**\n"
-    msg += _extract_step_summary(reasoning) + "\n\n"
-    # 完整推理截断
-    truncated = _smart_truncate(reasoning, 1800, head_ratio=0.6)
-    msg += "> **完整推演**\n" + _to_quote(truncated)
+{direction_emoji} | 现价 {mark_price:.2f} | 入场 {entry_low:.2f}-{entry_high:.2f} | 止损 {stop_loss:.2f} | 止盈 {take_profit:.2f}
+置信度 {'⭐'*3 if confidence=='high' else '⭐⭐' if confidence=='medium' else '⭐'} | 仓位 {'💰💰💰重仓' if position_size=='heavy' else '💰💰中仓' if position_size=='medium' else '💰轻仓' if position_size=='light' else '🚫无'}
+
+> 📊 **核心摘要**：{data_constraints if data_constraints else '无特殊数据质量约束'} | 紧急模式：{emergency} | 跨币种：{cross_action}
+
+"""
+    if risk_note:
+        msg += f"\n---\n### ❗️ 风险提示\n{risk_note}\n"
+    if execution_plan:
+        msg += f"\n---\n### ⚡ 执行\n{execution_plan}\n"
+    if risk_reward > 0:
+        msg += f"\n**盈亏比**：{risk_reward:.2f}"
+
     return msg
 
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict = None) -> str:

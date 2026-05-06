@@ -1,29 +1,19 @@
-"""
-deepseek.py — 生产级三角色闭环 (终极修复审计报告为空)
-- 审计官 max_tokens 提升至 8192
-- Prompt 强制 full_report 不得为空
-- 解析后校验，若空则自动提取或重试
-- 多级容错保证审计报告不再空白
-"""
-
 import os, json, time, re, math
 from datetime import datetime
 from openai import OpenAI
 from utils.logger import logger
 
-TICK_SIZE = 0.1
+FAST_MODEL = "deepseek-v4-pro"
+REASONING_MODEL = "deepseek-v4-pro"
 MAX_RETRIES = 3
 RETRY_BASE_WAIT = 2
 TIMEOUT_SECONDS = 180
-
-FAST_MODEL = "deepseek-v4-pro"
-REASONING_MODEL = "deepseek-v4-pro"
 
 VALID_DIRECTIONS = {"long", "short", "neutral"}
 VALID_CONFIDENCES = {"high", "medium", "low"}
 VALID_POSITION_SIZES = {"heavy", "medium", "light", "none"}
 
-# ---------- 标准化映射 ----------
+# ---------- 辅助函数 ----------
 def norm_direction(raw: str) -> str:
     if not raw: return "neutral"
     clean = raw.strip().lower()
@@ -45,21 +35,15 @@ def norm_position_size(raw: str) -> str:
     mapping = {"重仓": "heavy", "中仓": "medium", "轻仓": "light", "无": "none", "none": "none"}
     return mapping.get(clean, "none")
 
-# ---------- 文本格式化 ----------
 def format_reasoning(text: str) -> str:
     if not text: return text
     text = text.replace('\\n', '\n')
     text = re.sub(r'(\*\*[^*]+\*\*)', r'\n\1\n', text)
     text = re.sub(r'(【[^】]+】)', r'\n\1\n', text)
     text = re.sub(r'(第[一二三四五六七八九十]+步[：:])', r'\n\1', text)
-    text = re.sub(r'(价格路径推演[：:])', r'\n\1', text)
-    text = re.sub(r'(多头论据|空头论据|交叉质询|博弈维度结论)', r'\n\1', text)
-    text = re.sub(r'(清算维度结论|最终合约策略|入场区间|止损|止盈)', r'\n\1', text)
-    text = re.sub(r'(?<=[。！？；：])\s*', '\n', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-# ---------- 辅助 ----------
 def _log_response(role: str, prompt: str, content: str, reasoning: str = None):
     try:
         os.makedirs("logs", exist_ok=True)
@@ -69,68 +53,37 @@ def _log_response(role: str, prompt: str, content: str, reasoning: str = None):
     except: pass
 
 def extract_json_safe(content: str) -> str:
-    """多级降级策略提取JSON，自动修复常见格式错误"""
     if not content or not content.strip():
         raise ValueError("空响应内容")
-
-    # 第1级：从```json代码块中提取
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
     if m:
         json_str = m.group(1).strip()
-        try:
-            json.loads(json_str)
-            return json_str
-        except json.JSONDecodeError:
-            pass
-
-    # 第2级：从```代码块中提取
+        try: json.loads(json_str); return json_str
+        except: pass
     m = re.search(r'```\s*([\s\S]*?)\s*```', content)
     if m:
         json_str = m.group(1).strip()
-        try:
-            json.loads(json_str)
-            return json_str
-        except json.JSONDecodeError:
-            pass
-
-    # 第3级：从整个文本中寻找第一个{到最后一个}之间的内容
+        try: json.loads(json_str); return json_str
+        except: pass
     start = content.find('{')
     end = content.rfind('}')
     if start != -1 and end != -1 and end > start:
         json_str = content[start:end+1].strip()
-        try:
-            json.loads(json_str)
-            return json_str
-        except json.JSONDecodeError:
-            pass
-
-    # 第4级：修复常见JSON错误 - 转义未处理的特殊字符
+        try: json.loads(json_str); return json_str
+        except: pass
     if start != -1 and end != -1:
         json_str = content[start:end+1].strip()
-    else:
-        json_str = content.strip()
-    json_str = json_str.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-    try:
-        json.loads(json_str)
-        logger.warning("JSON通过转义修复成功")
-        return json_str
-    except json.JSONDecodeError:
-        pass
-
-    # 第5级：暴力修补
+        json_str = json_str.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+        try: json.loads(json_str); logger.warning("JSON通过转义修复成功"); return json_str
+        except: pass
     if json_str.startswith('{'):
         if not json_str.endswith('"') and not json_str.endswith('}'):
             json_str += '"}'
         elif json_str.endswith('"'):
             json_str += '}'
-        try:
-            json.loads(json_str)
-            logger.warning("JSON通过暴力修补修复成功")
-            return json_str
-        except json.JSONDecodeError:
-            pass
-
-    raise ValueError(f"所有JSON提取策略均失败，原始内容前200字符: {content[:200]}")
+        try: json.loads(json_str); logger.warning("JSON通过暴力修补修复成功"); return json_str
+        except: pass
+    raise ValueError(f"JSON提取失败，前200字符: {content[:200]}")
 
 def _force_neutral(s: dict, reason: str):
     s["direction"] = "neutral"
@@ -172,7 +125,7 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         if val is None or float(val)<=0: return False, f"缺少或无效的 {f}"
     return True, ""
 
-# ---------- 清算穿刺 ----------
+# ---------- 清算穿刺 & 仪表盘 ----------
 def compute_liquidation_bias(data: dict) -> dict:
     liq_r = data.get('liq_ratio',1.0)
     cvd = data.get('cvd_slope',0.0)
@@ -192,7 +145,6 @@ def compute_liquidation_bias(data: dict) -> dict:
         if (direction=='up' and pain>mark) or (direction=='down' and pain<mark): pain_eff=True
     return {'puncture_direction':direction,'puncture_score':score,'lure_risk':lure,'pain_magnet':pain_eff}
 
-# ---------- 预期定价仪表盘 ----------
 def build_expectation_dashboard(data: dict) -> str:
     basis_ann = data.get('basis_annualized',0)
     basis_med = data.get('basis_median',8)
@@ -204,8 +156,7 @@ def build_expectation_dashboard(data: dict) -> str:
     pc = data.get('put_call_ratio',1.0)
     price_pct = data.get('price_percentile',50)
     vol_f = data.get('vol_factor',1.0)
-    return f"""【预期定价仪表盘】
-| 指标 | 当前值 | 历史基线 | 定价了什么？ |
+    return f"""| 指标 | 当前值 | 历史基线 | 定价了什么？ |
 |------|--------|----------|------------|
 | 3月基差年化 | {basis_ann:.1f}% | {basis_med:.1f}% | >基线时期货溢价过热 |
 | 资金费率分位 | {fund_pct:.0f}% | 50% | 多头支付意愿 |
@@ -215,15 +166,8 @@ def build_expectation_dashboard(data: dict) -> str:
 | 借贷利率 | {borrow:.2f}% | 均值 | 杠杆紧张度 |
 | P/C比 | {pc:.3f} | 0.7 | >1恐慌对冲 |
 | 价格7日分位 | {price_pct:.0f}% | 50% | 超买/超卖 |
-| 波动因子 | {vol_f:.2f} | 1.0 | 不确定性定价 |
+| 波动因子 | {vol_f:.2f} | 1.0 | 不确定性定价 |"""
 
-预期差分析必须回答：
-1. 市场定价最极端的方向（贪婪或恐惧）是什么？依据仪表盘哪些指标？
-2. 找出与极端定价矛盾的两个指标，构成潜在“预期差”。
-3. 若价格朝矛盾方向移动1 ATR，谁会最意外？
-4. 结论：预期差方向必须基于矛盾证据，不可猜测，且必须与清算预判、多空博弈结论交叉核对。"""
-
-# ---------- 核心数据覆盖率 ----------
 CORE_KEYS = [
     'mark_price','atr','above_liq','below_liq','liq_ratio',
     'cvd_slope','taker_ratio_1h','oi_change_24h','funding_percentile',
@@ -238,11 +182,10 @@ def compute_coverage(data: dict) -> dict:
     coverage = available / total if total > 0 else 0.0
     return {"available": available, "total": total, "coverage": coverage}
 
-# ------------------- 首席交易员提示词 -------------------
+# ------------------- 新七步 Prompt -------------------
 def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: str = None) -> str:
     if cross_symbol is None:
         cross_symbol = "ETH" if symbol=="BTC" else "BTC"
-
     coverage = compute_coverage(data)
 
     def safe_val(key, default=0.0, scale=1.0, fmt=".2f"):
@@ -254,6 +197,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
         try: return (f"{val:{fmt}}", False)
         except: return ("[N/A]", True)
 
+    # 常用字段
     mark_str, _ = safe_val('mark_price', fmt=".2f")
     atr_str, _ = safe_val('atr', fmt=".2f")
     fear_greed = data.get('fear_greed',50)
@@ -294,67 +238,92 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     puncture = compute_liquidation_bias(data)
     dashboard = build_expectation_dashboard(data)
 
+    # 跨币种上下文
     cross_context = ""
     if eth_data:
         cross_context = f"""
-【跨币种数据（{cross_symbol}）—— 用于第二步与第四步】
-| 指标 | {cross_symbol} 当前值 | {symbol} 当前值 |
-|------|---------------------|-----------------|
+【跨币种数据（{cross_symbol}）】
+| 指标 | {cross_symbol} | {symbol} |
+|------|----------------|----------|
 | 清算比值 | {eth_data.get('liq_ratio',0):.2f} | {data.get('liq_ratio',1):.2f} |
 | CVD斜率 | {eth_data.get('cvd_slope',0):.4f} | {data.get('cvd_slope',0):.4f} |
 | OI 24h变化 | {eth_data.get('oi_change_24h',0):+.1f}% | {data.get('oi_change_24h',0):+.1f}% |
 | 顶多空分位 | {eth_data.get('top_ls_percentile',50):.0f}% | {data.get('top_ls_percentile',50):.0f}% |
 | 爆仓偏空比 | {eth_data.get('liq_bias_1h',0):.3f} | {data.get('liq_bias_1h',0):.3f} |
-规则：第二步多空论据可引用，交叉质询矛盾信号须作为攻击依据。
-第四步信号定性：若清算方向一致→系统性趋势，仓位不变；矛盾→单币种独立行情，仓位降一级。"""
+| 资金费率分位 | {eth_data.get('funding_percentile',50):.0f}% | {fund_pct_str}% |
+| 期权痛点 | {eth_data.get('max_pain',0):.2f} | {pain_str} |
+规则：若两币方向一致→系统性趋势；矛盾→单币种行情，仓位降一级。"""
     else:
-        cross_context = """
-【跨币种数据不可用】
-本轮策略的仓位上限自动下调一级，置信度上限为'中'。"""
+        cross_context = "【跨币种数据不可用】仓位上限下调一级，置信度上限为'中'。"
 
-    core_missing = [k for k in ["kline","heatmap","cvd"] if data.get("data_quality",{}).get(k)=="❌ 缺失"]
-    constraint_note = f"【重要约束】核心数据缺失：{', '.join(core_missing)}。置信度强制设为'低'，若清算缺失则输出'neutral'。" if core_missing else ""
+    # 未使用指标提示
+    unused_list = [
+        "retail_whale_divergence", "cvd_acceleration", "oi_acceleration",
+        "spot_vs_futures_divergence", "exchange_btc_change_24h",
+        "lth_realized_price", "sth_realized_price", "lth_sopr", "sth_sopr",
+        "cgdi_current", "stablecoin_mcap", "eth_btc_percentile",
+        "cross_funding_percentile", "cross_max_pain"
+    ]
+    unused_note = "\n".join(f"- {x}" for x in unused_list)
 
     prompt = f"""你是一位拥有 15 年实战经验的加密货币首席交易员，专精于清算动力学、多空博弈定位与预期差分析。
-你的任务：
-- 严格遵循五步分析框架，给出逻辑自洽的策略推演与具体交易计划。
-- 遇到 [N/A] 标记的数据时，该维度不得作为判断依据，且整体置信度必须为低。
-- reasoning 总字数 ≤ 3000 字，结构清晰、分层明确。
-- **第五步必须包含“价格路径推演：”开头的一段文字，综合运用流动性猎杀理论、行为金融学及博弈论进行推演，缺失此段将被视为分析不完整。**
-- 请计算盈亏比作为参考，但不强制要求 ≥ 2:1。
-- 最终输出必须为纯 JSON，且所有枚举值使用中文（做多/做空/观望等）。
+你必须严格按照「七步递进分析框架」完成推演，每一步必须引用具体数据。总推理字数 ≤ 3000 字，输出纯 JSON。
 
-【数据质量】
-当前核心数据覆盖率：{coverage['coverage']:.0%}（{coverage['available']}/{coverage['total']}字段可用）。
-若覆盖率低于 70%，必须将总体置信度强制设为'低'，仓位上限不超过轻仓。
-当前 direction_bias 可信度：{bias_quality}。若为 untrusted，锚点约束不生效，你可独立判断。
+【数据与锚点】
+覆盖率：{coverage['coverage']:.0%}（{coverage['available']}/{coverage['total']}）
+方向锚点 direction_bias = {direction_bias:.3f}，可信度：{bias_quality}
+清算穿刺预判方向：{puncture['puncture_direction']}，得分：{puncture['puncture_score']:.2f}
+诱饵风险：{puncture['lure_risk']}，期权磁吸：{puncture['pain_magnet']}
 
-【系统预判】
-清算穿刺预判：方向 {puncture['puncture_direction']}，得分 {puncture['puncture_score']:.2f}。
-诱饵风险：{puncture['lure_risk']}，期权磁吸：{puncture['pain_magnet']}。
-若无数据反证，应尊重预判；若有充分反证可推翻并说明理由。
-（微观数据时效检查已取消，所有高频信号（CVD、taker、OB）视为实时有效。）
-
-{dashboard}
+{ dashboard }
 
 【市场数据】
 现价：{mark_str}，ATR：{atr_str}，恐慌贪婪：{fear_greed}
 LTH成本：{lth_str}，STH成本：{sth_str}，STH SOPR：{sopr_str}
-稳定币趋势：{stable_str}%，OI 24h变化：{oi_chg_str}%，费率分位：{fund_pct_str}%
-CVD斜率：{cvd_str}，主动买卖比(1h)：{taker_str}
-24h期货净流：{nf24h_str}M，现货24h净流：{spot24_str}M，背离度：{spot_div_str}
-上方清算：{abv_liq_str}B，触发距{abv_trig}点
-下方清算：{blw_liq_str}B，触发距{blw_trig}点，比值：{liq_r_str}
-大单卖：{lgs_str}M，买：{lgb_str}M，压迫比：{press_str}
-订单簿失衡率：{ob_imb_str}，诱饵风险：{lure_str}
-期权痛点：{pain_str}，P/C比：{pc_str}，基差分位：{basis_pct_str}%
-BTC.D趋势：{btc_dom_str}%，借贷利率：{borrow_str}%
-交易所BTC余额变化：{exch_str} BTC
-价格7日分位：{price_pct_str}%，波动因子：{vol_f_str}，CGDI分位：{cgdi_pct_str}%
-{cross_context}
-{constraint_note}
+稳定币趋势7d：{stable_str}%，BTC.D趋势7d：{btc_dom_str}%
+交易所BTC变化24h：{exch_str} BTC，借贷利率：{borrow_str}%
+CGDI绝对值：{data.get('cgdi_current',0):.0f}，稳定币市值：{data.get('stablecoin_mcap',0)/1e9:.1f}B
 
-严格按五步分析（每步均需数据确认表 + 定性分析），方向锚点 direction_bias={direction_bias:.3f}，锚点冲突且可信时必须观望。
+【清算与动能】
+上方清算：{abv_liq_str}B，最近簇距{abv_trig}点，下方清算：{blw_liq_str}B，距{blw_trig}，比值：{liq_r_str}
+期权痛点：{pain_str}，P/C比：{pc_str}
+CVD斜率：{cvd_str}，加速度：{data.get('cvd_acceleration',0):.4f}
+主动买卖比(1h)：{taker_str}，大单压迫比：{press_str} (买{lgb_str}M/卖{lgs_str}M)
+OI 24h变化：{oi_chg_str}%，OI加速度：{data.get('oi_acceleration',0):.4f}
+订单簿失衡：{ob_imb_str}，诱饵因子：{lure_str}
+散户/鲸鱼背离：{data.get('retail_whale_divergence',0):.3f}，全球多空比：{data.get('global_ls_ratio',1):.2f}
+爆仓偏空比(1h)：{data.get('liq_bias_1h',0):.3f}，多爆：{data.get('long_liq_1h',0):.2f}M，空爆：{data.get('short_liq_1h',0):.2f}M
+期现背离：{spot_div_str} (期货24h净流{nf24h_str}M，现货{spot24_str}M)
+价格7日分位：{price_pct_str}%，波动因子：{vol_f_str}，CGDI分位：{cgdi_pct_str}%
+
+{ cross_context }
+
+【可参考的附加指标（非强制使用）】
+{unused_note}
+
+---
+# 七步分析框架（必须严格按此顺序输出）
+
+## 步骤1：数据全景与可信度评估
+检查覆盖率、锚点质量、缺失数据。声明置信度上限与强制约束。
+
+## 步骤2：宏观结构与链上底色
+结合 LTH/STH成本、SOPR、稳定币市值、交易所存量、借贷利率、CGDI绝对值，判断宏观象限（牛/熊/震荡）。给出结构性支撑/压力带及宏观偏向（偏多/偏空/中性）。
+
+## 步骤3：多空动能正交分解
+多头组：上方清算、CVD斜率/加速度、主动买盘、大单买入、OI增加、订单簿多头。空头组反向。结合散户/鲸鱼背离、全球多空比。输出标准化多空得分及净倾向。
+
+## 步骤4：流动性猎杀博弈
+基于清算簇、期权痛点、诱饵风险、实时爆仓流，推演庄家最可能的猎杀方向。回答：向哪侧移动1-2 ATR引发踩踏？期权是否构成磁吸？
+
+## 步骤5：预期差仪表盘解读
+从仪表盘中找出最极端的市场定价方向（贪婪/恐惧）。找出至少两个矛盾指标（如高贪婪但资金流出），形成预期差。推理价格向矛盾方向移动时谁会意外。
+
+## 步骤6：跨币种生态验证
+对比主币与跨币种的清算、CVD、OI、资金费率、期权痛点、ETH/BTC分位，判断系统性趋势还是独立行情。输出仓位修正建议。
+
+## 步骤7：策略生成与反向压力测试
+综合前六步加权（宏观20%、动能25%、博弈30%、预期差15%、跨币种10%）得出最终方向。生成具体入场、止损、止盈，计算盈亏比。强制推演反向情景并设计退出条件。若宏观底色与最终方向相反，仓位降至轻仓。
 
 【输出JSON格式】
 {{
@@ -366,15 +335,15 @@ BTC.D趋势：{btc_dom_str}%，借贷利率：{borrow_str}%
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "",
-  "reasoning": "五步完整分析，必须包含价格路径推演段落，字数≤3000字。",
+  "reasoning": "严格七步分析，每步以【步骤X：名称】开头",
   "risk_note": "",
   "risk_reward_ratio": 0.0,
-  "vote_result": {{"清算维度": "", "博弈维度": "", "预期差维度": "", "一致组数": 0, "最终方向": ""}}
+  "vote_result": {{"宏观底色": "", "多空动能": "", "博弈维度": "", "预期差": "", "跨币种": "", "最终方向": ""}}
 }}
 """
     return prompt
 
-# ------------------- 首席交易员 -------------------
+# ------------------- 首席交易员调用 -------------------
 def call_trader(prompt: str) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=TIMEOUT_SECONDS)
     for attempt in range(MAX_RETRIES):
@@ -404,135 +373,89 @@ def call_trader(prompt: str) -> dict:
                 return {"direction":"neutral","confidence":"low","position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"调用失败","reasoning":"调用失败","risk_note":"","_model_used":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 审计官 (强化空报告处理) -------------------
+# ------------------- 审计官（新版七步审计） -------------------
 def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
     coverage_info = compute_coverage(data)
-    coverage_pct = coverage_info['coverage']*100
-    available = coverage_info['available']
-    total = coverage_info['total']
     puncture = compute_liquidation_bias(data)
-    puncture_direction = puncture['puncture_direction']
-    lure_risk = puncture['lure_risk']
     bias_quality = data.get('_bias_quality','reliable')
-    trader_direction = strategy.get('direction','')
-    trader_position_size = strategy.get('position_size','')
-    rr = strategy.get('risk_reward_ratio','?')
 
-    prompt = f"""你是一位独立的风险审计官，负责对首席交易员的策略进行无偏见的严格审计。
-你的职责：
-- 对照市场数据，逐项核查交易员分析中的遗漏、数据误用、逻辑断裂和反证缺失。
-- 所有发现必须按“步骤/问题/数据证据/影响/严重性”格式记录。
-- 最终裁决（通过/存疑/驳回）必须仅基于发现的严重性和数量，不受交易员声望影响。
-- 输出必须为纯 JSON，包含完整的审计报告和严重性统计。
-- **full_report 字段必须包含不少于 3 段的详细审计内容，绝对不能为空或占位符。**
+    prompt = f"""你是一位独立的风险审计官，对首席交易员的七步分析进行逐步骤审查。
+你必须输出七步审计表，每步给出结论与问题，严重程度区分。未使用的附加指标若存在重大矛盾必须提及。
 
-【审计参考数据】
-- 核心数据覆盖率：{coverage_pct:.0f}%（{available}/{total}）
-- 系统预判穿刺方向：{puncture_direction}，诱饵风险：{lure_risk}
-- 方向锚点 direction_bias：{direction_bias}，可信度：{bias_quality}
-- 交易员策略方向：{trader_direction}，仓位：{trader_position_size}，盈亏比：{rr}
+【审计背景】
+标的：{symbol}，锚点：{direction_bias:.3f}，锚点可信度：{bias_quality}
+覆盖率：{coverage_info['coverage']:.0%}，穿刺预判：{puncture['puncture_direction']}
+交易员方向：{strategy.get('direction')}，仓位：{strategy.get('position_size')}
 
-【交易标的】{symbol} 【锚点】direction_bias={direction_bias:.3f}
-【策略】方向：{strategy.get('direction')}，仓位：{strategy.get('position_size')}
-入场：{strategy.get('entry_price_low')}-{strategy.get('entry_price_high')}
-止损：{strategy.get('stop_loss')}，止盈：{strategy.get('take_profit')}
-【推演】{format_reasoning(strategy.get('reasoning','无'))}
+交易员推演原文：
+{format_reasoning(strategy.get('reasoning','无'))}
 
-按五节模板输出审计报告：
-一、遗漏指标与分析缺失
-二、数据与解读错误
-三、逻辑错误
-四、关键反证提示
-五、博弈层面审视
-
-每条发现格式：在[步骤X]中，交易员[具体问题]。该指标显示[具体数值/信号]，若纳入分析将[强化/削弱/推翻]当前方向判断。[严重性：高/中/低]
-统计严重/中等/轻度数量，并给出 max_severity。
-只输出纯JSON。**务必保证 full_report 非空且包含完整报告文本。**
-
-【输出JSON】
+请按以下JSON输出，务必完整：
 {{
-  "verdict": "通过/存疑/驳回",
+  "step_audits": [
+    {{
+      "step": 1,
+      "verdict": "合格/存在瑕疵/严重错误",
+      "issues": [
+        {{"type": "数据遗漏/误读/逻辑矛盾/反证缺失", "description": "...", "severity": "高/中/低", "evidence": "..."}}
+      ]
+    }},
+    ... (步骤2至7)
+  ],
+  "overall_verdict": "通过/存疑/驳回",
   "max_severity": "严重/中等/轻度/无",
-  "severity_counts": {{"严重":0,"中等":0,"轻度":0}},
-  "full_report": "完整审计文本（绝对不能为空！）"
+  "severity_summary": {{"严重":0,"中等":0,"轻度":0}},
+  "full_report": "文字报告，特别是被忽略的附加指标中是否有重大矛盾"
 }}
 """
-    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=TIMEOUT_SECONDS)
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=120)
     for attempt in range(MAX_RETRIES):
         try:
             resp = client.chat.completions.create(
                 model=FAST_MODEL,
                 messages=[{"role":"user","content":prompt}],
-                max_tokens=8192,  # 提升至 8192
+                max_tokens=8192,
                 timeout=120,
                 response_format={"type": "json_object"}
             )
             content = resp.choices[0].message.content or ""
             _log_response("reviewer", prompt, content)
-            rev = None
-            try:
-                json_str = extract_json_safe(content)
-                rev = json.loads(json_str)
-                full_report = rev.get("full_report", "")
-                # 空报告检查
-                if not full_report.strip():
-                    logger.warning(f"审计官返回空报告 (尝试 {attempt+1})，将使用原始内容")
-                    rev["full_report"] = content
-                    rev["verdict"] = rev.get("verdict", "驳回")
-                    rev["max_severity"] = rev.get("max_severity", "严重")
-                    rev["severity_counts"] = rev.get("severity_counts", {"严重":1, "中等":0, "轻度":0})
-                    return {**rev, "_model": resp.model}
-            except Exception:
-                # 解析失败，用原始内容填充报告
-                rev = {"verdict":"驳回","max_severity":"严重","severity_counts":{"严重":1,"中等":0,"轻度":0},"full_report":content}
-                logger.warning(f"审计官JSON解析失败，使用原始内容作为报告")
-                return {**rev, "_model": resp.model}
-            
-            # 正常解析且有内容，继续后续处理
-            full_report = rev.get("full_report", content)
-            full_report = format_reasoning(full_report)
-            rev["full_report"] = full_report
-            if sum(rev.get("severity_counts", {}).values()) == 0 and rev.get("verdict") == "驳回":
-                rev["severity_counts"]["严重"] = 1
+            rev = json.loads(extract_json_safe(content))
+            if "full_report" not in rev or not rev["full_report"].strip():
+                rev["full_report"] = content
+            rev["full_report"] = format_reasoning(rev["full_report"])
+            if sum(rev.get("severity_summary",{}).values())==0 and rev.get("overall_verdict")=="驳回":
+                rev["severity_summary"]["严重"] = 1
                 rev["max_severity"] = "严重"
             return {**rev, "_model": resp.model}
         except Exception as e:
-            logger.warning(f"审计官调用失败 (尝试 {attempt+1}): {e}")
+            logger.warning(f"审计官调用失败: {e}")
             if attempt == MAX_RETRIES-1:
-                return {"verdict":"驳回","max_severity":"严重","severity_counts":{"严重":1,"中等":0,"轻度":0},"full_report":"审计官调用失败，自动驳回","_model":"fallback"}
+                return {"overall_verdict":"驳回","max_severity":"严重","severity_summary":{"严重":1,"中等":0,"轻度":0},"step_audits":[],"full_report":"审计失败","_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 交易委员会 -------------------
+# ------------------- 交易委员会（新版仲裁） -------------------
 def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
-    prompt = f"""你是交易委员会主席，拥有最终决策权。
-你的任务：
-- 审议首席交易员的策略及审计官的完整报告。
-- 对审计官的每一条严重指控必须逐条回应，明确采纳或驳斥的理由。
-- 在三维汇聚存在分歧时，用你的市场经验作出最后平衡，但不得无视硬数据约束（如方向锚点、盈亏比底线）。
-- 最终输出必须为纯 JSON，裁决字段优先使用英文值（long/short/neutral、high/medium/low）。
-- 若审计严重性为“严重”，你必须推翻原策略，制定独立的最终策略并给出充分理由。
-- 若维持原判或修改执行，也必须给出理由。
+
+    # 提取审计指控
+    audit_charges = ""
+    for audit in reviewer_report.get("step_audits",[]):
+        for issue in audit.get("issues",[]):
+            if issue.get("severity") in ("高","中"):
+                audit_charges += f"步骤{audit['step']}: {issue['description']} (严重性:{issue['severity']})\n"
+
+    prompt = f"""你是交易委员会主席，拥有最终决策权。你必须逐条回应审计官的严重/中等指控，并重新加权七步信号输出最终策略。
 
 【标的】{symbol}，现价：{data.get('mark_price',0):.2f}，锚点：{direction_bias:.3f}
+交易员原策略：方向{strategy.get('direction')}，仓位{strategy.get('position_size')}
+审计结论：{reviewer_report.get('overall_verdict')}，最高严重性：{reviewer_report.get('max_severity')}
 
-【交易员策略】
-方向：{strategy.get('direction')}，仓位：{strategy.get('position_size')}，置信度：{strategy.get('confidence')}
-入场：{strategy.get('entry_price_low')}-{strategy.get('entry_price_high')}
-止损：{strategy.get('stop_loss')}，止盈：{strategy.get('take_profit')}
-推演：{format_reasoning(strategy.get('reasoning','无'))}
+审计指控：
+{audit_charges if audit_charges else "无严重指控"}
 
-【审计报告】
-{format_reasoning(reviewer_report.get('full_report','无'))}
-审计结论：{reviewer_report.get('verdict','未知')}，最高严重性：{reviewer_report.get('max_severity','未知')}
-严重性统计：{reviewer_report.get('severity_counts',{})}
-
-对于审计官的每一项严重指控，你必须基于实际数据回应。若驳回，需指明数据中的反证依据。若采信，需说明如何修改策略。无数据支撑的驳回视为无效。
-严重指控成立必须推翻或修改策略。final_reasoning 必须逐条回应指控，并给出独立、完整的最终策略。维持原判时价格字段不能填0，必须填写实际数值。
-只输出纯JSON。
-
-【输出JSON】
+请输出以下JSON，包含对各指控的回应及加权信号：
 {{
   "final_verdict": "维持原判/修改执行/推翻",
   "final_direction": "long/short/neutral",
@@ -544,12 +467,21 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
   "take_profit": 0.0,
   "execution_plan": "",
   "risk_note": "",
-  "audit_adopted": true,
-  "audit_max_severity": "严重/中等/轻度/无",
-  "final_reasoning": "裁决书正文，必须包含对审计指控的逐条回应以及独立制定的最终策略依据"
+  "audit_responses": [
+    {{"step":2,"issue":"...","adopted":true,"reason":"..."}}
+  ],
+  "weighted_signal": {{
+    "step2": "bearish/bullish/neutral",
+    "step3": "...",
+    "step4": "...",
+    "step5": "...",
+    "step6": "...",
+    "composite_score": -0.5
+  }},
+  "final_reasoning": "裁决理由，包括加权过程"
 }}
 """
-    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=TIMEOUT_SECONDS)
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=120)
     for attempt in range(MAX_RETRIES):
         try:
             resp = client.chat.completions.create(
@@ -561,27 +493,19 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
             )
             content = resp.choices[0].message.content or ""
             _log_response("judge", prompt, content)
-            json_str = extract_json_safe(content)
-            result = json.loads(json_str)
+            result = json.loads(extract_json_safe(content))
             result["final_direction"] = norm_direction(result.get("final_direction",""))
             result["final_position_size"] = norm_position_size(result.get("final_position_size",""))
             result["final_confidence"] = norm_confidence(result.get("final_confidence",""))
-            sev_map = {"严重":"critical","中等":"medium","轻度":"low","无":"none"}
-            raw_sev = result.get("audit_max_severity","无")
-            result["audit_max_severity"] = sev_map.get(raw_sev, raw_sev)
-            if result.get("final_verdict") == "维持原判":
-                result["entry_price_low"] = result.get("entry_price_low") or strategy.get("entry_price_low",0)
-                result["entry_price_high"] = result.get("entry_price_high") or strategy.get("entry_price_high",0)
-                result["stop_loss"] = result.get("stop_loss") or strategy.get("stop_loss",0)
-                result["take_profit"] = result.get("take_profit") or strategy.get("take_profit",0)
-                result["execution_plan"] = result.get("execution_plan") or strategy.get("execution_plan","")
-                result["risk_note"] = result.get("risk_note") or strategy.get("risk_note","")
-            result["final_reasoning"] = format_reasoning(result.get("final_reasoning") or "裁决完成。")
+            if result.get("final_verdict")=="维持原判":
+                for f in ["entry_price_low","entry_price_high","stop_loss","take_profit","execution_plan","risk_note"]:
+                    if not result.get(f): result[f] = strategy.get(f,0)
+            result["final_reasoning"] = format_reasoning(result.get("final_reasoning",""))
             return {**result, "_model": resp.model}
         except Exception as e:
-            logger.warning(f"委员会调用失败 (尝试 {attempt+1}): {e}")
+            logger.warning(f"委员会调用失败: {e}")
             if attempt == MAX_RETRIES-1:
-                return {"final_verdict":"推翻","final_direction":"neutral","final_confidence":"low","final_position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"委员会调用失败，强制观望","risk_note":"系统故障","audit_adopted":False,"audit_max_severity":"严重","final_reasoning":"委员会调用失败，自动推翻并观望","_model":"fallback"}
+                return {"final_verdict":"推翻","final_direction":"neutral","final_confidence":"low","final_position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"失败","risk_note":"","final_reasoning":"失败","_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
 def apply_final_verdict(strategy: dict, judge_result: dict) -> dict:
@@ -590,18 +514,11 @@ def apply_final_verdict(strategy: dict, judge_result: dict) -> dict:
     strategy["_judge_verdict"] = verdict
     strategy["_judge_reasoning"] = judge_result.get("final_reasoning","")
     fields = ["direction","confidence","position_size","entry_price_low","entry_price_high","stop_loss","take_profit","execution_plan","risk_note"]
-    if verdict == "推翻":
+    if verdict in ("推翻","修改执行"):
         if judge_result.get("final_direction") == "neutral":
-            _force_neutral(strategy, "委员会推翻并改为观望")
+            _force_neutral(strategy, "委员会改为观望")
         else:
             for k in fields:
                 if k in judge_result and judge_result[k] is not None:
                     strategy[k] = judge_result[k]
-    elif verdict == "修改执行":
-        for k in fields:
-            if k in judge_result and judge_result[k] is not None:
-                strategy[k] = judge_result[k]
-    else:
-        strategy["risk_note"] = judge_result.get("risk_note") or strategy.get("risk_note","")
-        strategy["execution_plan"] = judge_result.get("execution_plan") or strategy.get("execution_plan","")
     return strategy

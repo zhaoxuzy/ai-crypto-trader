@@ -1,4 +1,4 @@
-
+import os
 import requests
 import json
 import time
@@ -9,7 +9,7 @@ import urllib.parse
 from datetime import datetime
 from utils.logger import logger
 
-# ---------- 钉钉机器人发送 ----------
+
 def send_dingtalk_message(msg: str, title: str = ""):
     """发送钉钉消息 (支持加签)"""
     webhook_url = os.getenv("DINGTALK_WEBHOOK_URL")
@@ -44,7 +44,7 @@ def send_dingtalk_message(msg: str, title: str = ""):
     except Exception as e:
         logger.error(f"钉钉推送异常: {e}")
 
-# ---------- 策略消息格式化 ----------
+
 def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> str:
     """生成交易员策略推送消息 (无推演概要)"""
     direction = strategy.get("direction", "neutral")
@@ -80,7 +80,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> s
 
     return msg
 
-# ---------- 审计消息格式化 ----------
+
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict = None) -> str:
     verdict = reviewer_report.get("overall_verdict", "未知")
     max_severity = reviewer_report.get("max_severity", "无")
@@ -99,7 +99,7 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
 """
     return msg
 
-# ---------- 委员会裁决消息格式化 ----------
+
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict = None) -> str:
     verdict = judge_result.get("final_verdict", "未知")
     final_direction = judge_result.get("final_direction", "neutral")
@@ -122,6 +122,7 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
         weights_str = " | ".join([f"{k}:{v}" for k,v in weighted_signal.items()])
         msg += f"\n---\n### ⚖️ 加权信号\n{weights_str}\n"
     return msg
+
 
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict, data: dict = None) -> str:
     return format_judge_message(symbol, strategy, judge_result, data)

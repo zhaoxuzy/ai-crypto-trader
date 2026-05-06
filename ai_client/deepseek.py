@@ -1,8 +1,6 @@
 """
-deepseek.py — 生产级三角闭环 (修复 liq_quality 等未定义错误 + P0/P1)
-- 修复所有未定义变量 (liq_quality, onchain_quality, exch_quality 等)
-- P0: 审计官获取一致性校验报告，硬规则自动核查
-- P1: 交易员、审计官注入历史状态，形成连续策略
+deepseek.py — 最终版：七步分析框架 + 三角闭环 + 数据质量标记 + 快速响应因子
+不再生成推演概要，纯 JSON 输出。
 """
 
 import os, json, time, re, math
@@ -189,6 +187,45 @@ def compute_coverage(data: dict) -> dict:
     coverage = available / total if total > 0 else 0.0
     return {"available": available, "total": total, "coverage": coverage}
 
+# ------------------- 七步分析框架文本 -------------------
+SEVEN_STEP_FRAMEWORK = """
+## 步骤1：数据全景与可信度评估
+- 读取[清算图质量]、[链上数据质量]、[交易所数据质量]。
+- 任何“低”标记的数据源，关联指标权重减半。
+- 若≥2个数据源为“低”，confidence强制=“低”，position_size强制=“轻仓/无”。
+- 输出：整体置信度上限声明 + 强制执行的数据约束清单。
+
+## 步骤2：宏观结构与链上底色
+- 完成因果模板：“当前市场处于【牛/熊/震荡】的【早期/中期/晚期】，核心证据是【LTH/STH成本与现价关系】揭示了【持股盈亏状态】，结合【稳定币/交易所存量】变动，表明资金是【流入/流出】。结构性支撑带在【】，宏观象限标签为【趋势开端/趋势中继/转折点/震荡无序】。”
+
+## 步骤3：多空动能正交分解
+- 为上方清算簇强度、CVD斜率/加速度、主动买卖比、大单压迫比、OI加速度、订单簿失衡打分（-2~+2）。
+- 无独立性的因子贡献×0.6。
+- 全球多空比>2且价格7日分位>80%时，修正系数-1。
+- 输出“标准化动能净得分 = (修正后独立得分和) / 6，净倾向为【强多/偏多/中性/偏空/强空】。”
+
+## 步骤4：流动性猎杀博弈
+- 推演两个方向：路径A（现价 ± 1.5 ATR），路径B（反向穿刺诱饵）。
+- 引用步骤1的[清算图质量]标记，若“低”则降级确定性。
+- 结论：最可能猎杀方向及理由。
+
+## 步骤5：预期差仪表盘解读
+- 寻找周期一致的矛盾指标对（如24h恐慌贪婪 vs 24h稳定币净流）。
+- 若无矛盾则声明“无明显强烈预期差”，预期差权重得分降为0。
+- 推演意外：“当价格向【资金流指向】移动，【大众情绪群体】将被强制平仓，形成二次燃料。”
+
+## 步骤6：跨币种生态验证
+- 对比除BTC外市值最高的2个山寨币的清算图、CVD动量、资金费率、BTC计价分位。
+- 输出仅允许：“BTC与[X]呈强协同，支持同向交易” 或 “BTC与[X]显著背离，方向性押注风险上升”。
+- `cross_coin_action` 字段仅允许：【同向可做】【背离警告】【无明确信号】。
+
+## 步骤7：策略生成与反向压力测试
+- 7.0 紧急响应检查（最高优先）：若价格24h分位<0.05且成交量爆发比>2.5x（恐慌抛售），或价格24h分位>0.95且成交量爆发比>2.0x（狂热抢筹），或ATR振幅比>2.5（极端波动），则仓位强制轻仓，方向默认偏空/偏多/观望。
+- 7.1 标准动态权重：按宏观象限分配权重。
+- 7.2 反向压力测试：构建相反故事线，给出退出条件。
+- 输出：入场区间、止损、止盈、盈亏比、执行计划。
+"""
+
 # ------------------- 新七步 Prompt -------------------
 def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: str = None) -> str:
     if cross_symbol is None:
@@ -245,18 +282,15 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     puncture = compute_liquidation_bias(data)
     dashboard = build_expectation_dashboard(data)
 
-    # ---------- 修复未定义变量 ----------
-    # 1. 数据源质量标记 (暂时统一设为"高"，后续可从实际数据源状态判定)
+    # 数据质量标记
     data_quality_map = data.get("data_quality", {})
     liq_quality = "低" if data_quality_map.get("heatmap") == "❌ 缺失" else "高"
     exch_quality = "低" if data_quality_map.get("exchange_btc") == "❌ 缺失" else "高"
     onchain_quality = "低" if data_quality_map.get("sth_sopr") == "❌ 缺失" else "高"
 
-    # 2. 快速响应因子 (从现有数据推算)
+    # 快速响应因子 (基于现有数据粗略估计)
     price_24h_pct = data.get('price_percentile', 50) / 100.0
-    # 7日均1h量无法获取，用1代替，成交量爆发比暂时设为1.0
-    vol_surge = 1.0
-    # ATR振幅比：用 (现价*价格7日分位/ATR) 粗略模拟，或设为1.0
+    vol_surge = 1.0   # 无法获取7日均1h量，默认1.0
     atr_str_val = data.get('atr', 0.0)
     mark_val = data.get('mark_price', 0.0)
     atr_ratio = (mark_val * 0.02 / atr_str_val) if atr_str_val > 0 else 1.0
@@ -279,7 +313,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     else:
         cross_context = "【跨币种数据不可用】仓位上限下调一级，置信度上限为'中'。"
 
-    # 未使用指标提示
+    # 未使用指标列表
     unused_list = [
         "retail_whale_divergence", "cvd_acceleration", "oi_acceleration",
         "spot_vs_futures_divergence", "exchange_btc_change_24h",
@@ -289,6 +323,7 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     ]
     unused_note = "\n".join(f"- {x}" for x in unused_list)
 
+    # 拼接最终提示词
     prompt = f"""你是一位拥有 15 年实战经验、以量化严谨著称的加密货币首席交易员。你的任务是结构化解构市场，而非提供交易建议。你完全信任外部数据管道的质量标记，并严格执行硬约束。
 
 严格按照「七步递进分析框架」输出，总字数 ≤ 3000 字，纯 JSON 格式。
@@ -336,61 +371,7 @@ OI 24h变化：{oi_chg_str}%，OI加速度：{data.get('oi_acceleration',0):.4f}
 {unused_note}
 
 ---
-# 七步分析框架（严格按此顺序，且每一步都必须包含具体的推导动作）
-
-## 步骤1：数据全景与可信度评估
-- **强制读取外部质量标记**：读取[清算图质量]、[链上数据质量]、[交易所数据质量]。
-- **硬约束执行**：
-  1. 任何“低”标记的数据源，其关联指标权重自动减半，并在步骤3、4、5中附上“[数据存疑]”标记。
-  2. 若≥2个数据源为“低”，`confidence`强制=“低”，`position_size`强制=“轻仓/无”，`risk_note`中必须声明“多源数据质量不足”。
-  3. **严禁你自行升级或降级这些标签。**
-- **输出**：整体置信度上限声明 + 强制执行的数据约束清单。
-
-## 步骤2：宏观结构与链上底色
-- **强制因果模板**：“当前市场处于【牛/熊/震荡】的【早期/中期/晚期】，核心证据是【LTH/STH成本与现价关系】揭示了【持股盈亏状态】，结合【稳定币/交易所存量】变动，表明资金是【流入/流出】。因此，结构性支撑带在【】，宏观象限标签为【趋势开端/趋势中继/转折点/震荡无序】。”
-- **输出**：宏观象限标签（将被步骤7引用）、结构性支撑/压力带、宏观偏向。
-
-## 步骤3：多空动能正交分解
-- **强制打分**：为每个动能因子标准化打分（-2~+2），并标注是否与前一因子高度相关（若是，独立贡献×0.6）。
-  【1.上方清算簇强度、2.CVD斜率/加速度、3.主动买卖比、4.大单压迫比、5.OI加速度、6.订单簿失衡】
-- **情景修正**：结合散户/鲸鱼背离和全球多空比进行±0.5分修正。全球多空比>2且价格7日分位>80%时，修正系数直接-1。
-- **输出**：“标准化动能净得分 = (修正后独立得分和) / 6，净倾向为【强多/偏多/中性/偏空/强空】。”
-
-## 步骤4：流动性猎杀博弈
-- **强制双路径推演**：必须推演上下两个方向，且必须引用步骤1的[清算图质量]标记。若为“低”，猎杀推演确定性降级。
-  - **路径A**：“价格突破至【X】（现价 ± 1.5 ATR），引爆约【Y】B对手盘，与【期权痛点】共振，产生【Z】惯性。”
-  - **路径B**：“价格先反向穿刺至【W】，触发【诱饵风险】，清扫激进仓位，为真突破铺路。”
-- **结论**：风险收益比加权后，最可能猎杀方向及理由。
-
-## 步骤5：预期差仪表盘解读
-- **强制寻找时间对齐的矛盾**：必须寻找周期严格一致的矛盾指标对（例如24h恐慌贪婪 vs 24h稳定币净流）。找不到则必须声明“无明显强烈预期差”，这会使步骤7的预期差权重得分自动降为0。
-- **推演意外**：“当价格向【资金流指向】移动，【大众情绪群体】将被强制平仓，形成二次燃料。”
-
-## 步骤6：跨币种生态验证
-- **关键扩展**：对比除BTC外，市值最高的2个山寨币的清算图、CVD动量、资金费率、BTC计价分位。
-- **输出限制**：
-  - 允许输出：“BTC与[X]呈强协同，支持同向交易” 或 “BTC与[X]显著背离，方向性押注风险上升”
-  - **严禁输出**：任何“做多A做空B”的配对交易建议（除非同时提供对冲比率、双边止损和最大回撤）。
-  - `cross_coin_action` 字段仅允许：【同向可做】【背离警告】【无明确信号】。
-
-## 步骤7：策略生成与反向压力测试
-- **步骤7.0 紧急响应检查（最高优先，先于一切权重计算）**：
-  检查以下急转弯条件，**任一触发则跳过动态权重，直接启用紧急响应权重**：
-  - 条件①：价格24h分位 < 0.05 且 成交量爆发比 > 2.5x → “恐慌抛售” → 博弈50%，宏观5%
-  - 条件②：价格24h分位 > 0.95 且 成交量爆发比 > 2.0x → “狂热抢筹” → 博弈50%，宏观5%
-  - 条件③：ATR振幅比 > 2.5 → “极端波动” → 博弈50%，宏观5%
-  - **紧急状态下**：仓位强制“轻仓”，最终方向默认偏空(①)/偏多(②)/观望(③)。
-
-- **步骤7.1 标准动态权重（紧急响应未触发时执行）**：
-  根据步骤2的[宏观象限标签]调整权重：
-  - 趋势开端/转折点：宏观40%，动能25%，博弈15%，预期差10%，跨币种10%
-  - 趋势中继：动能35%，宏观20%，博弈20%，预期差10%，跨币种15%
-  - 震荡无序：博弈40%，动能25%，宏观10%，预期差15%，跨币种10%
-
-- **步骤7.2 反向压力测试（第二故事线）**：
-  “构建与主力逻辑完全相反、但逻辑自洽的故事：1）找到微小的种子信号；2）描述发酵路径；3）给出明确退出条件（基于步骤1质量标记和具体价格阈值）。”
-
-- **输出**：入场区间、止损（置于猎杀区域外）、止盈、盈亏比、执行计划。
+{SEVEN_STEP_FRAMEWORK}
 
 【输出JSON格式】
 {{
@@ -443,7 +424,7 @@ def call_trader(prompt: str) -> dict:
                 return {"direction":"neutral","confidence":"low","position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"调用失败","reasoning":"调用失败","risk_note":"","_model_used":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 审计官（新版七步审计） -------------------
+# ------------------- 审计官 -------------------
 def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
     coverage_info = compute_coverage(data)
@@ -451,32 +432,26 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
     bias_quality = data.get('_bias_quality','reliable')
 
     prompt = f"""你是一位独立的风险审计官，对首席交易员的七步分析进行逐步骤审查。
-你必须输出七步审计表，每步给出结论与问题，严重程度区分。未使用的附加指标若存在重大矛盾必须提及。
+输出七步审计表，每步给出结论与问题。
 
 【审计背景】
-标的：{symbol}，锚点：{direction_bias:.3f}，锚点可信度：{bias_quality}
+标的：{symbol}，锚点：{direction_bias:.3f}，可信度：{bias_quality}
 覆盖率：{coverage_info['coverage']:.0%}，穿刺预判：{puncture['puncture_direction']}
 交易员方向：{strategy.get('direction')}，仓位：{strategy.get('position_size')}
 
 交易员推演原文：
 {format_reasoning(strategy.get('reasoning','无'))}
 
-请按以下JSON输出，务必完整：
+输出JSON：
 {{
   "step_audits": [
-    {{
-      "step": 1,
-      "verdict": "合格/存在瑕疵/严重错误",
-      "issues": [
-        {{"type": "数据遗漏/误读/逻辑矛盾/反证缺失", "description": "...", "severity": "高/中/低", "evidence": "..."}}
-      ]
-    }},
+    {{"step":1,"verdict":"合格/存在瑕疵/严重错误","issues":[{{"type":"...","description":"...","severity":"高/中/低"}}]}},
     ... (步骤2至7)
   ],
   "overall_verdict": "通过/存疑/驳回",
   "max_severity": "严重/中等/轻度/无",
   "severity_summary": {{"严重":0,"中等":0,"轻度":0}},
-  "full_report": "文字报告，特别是被忽略的附加指标中是否有重大矛盾"
+  "full_report": "文字报告"
 }}
 """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=120)
@@ -492,10 +467,8 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             content = resp.choices[0].message.content or ""
             _log_response("reviewer", prompt, content)
             rev = json.loads(extract_json_safe(content))
-            if "full_report" not in rev or not rev["full_report"].strip():
-                rev["full_report"] = content
+            if not rev.get("full_report"): rev["full_report"] = content
             rev["full_report"] = format_reasoning(rev["full_report"])
-            # 确保严重性统计不为空
             if sum(rev.get("severity_summary",{}).values())==0 and rev.get("overall_verdict")=="驳回":
                 rev["severity_summary"]["严重"] = 1
                 rev["max_severity"] = "严重"
@@ -503,21 +476,19 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
         except Exception as e:
             logger.warning(f"审计官调用失败: {e}")
             if attempt == MAX_RETRIES-1:
-                return {"overall_verdict":"驳回","max_severity":"严重","severity_summary":{"严重":1,"中等":0,"轻度":0},"step_audits":[],"full_report":"审计失败","_model":"fallback"}
+                return {"overall_verdict":"驳回","max_severity":"严重","severity_summary":{"严重":1},"step_audits":[],"full_report":"审计失败","_model":"fallback"}
             time.sleep(RETRY_BASE_WAIT**(attempt+1))
 
-# ------------------- 交易委员会（新版仲裁） -------------------
+# ------------------- 交易委员会 -------------------
 def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias',0.0)
-
-    # 提取审计指控
     audit_charges = ""
     for audit in reviewer_report.get("step_audits",[]):
         for issue in audit.get("issues",[]):
             if issue.get("severity") in ("高","中"):
                 audit_charges += f"步骤{audit['step']}: {issue['description']} (严重性:{issue['severity']})\n"
 
-    prompt = f"""你是交易委员会主席，拥有最终决策权。你必须逐条回应审计官的严重/中等指控，并重新加权七步信号输出最终策略。
+    prompt = f"""你是交易委员会主席，拥有最终决策权。逐条回应审计官的严重/中等指控，并重新加权七步信号输出最终策略。
 
 【标的】{symbol}，现价：{data.get('mark_price',0):.2f}，锚点：{direction_bias:.3f}
 交易员原策略：方向{strategy.get('direction')}，仓位{strategy.get('position_size')}
@@ -526,30 +497,17 @@ def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -
 审计指控：
 {audit_charges if audit_charges else "无严重指控"}
 
-请输出以下JSON，包含对各指控的回应及加权信号：
+输出JSON：
 {{
   "final_verdict": "维持原判/修改执行/推翻",
   "final_direction": "long/short/neutral",
   "final_confidence": "high/medium/low",
   "final_position_size": "heavy/medium/light/none",
-  "entry_price_low": 0.0,
-  "entry_price_high": 0.0,
-  "stop_loss": 0.0,
-  "take_profit": 0.0,
-  "execution_plan": "",
-  "risk_note": "",
-  "audit_responses": [
-    {{"step":2,"issue":"...","adopted":true,"reason":"..."}}
-  ],
-  "weighted_signal": {{
-    "step2": "bearish/bullish/neutral",
-    "step3": "...",
-    "step4": "...",
-    "step5": "...",
-    "step6": "...",
-    "composite_score": -0.5
-  }},
-  "final_reasoning": "裁决理由，包括加权过程"
+  "entry_price_low": 0.0, "entry_price_high": 0.0, "stop_loss": 0.0, "take_profit": 0.0,
+  "execution_plan": "", "risk_note": "",
+  "audit_responses": [{{"step":2,"issue":"...","adopted":true,"reason":"..."}}],
+  "weighted_signal": {{"step2":"bearish/bullish/neutral","step3":"...","step4":"...","step5":"...","step6":"...","composite_score":-0.5}},
+  "final_reasoning": "裁决理由"
 }}
 """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com", timeout=120)

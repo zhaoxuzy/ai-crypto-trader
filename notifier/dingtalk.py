@@ -1,16 +1,52 @@
-import re, json
+
+import requests
+import json
+import time
+import hmac
+import hashlib
+import base64
+import urllib.parse
 from datetime import datetime
 from utils.logger import logger
 
+# ---------- 钉钉机器人发送 ----------
 def send_dingtalk_message(msg: str, title: str = ""):
-    """发送钉钉消息，需实现webhook调用（已存在的实现不修改）"""
-    # 此函数通常已在您项目中实现，此处保留占位
-    pass
+    """发送钉钉消息 (支持加签)"""
+    webhook_url = os.getenv("DINGTALK_WEBHOOK_URL")
+    secret = os.getenv("DINGTALK_SECRET")
+    if not webhook_url:
+        logger.warning("未配置 DINGTALK_WEBHOOK_URL，消息无法发送")
+        return
 
+    # 加签 (如果配置了 SECRET)
+    if secret:
+        timestamp = str(round(time.time() * 1000))
+        string_to_sign = f"{timestamp}\n{secret}"
+        hmac_code = hmac.new(secret.encode("utf-8"), string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+        webhook_url = f"{webhook_url}&timestamp={timestamp}&sign={sign}" if "?" in webhook_url else f"{webhook_url}?timestamp={timestamp}&sign={sign}"
+
+    # 构建消息体 (Markdown 格式)
+    data = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": title.replace("\n", " ") if title else "币coin策略推送",
+            "text": msg
+        }
+    }
+
+    try:
+        resp = requests.post(webhook_url, json=data, timeout=10)
+        if resp.status_code == 200:
+            logger.info(f"钉钉推送成功: {title}")
+        else:
+            logger.error(f"钉钉推送失败: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        logger.error(f"钉钉推送异常: {e}")
+
+# ---------- 策略消息格式化 ----------
 def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> str:
-    """
-    生成交易员策略推送消息（无推演概要版）
-    """
+    """生成交易员策略推送消息 (无推演概要)"""
     direction = strategy.get("direction", "neutral")
     direction_emoji = {"long": "🟢做多", "short": "🔴做空", "neutral": "⚪观望"}.get(direction, "⚪观望")
     confidence = strategy.get("confidence", "?")
@@ -44,19 +80,17 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> s
 
     return msg
 
+# ---------- 审计消息格式化 ----------
 def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, data: dict = None) -> str:
-    """
-    生成审计官审查报告消息
-    """
     verdict = reviewer_report.get("overall_verdict", "未知")
     max_severity = reviewer_report.get("max_severity", "无")
     severity_summary = reviewer_report.get("severity_summary", {})
     full_report = reviewer_report.get("full_report", "无")
-    
+
     sev_text = f"严重：{severity_summary.get('严重',0)} 中等：{severity_summary.get('中等',0)} 轻度：{severity_summary.get('轻度',0)}"
     direction = strategy.get("direction", "?")
     position_size = strategy.get("position_size", "?")
-    
+
     msg = f"""### 策略｜{symbol} 审计报告 📋 {datetime.now().strftime('%m-%d %H:%M')}
 {verdict} | 严重性：{max_severity} | {sev_text}
 原方向：{direction} | 原仓位：{position_size}
@@ -65,10 +99,8 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
 """
     return msg
 
+# ---------- 委员会裁决消息格式化 ----------
 def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: dict = None) -> str:
-    """
-    生成交易委员会裁决消息
-    """
     verdict = judge_result.get("final_verdict", "未知")
     final_direction = judge_result.get("final_direction", "neutral")
     final_confidence = judge_result.get("final_confidence", "?")
@@ -79,7 +111,7 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
     take_profit = judge_result.get("take_profit", 0)
     reasoning = judge_result.get("final_reasoning", "")
     weighted_signal = judge_result.get("weighted_signal", {})
-    
+
     msg = f"""### 策略｜{symbol} 最终裁决 ⚖️ {datetime.now().strftime('%m-%d %H:%M')}
 
 {verdict} | {"🟢做多" if final_direction=="long" else "🔴做空" if final_direction=="short" else "⚪观望"} | 置信度 {'⭐'*3 if final_confidence=='high' else '⭐⭐' if final_confidence=='medium' else '⭐'} | 仓位 {'💰💰💰重仓' if final_position=='heavy' else '💰💰中仓' if final_position=='medium' else '💰轻仓' if final_position=='light' else '🚫无'}
@@ -92,7 +124,4 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
     return msg
 
 def format_final_decision(symbol: str, strategy: dict, judge_result: dict, data: dict = None) -> str:
-    """
-    生成最终策略推送消息（汇总版）
-    """
     return format_judge_message(symbol, strategy, judge_result, data)

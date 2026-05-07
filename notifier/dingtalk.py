@@ -6,8 +6,11 @@ import hmac
 import hashlib
 import base64
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from utils.logger import logger
+
+# 北京时区 (UTC+8)
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def send_dingtalk_message(msg: str, title: str = ""):
@@ -46,7 +49,7 @@ def send_dingtalk_message(msg: str, title: str = ""):
 def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> str:
     """
     首席交易员初步方案消息
-    包含：方向/仓位/现价/入场/止损/止盈 + 七步结论速览 + 完整推演
+    包含：方向/仓位/现价/入场/止损/止盈 + 完整推演 (已移除结论速览)
     """
     direction = strategy.get("direction", "neutral")
     direction_emoji = {"long": "🟢做多", "short": "🔴做空", "neutral": "⚪观望"}.get(direction, "⚪观望")
@@ -62,29 +65,10 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict = None) -> s
     risk_reward = strategy.get("risk_reward_ratio", 0)
     reasoning = strategy.get("reasoning", "")
 
-    # 提取步骤结论（从reasoning中匹配每个步骤的结论行）
-    conclusions = ""
-    steps_conclusion = re.findall(r'\*\*步骤\d+结论\*\*[：:]\s*(.*?)(?=\n|$)', reasoning)
-    if steps_conclusion:
-        conclusions = "\n".join([f"1. 数据质量：{steps_conclusion[0]}" if len(steps_conclusion) > 0 else "",
-                                f"2. 宏观：{steps_conclusion[1]}" if len(steps_conclusion) > 1 else "",
-                                f"3. 动能：{steps_conclusion[2]}" if len(steps_conclusion) > 2 else "",
-                                f"4. 猎杀：{steps_conclusion[3]}" if len(steps_conclusion) > 3 else "",
-                                f"5. 预期差：{steps_conclusion[4]}" if len(steps_conclusion) > 4 else "",
-                                f"6. 跨币种：{steps_conclusion[5]}" if len(steps_conclusion) > 5 else "",
-                                f"7. 策略：{steps_conclusion[6]}" if len(steps_conclusion) > 6 else ""])
-        conclusions = conclusions.replace('\n\n', '\n').strip()
-    if not conclusions:
-        conclusions = "（未能提取步骤结论）"
-
-    msg = f"""### 策略｜{symbol} 初步方案 🧠 {datetime.now().strftime('%m-%d %H:%M')}
+    msg = f"""### 策略｜{symbol} 初步方案 🧠 {datetime.now(BEIJING_TZ).strftime('%m-%d %H:%M')}
 
 {direction_emoji} | 现价 {mark_price:.2f} | 入场 {entry_low:.2f}-{entry_high:.2f} | 止损 {stop_loss:.2f} | 止盈 {take_profit:.2f}
 置信度 {'⭐'*3 if confidence=='high' else '⭐⭐' if confidence=='medium' else '⭐'} | 仓位 {'💰💰💰重仓' if position_size=='heavy' else '💰💰中仓' if position_size=='medium' else '💰轻仓' if position_size=='light' else '🚫无'}
-
----
-### 📊 七步结论速览
-{conclusions}
 
 ---
 ### 📝 完整推演
@@ -125,7 +109,7 @@ def format_review_message(symbol: str, strategy: dict, reviewer_report: dict, da
     direction = strategy.get("direction", "?")
     position_size = strategy.get("position_size", "?")
 
-    msg = f"""### 策略｜{symbol} 审计报告 📋 {datetime.now().strftime('%m-%d %H:%M')}
+    msg = f"""### 策略｜{symbol} 审计报告 📋 {datetime.now(BEIJING_TZ).strftime('%m-%d %H:%M')}
 
 {verdict} | 最高严重性：{max_severity} | {sev_text}
 原方向：{direction} | 原仓位：{position_size}
@@ -172,7 +156,7 @@ def format_judge_message(symbol: str, strategy: dict, judge_result: dict, data: 
             response_text += f"**指控{step}**：{issue}\n→ 裁决：{adopted}\n→ 理由：{reason}\n\n"
 
     # 构建执行单
-    msg = f"""### 策略｜{symbol} 最终裁决 ⚖️ {datetime.now().strftime('%m-%d %H:%M')}
+    msg = f"""### 策略｜{symbol} 最终裁决 ⚖️ {datetime.now(BEIJING_TZ).strftime('%m-%d %H:%M')}
 
 {verdict} | {final_direction_emoji} | 置信度 {'⭐'*3 if final_confidence=='high' else '⭐⭐' if final_confidence=='medium' else '⭐'} | 仓位 {'💰💰💰重仓' if final_position=='heavy' else '💰💰中仓' if final_position=='medium' else '💰轻仓' if final_position=='light' else '🚫无'}
 

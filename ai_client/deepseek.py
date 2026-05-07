@@ -1,14 +1,8 @@
 """
-deepseek.py — 最终版：七步数据确认 + 审计官核查清单 + 委员会独立裁决
-取消微观数据时效约束，每步数据确认表防止遗漏，审计官逐条核查硬性标准，
-委员会读取原始数据独立验证，每条裁决得出正确结论，输出可执行合约单。
+deepseek.py — 最终版：七步数据确认 + 嵌入强制要求的步骤7结论模板 + 审计官核查清单 + 委员会独立裁决
 """
 
-import os
-import json
-import time
-import re
-import math
+import os, json, time, re, math
 from datetime import datetime
 from openai import OpenAI
 from utils.logger import logger
@@ -25,36 +19,29 @@ VALID_POSITION_SIZES = {"heavy", "medium", "light", "none"}
 
 # ---------- 标准化映射 ----------
 def norm_direction(raw: str) -> str:
-    if not raw:
-        return "neutral"
+    if not raw: return "neutral"
     clean = raw.strip().lower()
-    if clean in VALID_DIRECTIONS:
-        return clean
+    if clean in VALID_DIRECTIONS: return clean
     mapping = {"做多": "long", "做空": "short", "观望": "neutral"}
     return mapping.get(clean, "neutral")
 
 def norm_confidence(raw: str) -> str:
-    if not raw:
-        return "medium"
+    if not raw: return "medium"
     clean = raw.strip().lower()
-    if clean in VALID_CONFIDENCES:
-        return clean
+    if clean in VALID_CONFIDENCES: return clean
     mapping = {"高": "high", "中": "medium", "低": "low"}
     return mapping.get(clean, "medium")
 
 def norm_position_size(raw: str) -> str:
-    if not raw:
-        return "none"
+    if not raw: return "none"
     clean = raw.strip().lower()
-    if clean in VALID_POSITION_SIZES:
-        return clean
+    if clean in VALID_POSITION_SIZES: return clean
     mapping = {"重仓": "heavy", "中仓": "medium", "轻仓": "light", "无": "none", "none": "none"}
     return mapping.get(clean, "none")
 
 # ---------- 文本格式化 ----------
 def format_reasoning(text: str) -> str:
-    if not text:
-        return text
+    if not text: return text
     text = text.replace('\\n', '\n')
     text = re.sub(r'(\*\*[^*]+\*\*)', r'\n\1\n', text)
     text = re.sub(r'(【[^】]+】)', r'\n\1\n', text)
@@ -69,8 +56,7 @@ def _log_response(role: str, prompt: str, content: str, reasoning: str = None):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         with open(f"logs/{role}_{ts}.json", "w", encoding="utf-8") as f:
             json.dump({"prompt": prompt, "content": content, "reasoning": reasoning}, f, ensure_ascii=False, indent=2)
-    except:
-        pass
+    except: pass
 
 def extract_json_safe(content: str) -> str:
     if not content or not content.strip():
@@ -78,48 +64,31 @@ def extract_json_safe(content: str) -> str:
     m = re.search(r'```json\s*([\s\S]*?)\s*```', content)
     if m:
         json_str = m.group(1).strip()
-        try:
-            json.loads(json_str)
-            return json_str
-        except:
-            pass
+        try: json.loads(json_str); return json_str
+        except: pass
     m = re.search(r'```\s*([\s\S]*?)\s*```', content)
     if m:
         json_str = m.group(1).strip()
-        try:
-            json.loads(json_str)
-            return json_str
-        except:
-            pass
+        try: json.loads(json_str); return json_str
+        except: pass
     start = content.find('{')
     end = content.rfind('}')
     if start != -1 and end != -1 and end > start:
         json_str = content[start:end+1].strip()
-        try:
-            json.loads(json_str)
-            return json_str
-        except:
-            pass
+        try: json.loads(json_str); return json_str
+        except: pass
     if start != -1 and end != -1:
         json_str = content[start:end+1].strip()
         json_str = json_str.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-        try:
-            json.loads(json_str)
-            logger.warning("JSON通过转义修复成功")
-            return json_str
-        except:
-            pass
+        try: json.loads(json_str); logger.warning("JSON通过转义修复成功"); return json_str
+        except: pass
     if json_str.startswith('{'):
         if not json_str.endswith('"') and not json_str.endswith('}'):
             json_str += '"}'
         elif json_str.endswith('"'):
             json_str += '}'
-        try:
-            json.loads(json_str)
-            logger.warning("JSON通过暴力修补修复成功")
-            return json_str
-        except:
-            pass
+        try: json.loads(json_str); logger.warning("JSON通过暴力修补修复成功"); return json_str
+        except: pass
     raise ValueError(f"JSON提取失败，前200字符: {content[:200]}")
 
 def _force_neutral(s: dict, reason: str):
@@ -139,70 +108,60 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     if direction not in VALID_DIRECTIONS:
         return False, f"无效方向: {direction}"
     if data:
-        atr_15m = data.get("atr_15m", 0)
-        mark = data.get("mark_price", 0)
-        ab_liq = data.get("above_liq", 0)
-        bl_liq = data.get("below_liq", 0)
-        bias_q = data.get("_bias_quality", "reliable")
-        bias = data.get("direction_bias", 0.0)
-        if (not ab_liq or ab_liq <= 0) and (not bl_liq or bl_liq <= 0) and direction != "neutral":
-            _force_neutral(s, "清算数据缺失")
-            return True, ""
-        if atr_15m <= 0 or mark <= 0:
-            if direction != "neutral":
-                _force_neutral(s, "ATR或价格缺失")
-                return True, ""
-        if bias_q in ("reliable", "degraded") and abs(bias) > 0.4 and direction != "neutral":
-            if (bias > 0 and direction == "short") or (bias < 0 and direction == "long"):
-                _force_neutral(s, f"方向与锚点({bias:.3f})冲突")
-                return True, ""
-    if direction == "neutral":
-        for f in ["entry_price_low", "entry_price_high", "stop_loss", "take_profit"]:
-            s[f] = 0
-        s["position_size"] = "none"
-        if not s.get("execution_plan"):
-            s["execution_plan"] = "等待触发条件"
+        atr_15m = data.get("atr_15m",0)
+        mark = data.get("mark_price",0)
+        ab_liq = data.get("above_liq",0)
+        bl_liq = data.get("below_liq",0)
+        bias_q = data.get("_bias_quality","reliable")
+        bias = data.get("direction_bias",0.0)
+        if (not ab_liq or ab_liq<=0) and (not bl_liq or bl_liq<=0) and direction!="neutral":
+            _force_neutral(s, "清算数据缺失"); return True, ""
+        if atr_15m<=0 or mark<=0:
+            if direction!="neutral": _force_neutral(s, "ATR或价格缺失"); return True, ""
+        if bias_q in ("reliable","degraded") and abs(bias)>0.4 and direction!="neutral":
+            if (bias>0 and direction=="short") or (bias<0 and direction=="long"):
+                _force_neutral(s, f"方向与锚点({bias:.3f})冲突"); return True, ""
+    if direction=="neutral":
+        for f in ["entry_price_low","entry_price_high","stop_loss","take_profit"]: s[f]=0
+        s["position_size"]="none"
+        if not s.get("execution_plan"): s["execution_plan"]="等待触发条件"
         return True, ""
-    for f in ["entry_price_low", "entry_price_high", "stop_loss", "take_profit"]:
+    for f in ["entry_price_low","entry_price_high","stop_loss","take_profit"]:
         val = s.get(f)
-        if val is None or float(val) <= 0:
-            return False, f"缺少或无效的 {f}"
+        if val is None or float(val)<=0: return False, f"缺少或无效的 {f}"
     return True, ""
 
 # ---------- 清算穿刺 & 仪表盘 ----------
 def compute_liquidation_bias(data: dict) -> dict:
-    liq_r = data.get('liq_ratio', 1.0)
-    cvd = data.get('cvd_slope', 0.0)
-    taker = data.get('taker_ratio_1h', 0.5)
-    ob_imb = data.get('orderbook_imbalance', 0.0)
-    press = data.get('large_order_pressure', 0.0)
-    pain = data.get('max_pain', 0.0)
-    atr = data.get('atr', 0.0)
-    mark = data.get('mark_price', 0.0)
-    score = (liq_r - 1.0) * 0.4 + (1 if cvd > 0 else -1) * 0.3 + (taker - 0.5) * 0.3
+    liq_r = data.get('liq_ratio',1.0)
+    cvd = data.get('cvd_slope',0.0)
+    taker = data.get('taker_ratio_1h',0.5)
+    ob_imb = data.get('orderbook_imbalance',0.0)
+    press = data.get('large_order_pressure',0.0)
+    pain = data.get('max_pain',0.0)
+    atr = data.get('atr',0.0)
+    mark = data.get('mark_price',0.0)
+    score = (liq_r-1.0)*0.4 + (1 if cvd>0 else -1)*0.3 + (taker-0.5)*0.3
     direction = 'balanced'
-    if score > 0.15:
-        direction = 'up'
-    elif score < -0.15:
-        direction = 'down'
-    lure = (direction == 'up' and press < -0.5) or (direction == 'down' and press > 0.5)
+    if score>0.15: direction='up'
+    elif score<-0.15: direction='down'
+    lure = (direction=='up' and press<-0.5) or (direction=='down' and press>0.5)
     pain_eff = False
-    if atr > 0 and pain > 0 and abs(pain - mark) < 1.0 * atr:
-        if (direction == 'up' and pain > mark) or (direction == 'down' and pain < mark):
-            pain_eff = True
-    return {'puncture_direction': direction, 'puncture_score': score, 'lure_risk': lure, 'pain_magnet': pain_eff}
+    if atr>0 and pain>0 and abs(pain-mark)<1.0*atr:
+        if (direction=='up' and pain>mark) or (direction=='down' and pain<mark): pain_eff=True
+    return {'puncture_direction':direction,'puncture_score':score,'lure_risk':lure,'pain_magnet':pain_eff}
 
 def build_expectation_dashboard(data: dict) -> str:
-    basis_ann = data.get('basis_annualized', 0)
-    basis_med = data.get('basis_median', 8)
-    fund_pct = data.get('funding_percentile', 50)
-    cgdi_pct = data.get('cgdi_percentile', 50)
-    st_flow = data.get('stablecoin_trend_7d', 0)
-    btc_dom = data.get('btc_dominance_trend_7d', 0)
-    borrow = data.get('borrow_rate', 0) * 100
-    pc = data.get('put_call_ratio', 1.0)
-    price_pct = data.get('price_percentile', 50)
-    vol_f = data.get('vol_factor', 1.0)
+    basis_ann = data.get('basis_annualized',0)
+    basis_med = data.get('basis_median',8)
+    fund_pct = data.get('funding_percentile',50)
+    cgdi_pct = data.get('cgdi_percentile',50)
+    st_flow = data.get('stablecoin_trend_7d',0)
+    btc_dom = data.get('btc_dominance_trend_7d',0)
+    borrow = data.get('borrow_rate',0)*100
+    pc = data.get('put_call_ratio',1.0)
+    price_pct = data.get('price_percentile',50)
+    vol_f = data.get('vol_factor',1.0)
     return f"""| 指标 | 当前值 | 历史基线 | 定价了什么？ |
 |------|--------|----------|------------|
 | 3月基差年化 | {basis_ann:.1f}% | {basis_med:.1f}% | >基线时期货溢价过热 |
@@ -216,11 +175,11 @@ def build_expectation_dashboard(data: dict) -> str:
 | 波动因子 | {vol_f:.2f} | 1.0 | 不确定性定价 |"""
 
 CORE_KEYS = [
-    'mark_price', 'atr', 'above_liq', 'below_liq', 'liq_ratio',
-    'cvd_slope', 'taker_ratio_1h', 'oi_change_24h', 'funding_percentile',
-    'orderbook_imbalance', 'large_order_pressure', 'max_pain', 'put_call_ratio',
-    'basis_percentile', 'stablecoin_trend_7d', 'cgdi_percentile',
-    'fear_greed', 'lth_realized_price', 'sth_realized_price', 'sth_sopr'
+    'mark_price','atr','above_liq','below_liq','liq_ratio',
+    'cvd_slope','taker_ratio_1h','oi_change_24h','funding_percentile',
+    'orderbook_imbalance','large_order_pressure','max_pain','put_call_ratio',
+    'basis_percentile','stablecoin_trend_7d','cgdi_percentile',
+    'fear_greed','lth_realized_price','sth_realized_price','sth_sopr'
 ]
 
 def compute_coverage(data: dict) -> dict:
@@ -229,64 +188,58 @@ def compute_coverage(data: dict) -> dict:
     coverage = available / total if total > 0 else 0.0
     return {"available": available, "total": total, "coverage": coverage}
 
-# ---------- 首席交易员 Prompt ----------
+# ------------------- 首席交易员 Prompt -------------------
 def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: str = None) -> str:
     if cross_symbol is None:
-        cross_symbol = "ETH" if symbol == "BTC" else "BTC"
+        cross_symbol = "ETH" if symbol=="BTC" else "BTC"
     coverage = compute_coverage(data)
 
     def safe_val(key, default=0.0, scale=1.0, fmt=".2f"):
         raw = data.get(key)
-        if raw is None:
-            return ("[N/A]", True)
-        try:
-            val = float(raw) * scale
-        except:
-            return ("[N/A]", True)
-        if math.isnan(val) or math.isinf(val):
-            return ("[N/A]", True)
-        try:
-            return (f"{val:{fmt}}", False)
-        except:
-            return ("[N/A]", True)
+        if raw is None: return ("[N/A]", True)
+        try: val = float(raw)*scale
+        except: return ("[N/A]", True)
+        if math.isnan(val) or math.isinf(val): return ("[N/A]", True)
+        try: return (f"{val:{fmt}}", False)
+        except: return ("[N/A]", True)
 
-    # 提取所有字段（省略重复，实际完整）
+    # 提取所有字段
     mark_str, _ = safe_val('mark_price', fmt=".2f")
     atr_str, _ = safe_val('atr', fmt=".2f")
-    fear_greed = data.get('fear_greed', 50)
+    fear_greed = data.get('fear_greed',50)
     lth_str, _ = safe_val('lth_realized_price', fmt=".2f")
     sth_str, _ = safe_val('sth_realized_price', fmt=".2f")
-    sopr_str, _ = safe_val('sth_sopr', 1.0, fmt=".3f")
-    stable_str, _ = safe_val('stablecoin_trend_7d', fmt="+.1f")
-    oi_chg_str, _ = safe_val('oi_change_24h', fmt="+.1f")
-    fund_pct_str, _ = safe_val('funding_percentile', 50, fmt=".0f")
-    cvd_str, _ = safe_val('cvd_slope', fmt=".4f")
-    taker_str, _ = safe_val('taker_ratio_1h', fmt=".3f")
-    nf24h_str, _ = safe_val('netflow_24h', scale=1/1e6, fmt=".1f")
-    abv_liq_str, _ = safe_val('above_liq', scale=1/1e9, fmt=".2f")
-    blw_liq_str, _ = safe_val('below_liq', scale=1/1e9, fmt=".2f")
-    liq_r_str, _ = safe_val('liq_ratio', fmt=".2f")
-    abv_trig = data.get('above_trigger', 'N/A')
-    blw_trig = data.get('below_trigger', 'N/A')
-    lgs_str, _ = safe_val('large_sell_value', scale=1/1e6, fmt=".1f")
-    lgb_str, _ = safe_val('large_buy_value', scale=1/1e6, fmt=".1f")
-    press_str, _ = safe_val('large_order_pressure', fmt=".3f")
-    ob_imb_str, _ = safe_val('orderbook_imbalance', fmt=".3f")
-    lure_str, _ = safe_val('lure_risk_factor', fmt=".2f")
-    pain_str, _ = safe_val('max_pain', fmt=".2f")
-    pc_str, _ = safe_val('put_call_ratio', fmt=".4f")
-    basis_pct_str, _ = safe_val('basis_percentile', 50, fmt=".0f")
-    btc_dom_str, _ = safe_val('btc_dominance_trend_7d', fmt="+.1f")
-    borrow_str, _ = safe_val('borrow_rate', scale=100, fmt=".2f")
-    exch_str, _ = safe_val('exchange_btc_change_24h', fmt="+.0f")
-    spot24_str, _ = safe_val('spot_netflow_24h', scale=1/1e6, fmt=".1f")
-    spot_div_str, _ = safe_val('spot_vs_futures_divergence', fmt=".2f")
-    top_ls_str, _ = safe_val('top_ls_percentile', 50, fmt=".0f")
-    price_pct_str, _ = safe_val('price_percentile', 50, fmt=".0f")
-    vol_f_str, _ = safe_val('vol_factor', 1.0, fmt=".2f")
-    cgdi_pct_str, _ = safe_val('cgdi_percentile', 50, fmt=".0f")
-    direction_bias = data.get('direction_bias', 0.0)
-    bias_quality = data.get('_bias_quality', 'reliable')
+    sopr_str, _ = safe_val('sth_sopr',1.0,fmt=".3f")
+    stable_str, _ = safe_val('stablecoin_trend_7d',fmt="+.1f")
+    oi_chg_str, _ = safe_val('oi_change_24h',fmt="+.1f")
+    fund_pct_str, _ = safe_val('funding_percentile',50,fmt=".0f")
+    cvd_str, _ = safe_val('cvd_slope',fmt=".4f")
+    taker_str, _ = safe_val('taker_ratio_1h',fmt=".3f")
+    nf24h_str, _ = safe_val('netflow_24h',scale=1/1e6,fmt=".1f")
+    abv_liq_str, _ = safe_val('above_liq',scale=1/1e9,fmt=".2f")
+    blw_liq_str, _ = safe_val('below_liq',scale=1/1e9,fmt=".2f")
+    liq_r_str, _ = safe_val('liq_ratio',fmt=".2f")
+    abv_trig = data.get('above_trigger','N/A')
+    blw_trig = data.get('below_trigger','N/A')
+    lgs_str, _ = safe_val('large_sell_value',scale=1/1e6,fmt=".1f")
+    lgb_str, _ = safe_val('large_buy_value',scale=1/1e6,fmt=".1f")
+    press_str, _ = safe_val('large_order_pressure',fmt=".3f")
+    ob_imb_str, _ = safe_val('orderbook_imbalance',fmt=".3f")
+    lure_str, _ = safe_val('lure_risk_factor',fmt=".2f")
+    pain_str, _ = safe_val('max_pain',fmt=".2f")
+    pc_str, _ = safe_val('put_call_ratio',fmt=".4f")
+    basis_pct_str, _ = safe_val('basis_percentile',50,fmt=".0f")
+    btc_dom_str, _ = safe_val('btc_dominance_trend_7d',fmt="+.1f")
+    borrow_str, _ = safe_val('borrow_rate',scale=100,fmt=".2f")
+    exch_str, _ = safe_val('exchange_btc_change_24h',fmt="+.0f")
+    spot24_str, _ = safe_val('spot_netflow_24h',scale=1/1e6,fmt=".1f")
+    spot_div_str, _ = safe_val('spot_vs_futures_divergence',fmt=".2f")
+    top_ls_str, _ = safe_val('top_ls_percentile',50,fmt=".0f")
+    price_pct_str, _ = safe_val('price_percentile',50,fmt=".0f")
+    vol_f_str, _ = safe_val('vol_factor',1.0,fmt=".2f")
+    cgdi_pct_str, _ = safe_val('cgdi_percentile',50,fmt=".0f")
+    direction_bias = data.get('direction_bias',0.0)
+    bias_quality = data.get('_bias_quality','reliable')
     puncture = compute_liquidation_bias(data)
     dashboard = build_expectation_dashboard(data)
 
@@ -431,7 +384,6 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
 **步骤6结论**：跨币种信号[同向可做/背离警告/无明确信号]。
 
 ## 步骤7：策略生成与反向压力测试
-
 **最终确认**（逐项填写）：
 | 数据项 | 当前值 | 对策略的影响 |
 |--------|--------|-------------|
@@ -454,39 +406,45 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
 **置信度**：[高/中/低]
 
 **做多论据**（至少3条，必须引用具体数据）：
-1. （数据字段：数值 → 为什么支持做多）
+1. 
 2. 
 3. 
 
 **做空论据**（至少3条，必须引用具体数据）：
-1. （数据字段：数值 → 为什么支持做空）
+1. 
 2. 
 3. 
 
 **交叉质询**：
-- 多头攻击空头最脆弱的一环：（具体说明）
-- 空头攻击多头最脆弱的一环：（具体说明）
+- 多头攻击空头最脆弱的一环：
+- 空头攻击多头最脆弱的一环：
 
-**做多盈亏比计算**：
-- 做多入场区间：[___-___]，依据：[___]
-- 做多止损：[___]，依据：[___]
-- 做多止盈：[___]，依据：[___]
-- 做多盈亏比：(止盈-入场)/(入场-止损) = ___:1
+【若最终方向为做多】
+**盈亏比计算**：
+- 入场区间：[___-___]，依据：[___]
+- 止损：[___]，依据：[___]
+- 止盈：[___]，依据：[___]
+- 盈亏比：(止盈-入场)/(入场-止损) = ___:1
+**最终决策理由**：（一句话说明为什么做多）
 
-**做空盈亏比计算**：
-- 做空入场区间：[___-___]，依据：[___]
-- 做空止损：[___]，依据：[___]
-- 做空止盈：[___]，依据：[___]
-- 做空盈亏比：(入场-止盈)/(止损-入场) = ___:1
+【若最终方向为做空】
+**盈亏比计算**：
+- 入场区间：[___-___]，依据：[___]
+- 止损：[___]，依据：[___]
+- 止盈：[___]，依据：[___]
+- 盈亏比：(入场-止盈)/(止损-入场) = ___:1
+**最终决策理由**：（一句话说明为什么做空）
 
-**最终决策理由**：
-（基于以上计算和分析，为什么选择做多/做空/观望？如果选择观望，必须说明：是做多和做空的盈亏比都不达标，还是多空逻辑势均力敌无法抉择？）
-结论**：最终方向[做多/做空/观望]，仓位[重仓/中仓/轻仓/无]，置信度[高/中/低]。
+【若最终方向为观望】
+**观望原因**：（二选一）
+  - 多空逻辑势均力敌，无法判定方向
+  - （或其他具体原因，如“锚点冲突强制观望”/“数据覆盖率不足”等）
+**最终决策理由**：（一句话说明为什么当前不是交易时机）
 """
 
     prompt = f"""你是一位拥有 15 年实战经验、以量化严谨著称的加密货币首席交易员。你的任务是结构化解构市场，而非提供交易建议。你完全信任外部数据管道的质量标记，并严格执行硬约束。
 
-严格按照「七步递进分析框架」输出，每步必须先完成数据确认表再定性分析，每步必须有**结论**。总字数 ≤ 3000 字。
+严格按照「七步递进分析框架」输出，每步必须先完成数据确认表再定性分析，每步必须有**结论**。总字数 ≤ 5000 字，确保步骤7的所有强制内容完整输出。
 
 【数据与锚点】
 覆盖率：{coverage['coverage']:.0%}（{coverage['available']}/{coverage['total']}）
@@ -540,7 +498,7 @@ OI 24h变化：{oi_chg_str}%，OI加速度：{data.get('oi_acceleration',0):.4f}
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "",
-  "reasoning": "每步以【步骤X：名称】开头，包含数据确认表和结论行",
+  "reasoning": "每步以【步骤X：名称】开头，包含数据确认表、定性分析和结论行，步骤7必须完整输出所有强制内容（多空论据、交叉质询、盈亏比、决策理由），总字数≤5000字",
   "risk_note": "必须包含数据质量约束声明及反向情景退出条件",
   "risk_reward_ratio": 0.0,
   "data_quality_constraints": "列出步骤1中所有被激活的硬约束",
@@ -551,7 +509,6 @@ OI 24h变化：{oi_chg_str}%，OI加速度：{data.get('oi_acceleration',0):.4f}
 }}
 """
     return prompt
-
 
 # ------------------- 首席交易员调用 -------------------
 def call_trader(prompt: str) -> dict:
@@ -567,25 +524,21 @@ def call_trader(prompt: str) -> dict:
             )
             content = resp.choices[0].message.content or ""
             _log_response("trader", prompt, content)
-            if not content.strip():
-                raise ValueError("空响应")
+            if not content.strip(): raise ValueError("空响应")
             json_str = extract_json_safe(content)
             s = json.loads(json_str)
             s["direction"] = norm_direction(s.get("direction", ""))
             s["position_size"] = norm_position_size(s.get("position_size", ""))
             s["confidence"] = norm_confidence(s.get("confidence", ""))
-            s.setdefault("reasoning", "")
-            s.setdefault("risk_note", "")
-            s.setdefault("execution_plan", "")
+            s.setdefault("reasoning", ""); s.setdefault("risk_note", ""); s.setdefault("execution_plan", "")
             s["reasoning"] = format_reasoning(s["reasoning"])
             s["_model_used"] = resp.model
             return s
         except Exception as e:
             logger.warning(f"交易员调用失败: {e}")
             if attempt == MAX_RETRIES - 1:
-                return {"direction": "neutral", "confidence": "low", "position_size": "none", "entry_price_low": 0, "entry_price_high": 0, "stop_loss": 0, "take_profit": 0, "execution_plan": "调用失败", "reasoning": "调用失败", "risk_note": "", "_model_used": "fallback"}
+                return {"direction":"neutral","confidence":"low","position_size":"none","entry_price_low":0,"entry_price_high":0,"stop_loss":0,"take_profit":0,"execution_plan":"调用失败","reasoning":"调用失败","risk_note":"","_model_used":"fallback"}
             time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
-
 
 # ------------------- 审计官（核查清单版） -------------------
 def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
@@ -613,9 +566,9 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
 4. 步骤4是否推演了路径A和路径B两个方向？
 5. 步骤5是否找到了至少一对矛盾指标？（若声称“没有矛盾”但实际存在明显矛盾，违规）
 6. 步骤6是否引用了跨币种数据？
-7. 步骤7是否计算了盈亏比？（未计算或为零，违规）
-8. 多空博弈中，多空双方是否各列出了至少3条论据？
-9. 交叉质询是否完成？（双方各攻击了对方的一条论据）
+7. 步骤7是否计算了与最终方向一致的盈亏比？（若方向为观望，无需计算盈亏比，只需说明观望原因）
+8. 步骤7是否列出了做多和做空双方各至少3条论据？
+9. 步骤7是否完成了交叉质询？
 10. 是否有数据被错误引用？（例如把CVD斜率-32939 写成 +32939）
 
 同时，你必须指出交易员推演中最致命的缺陷（若存在），以及未被处理的关键反证信号。
@@ -651,8 +604,7 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
             content = resp.choices[0].message.content or ""
             _log_response("reviewer", prompt, content)
             rev = json.loads(extract_json_safe(content))
-            if not rev.get("full_report"):
-                rev["full_report"] = content
+            if not rev.get("full_report"): rev["full_report"] = content
             rev["full_report"] = format_reasoning(rev["full_report"])
             if sum(rev.get("severity_summary", {}).values()) == 0 and rev.get("overall_verdict") == "驳回":
                 rev["severity_summary"]["严重"] = 1
@@ -664,19 +616,15 @@ def call_reviewer(strategy: dict, data: dict, symbol: str) -> dict:
                 return {"overall_verdict": "驳回", "max_severity": "严重", "severity_summary": {"严重": 1, "中等": 0, "轻度": 0}, "step_audits": [], "checklist": [], "most_fatal_flaw": "审计失败", "unhandled_contrarian_signal": "", "full_report": "审计失败", "_model": "fallback"}
             time.sleep(RETRY_BASE_WAIT ** (attempt + 1))
 
-
 # ------------------- 交易委员会（独立裁决版） -------------------
 def call_judge(strategy: dict, reviewer_report: dict, data: dict, symbol: str) -> dict:
     direction_bias = data.get('direction_bias', 0.0)
-
-    # 构建审计指控摘要
     audit_charges = ""
     for audit in reviewer_report.get("step_audits", []):
         for issue in audit.get("issues", []):
             if issue.get("severity") in ("高", "中"):
                 audit_charges += f"步骤{audit['step']}: {issue['description']} (严重性:{issue['severity']})\n"
 
-    # 将完整市场数据提供给委员会
     market_data_summary = f"""
 现价：{data.get('mark_price',0):.2f}，ATR：{data.get('atr',0):.2f}，恐慌贪婪：{data.get('fear_greed',50)}
 LTH成本：{data.get('lth_realized_price',0):.2f}，STH成本：{data.get('sth_realized_price',0):.2f}，STH SOPR：{data.get('sth_sopr',1):.3f}
@@ -714,6 +662,7 @@ OI 24h变化：{data.get('oi_change_24h',0):+.1f}%，资金费率分位：{data.
    - 若不成立，说明驳回理由
 2. 基于原始数据，发现交易员和审计官都未提及的重要信号（若有）。
 3. 综合所有裁决，制定一份可立即执行的最终合约策略，包括方向、仓位、入场、止损、止盈、盈亏比、执行指令。
+   - 若最终方向为观望，所有价格字段设为0，仓位为none，盈亏比为0。
 
 输出JSON格式：
 {{
@@ -752,8 +701,7 @@ OI 24h变化：{data.get('oi_change_24h',0):+.1f}%，资金费率分位：{data.
             result["final_confidence"] = norm_confidence(result.get("final_confidence", ""))
             if result.get("final_verdict") == "维持原判":
                 for f in ["entry_price_low", "entry_price_high", "stop_loss", "take_profit", "execution_plan", "risk_note"]:
-                    if not result.get(f):
-                        result[f] = strategy.get(f, 0)
+                    if not result.get(f): result[f] = strategy.get(f, 0)
             result["final_reasoning"] = format_reasoning(result.get("final_reasoning", ""))
             return {**result, "_model": resp.model}
         except Exception as e:

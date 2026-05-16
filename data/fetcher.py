@@ -2,23 +2,44 @@ import os
 import time
 import requests
 import threading
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Semaphore
 from utils.logger import logger
 
+
 class RateLimiter:
-    def __init__(self, min_interval: float = 0.05):
+    """全局限流器：最小间隔 + 每分钟最大请求数"""
+    def __init__(self, min_interval: float = 0.05, max_per_minute: int = 25):
         self.min_interval = min_interval
+        self.max_per_minute = max_per_minute
         self._last_request_time = 0.0
+        self._window_start = time.time()
+        self._window_count = 0
         self._lock = threading.Lock()
 
     def wait(self):
         with self._lock:
             now = time.time()
+            # 分钟窗口重置
+            if now - self._window_start >= 60.0:
+                self._window_start = now
+                self._window_count = 0
+            # 如果本分钟已用尽配额，等待到下一分钟
+            if self._window_count >= self.max_per_minute:
+                sleep_time = 60.0 - (now - self._window_start) + 0.5
+                logger.warning(f"本地分钟配额({self.max_per_minute})已用尽，等待 {sleep_time:.1f} 秒...")
+                time.sleep(sleep_time)
+                now = time.time()
+                self._window_start = now
+                self._window_count = 0
+            # 最小间隔
             elapsed = now - self._last_request_time
             if elapsed < self.min_interval:
                 time.sleep(self.min_interval - elapsed)
             self._last_request_time = time.time()
+            self._window_count += 1
+
 
 class CoinGlassClient:
     def __init__(self):
@@ -26,10 +47,10 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
-        self._rate_limiter = RateLimiter(min_interval=0.05)
+        self._rate_limiter = RateLimiter(min_interval=0.05, max_per_minute=25)
         self._semaphore = Semaphore(10)
 
-    def _request(self, endpoint: str, params: dict = None, max_retries: int = 1,
+    def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
                  allow_backup: bool = False, silent_fail: bool = False,
                  no_exchange: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -63,9 +84,18 @@ class CoinGlassClient:
                             msg = f"CoinGlass API 错误: {data.get('msg', data)}"
                             logger.error(f"[错误详情] endpoint={endpoint} | response={data}")
                             last_error = msg
+
+                            # ---- 处理限频：等待后重试，不再直接放弃 ----
                             if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
-                                logger.warning(f"触发限频，放弃本次请求: {endpoint}")
-                                break
+                                wait_seconds = 60  # 默认等60秒
+                                # 尝试解析错误信息中的限频数值（例如 27/26 req/min）
+                                match = re.search(r'(\d+)/(\d+)\s*req/min', str(data))
+                                if match:
+                                    wait_seconds = 65  # 超出配额直接等待一个完整窗口 + 缓冲
+                                logger.warning(f"触发限频，等待 {wait_seconds} 秒后重试...")
+                                time.sleep(wait_seconds)
+                                continue  # 继续当前 attempt
+
                             if "required" in str(msg).lower() or "not present" in str(msg):
                                 logger.error(f"请求参数错误，放弃: {msg}")
                                 break
@@ -108,6 +138,7 @@ class CoinGlassClient:
             return {}
         raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
 
+    # ---------- 以下所有方法保持不变 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -554,8 +585,8 @@ class CoinGlassClient:
                     logger.error(f"获取 {key} 失败: {e}")
                     results[key] = None
 
-        logger.info("第一批请求完成，等待2秒后开始第二批...")
-        time.sleep(2)  # 修改为2秒
+        logger.info("第一批请求完成，等待3秒后开始第二批...")
+        time.sleep(3)  # 恢复为3秒
 
         with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_key = {executor.submit(task): key for key, task in batch2.items()}
@@ -569,6 +600,7 @@ class CoinGlassClient:
 
         eth_btc_data = self.get_eth_btc_ratio()
         return self._build_main_data(results, base_symbol, eth_btc_data, kline_limit)
+
 
     def _build_main_data(self, results: dict, base_symbol: str, eth_btc_data: dict, kline_limit: int = 100) -> dict:
         # 解包原始数据 (与之前相同)

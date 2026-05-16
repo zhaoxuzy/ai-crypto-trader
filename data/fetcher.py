@@ -50,6 +50,45 @@ class CoinGlassClient:
         self._rate_limiter = RateLimiter(min_interval=0.05, max_per_minute=25)
         self._semaphore = Semaphore(10)
 
+    # ---------- 内部：OKX 公开 K 线获取（替代 keystore） ----------
+    def _get_okx_kline(self, symbol: str, interval: str = "4h", limit: int = 168) -> list:
+        """从 OKX 公开 API 获取 K 线，返回与 CoinGlass 一致的 OHLC 列表"""
+        try:
+            bar_map = {"4h": "4H", "1h": "1H", "1m": "1m", "5m": "5m", "15m": "15m"}
+            bar = bar_map.get(interval, interval)
+            inst_id = f"{symbol.upper()}-USDT-SWAP"
+            url = "https://www.okx.com/api/v5/market/candles"
+            resp = requests.get(url, params={"instId": inst_id, "bar": bar, "limit": limit}, timeout=10)
+            data = resp.json()
+            if data.get("code") == "0":
+                candles = data["data"]
+                candles.reverse()  # OKX 默认新→旧，反转为旧→新
+                result = []
+                for c in candles:
+                    ts = int(c[0])
+                    o, h, l, cl, vol = float(c[1]), float(c[2]), float(c[3]), float(c[4]), float(c[5])
+                    result.append([ts, o, h, l, cl, vol])
+                return result
+        except Exception as e:
+            logger.warning(f"OKX 公开 K 线获取失败 ({symbol} {interval}): {e}")
+        return []
+
+    # ---------- 内部：恐惧贪婪指数（替代 keystore） ----------
+    def get_fear_and_greed_index(self) -> dict:
+        """使用 Alternative.me 免费接口"""
+        try:
+            resp = requests.get("https://api.alternative.me/fng/?limit=8", timeout=10)
+            data = resp.json().get("data", [])
+            if len(data) >= 8:
+                return {
+                    "current": int(data[0].get("value", 50)),
+                    "prev_7d": int(data[7].get("value", 50))
+                }
+        except Exception as e:
+            logger.warning(f"获取恐惧贪婪指数失败: {e}")
+        return {"current": 50, "prev_7d": 50}
+
+    # ---------- 核心请求方法（包含限频重试） ----------
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3,
                  allow_backup: bool = False, silent_fail: bool = False,
                  no_exchange: bool = False) -> dict:
@@ -85,16 +124,15 @@ class CoinGlassClient:
                             logger.error(f"[错误详情] endpoint={endpoint} | response={data}")
                             last_error = msg
 
-                            # ---- 处理限频：等待后重试，不再直接放弃 ----
+                            # ---- 处理限频：等待后重试，不放弃 ----
                             if "rate limit" in str(msg).lower() or "keystore plan rate limit exceeded" in str(msg):
-                                wait_seconds = 60  # 默认等60秒
-                                # 尝试解析错误信息中的限频数值（例如 27/26 req/min）
+                                wait_seconds = 60
                                 match = re.search(r'(\d+)/(\d+)\s*req/min', str(data))
                                 if match:
-                                    wait_seconds = 65  # 超出配额直接等待一个完整窗口 + 缓冲
+                                    wait_seconds = 65  # 超出限制等一个完整窗口 + 缓冲
                                 logger.warning(f"触发限频，等待 {wait_seconds} 秒后重试...")
                                 time.sleep(wait_seconds)
-                                continue  # 继续当前 attempt
+                                continue
 
                             if "required" in str(msg).lower() or "not present" in str(msg):
                                 logger.error(f"请求参数错误，放弃: {msg}")
@@ -138,7 +176,7 @@ class CoinGlassClient:
             return {}
         raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
 
-    # ---------- 以下所有方法保持不变 ----------
+    # ---------- 通用工具方法 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -193,11 +231,18 @@ class CoinGlassClient:
     def _get_symbol(self, base: str) -> str:
         return f"{base}-USDT-SWAP"
 
-    # ---- 基础数据接口 (保持完整) ----
+    # ---------- K 线（改用 OKX 公开 API） ----------
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        # 当主交易所为 OKX 时，优先使用 OKX 公开 API 以节省 keystore 配额
+        if self.primary_exchange == "OKX":
+            kline = self._get_okx_kline(symbol, interval, limit)
+            if kline:
+                return kline
+        # 兜底：使用 CoinGlass
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=False, silent_fail=True)
 
+    # ---------- 其余接口全部照旧（仅展示必要改动处，保持与之前一致） ----------
     def get_oi_ohlc_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/open-interest/history", params, allow_backup=False, silent_fail=True)
@@ -233,11 +278,7 @@ class CoinGlassClient:
             return {"max_pain": max_pain, "put_call_ratio": round(put_call_ratio, 4)}
         return {"max_pain": 0.0, "put_call_ratio": 0.0}
 
-    def get_fear_and_greed_index(self) -> dict:
-        data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True, no_exchange=True)
-        if data and isinstance(data, list) and len(data) >= 8:
-            return {"current": int(data[0].get("value", 50)), "prev_7d": int(data[7].get("value", 50))}
-        return {"current": 50, "prev_7d": 50}
+    # get_fear_and_greed_index 已移到上方并改用 alternative.me
 
     def get_netflow(self, symbol: str = "BTC") -> float:
         params = {"symbol": symbol.upper()}
@@ -586,7 +627,7 @@ class CoinGlassClient:
                     results[key] = None
 
         logger.info("第一批请求完成，等待3秒后开始第二批...")
-        time.sleep(3)  # 恢复为3秒
+        time.sleep(3)
 
         with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_key = {executor.submit(task): key for key, task in batch2.items()}

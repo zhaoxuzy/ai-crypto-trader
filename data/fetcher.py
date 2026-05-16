@@ -1,4 +1,3 @@
-import os
 import time
 import requests
 import threading
@@ -13,20 +12,12 @@ class RateLimiter:
         self._lock = threading.Lock()
 
     def wait(self):
-        # 1. 锁内：计算需要等待的时间，并预留时间槽
         with self._lock:
             now = time.time()
             elapsed = now - self._last_request_time
-            wait_needed = self.min_interval - elapsed
-            if wait_needed > 0:
-                # 提前更新为“预计完成时间”，防止其他线程抢占
-                self._last_request_time = now + wait_needed
-            else:
-                self._last_request_time = now
-
-        # 2. 锁外：实际睡眠（不阻塞其他线程）
-        if wait_needed > 0:
-            time.sleep(wait_needed)
+            if elapsed < self.min_interval:
+                time.sleep(self.min_interval - elapsed)
+            self._last_request_time = time.time()
 
 class CoinGlassClient:
     def __init__(self):

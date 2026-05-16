@@ -1,5 +1,6 @@
 """
 deepseek.py — 最终版：七步数据确认 + 嵌入强制要求的步骤7结论模板 + 审计官核查清单 + 委员会独立裁决
++ 市场状态动态权重引导
 """
 
 import os, json, time, re, math
@@ -254,6 +255,20 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
     vol_surge = 1.0
     atr_ratio = (data.get('mark_price', 0) * 0.02 / data.get('atr', 1.0)) if data.get('atr', 0) > 0 else 1.0
 
+    # ---------- 新增：市场状态识别与动态权重引导 ----------
+    vol_factor = data.get('vol_factor', 1.0)
+    price_percentile = data.get('price_percentile', 50)
+    if vol_factor > 2.0:
+        market_regime = "高波动/潜在极端行情"
+        weight_guide = "结构性（步骤2）权重提升至40%，动能（步骤3）权重降至30%，风险（步骤4+5+6）权重维持30%。极端波动下尊重链上成本基础，警惕假突破。"
+    elif vol_factor < 0.6 and 40 < price_percentile < 60:
+        market_regime = "低波动震荡"
+        weight_guide = "动能（步骤3）权重降至25%，预期差（步骤5）权重提升至25%，优先考虑无方向（观望）。震荡市动能在假突破中易失效，重点寻找预期差或等待清晰信号。"
+    else:
+        market_regime = "趋势市"
+        weight_guide = "保持默认权重：动能45%、结构性25%、风险30%。趋势明确时跟随动能信号，但需防范步骤4的猎杀风险。"
+    # --------------------------------------------------------
+
     # 跨币种上下文
     cross_context = ""
     if eth_data:
@@ -460,6 +475,11 @@ def build_prompt(data: dict, symbol: str, eth_data: dict = None, cross_symbol: s
 - 清算图质量：{liq_quality}
 - 链上数据质量：{onchain_quality}
 - 交易所数据质量：{exch_quality}
+
+【市场状态识别与动态裁决权重 - 根据当前波动与分位自适应调整】
+当前波动因子：{vol_factor:.2f}，价格7日分位：{price_percentile:.0f}%
+判定市场状态：{market_regime}
+步骤7裁决权重引导：{weight_guide}
 
 【市场快速响应因子 - 用于检测急转弯状态】
 - 价格24h分位：{price_24h_pct:.2f}
